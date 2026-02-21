@@ -1,0 +1,201 @@
+# WhatsApp Send Media (Image/Video) Workflow
+#
+# Sends an image or video via WhatsApp with optional caption.
+#
+# Usage:
+#   phone: Phone number with country code
+#   file_path: Path to the image or video file
+#   caption: Optional text caption
+
+name: whatsapp_send_media
+version: "1.0"
+description: Send an image or video via WhatsApp
+
+browser:
+  headless: false
+  data_dir: "data/whatsapp_profile"
+
+on:
+  api:
+    path: /whatsapp/send/media
+    method: POST
+
+params:
+  phone:
+    type: string
+    required: true
+    description: "Phone number with country code"
+  file_path:
+    type: string
+    required: true
+    description: "Path to image or video file"
+  caption:
+    type: string
+    required: false
+    description: "Optional caption for the media"
+
+vars:
+  whatsapp_url: "https://web.whatsapp.com"
+  attach_button_selector: "button[title='Attach']"
+  photo_video_input: "input[accept='image/*,video/mp4,video/3gpp,video/quicktime']"
+  send_media_button: "div[aria-label='Send']"
+
+steps:
+  # 1. Ensure we're on WhatsApp Web
+  - id: navigate
+    action: goto
+    url: "{{vars.whatsapp_url}}"
+
+  # 2. Check authorization
+  - id: check_auth
+    action: eval
+    script: "document.querySelector('#pane-side') !== null"
+    store_as: is_authenticated
+
+  - action: condition
+    if: "{{store.is_authenticated}} == false"
+    then:
+      - action: eval
+        script: "({ status: 'not_authenticated', success: false })"
+        store_as: result
+    else:
+      # 3. Navigate to chat
+      - id: navigate_to_chat
+        action: eval
+        script: |
+          (function() {
+            var phone = '{{params.phone}}'.replace(/[^\d+]/g, '').replace(/^\+/, '');
+            var loader = document.querySelector('#phoneLoaderParent');
+            if (!loader) {
+              document.querySelector('#pane-side').innerHTML += '<div id="phoneLoaderParent"></div>';
+            }
+            document.querySelector('#phoneLoaderParent').innerHTML = 
+              '<a id="phoneLoader" href="https://api.whatsapp.com/send?phone=' + phone + '" style="display:none"></a>';
+            document.querySelector('#phoneLoader').click();
+            document.querySelector('#phoneLoaderParent').remove();
+            return true;
+          })();
+
+      - action: sleep
+        duration: "2s"
+
+      # 4. Wait for message input (indicates chat is open)
+      - id: wait_for_chat
+        action: wait_for
+        selector: "#app #main footer div[aria-placeholder='Type a message']"
+        timeout: "10s"
+
+      # 5. Click attach button
+      - id: click_attach
+        action: eval
+        script: |
+          (function() {
+            var btn = document.querySelector('button[title="Attach"]') ||
+                      document.querySelector('button[aria-label*="Attach"]') ||
+                      document.querySelector('span[data-icon="plus"]')?.closest('button');
+            if (btn) { btn.click(); return true; }
+            return false;
+          })();
+
+      - action: sleep
+        duration: "500ms"
+
+      # 6. Click "Photos & videos" menu item
+      - id: click_media_menu
+        action: eval
+        script: |
+          (function() {
+            var item = document.querySelector('[role="menuitem"][aria-label="Photos & videos"]') ||
+                       document.querySelector('[role="menuitem"][aria-label*="Photo"]') ||
+                       document.querySelector('li[role="menuitem"] span[data-icon="attach-image"]')?.closest('[role="menuitem"]');
+            if (item) { item.click(); return true; }
+            return false;
+          })();
+
+      - action: sleep
+        duration: "500ms"
+
+      # 7. Upload file using CDP file input
+      - id: upload_file
+        action: upload
+        selector: "{{vars.photo_video_input}}"
+        file: "{{params.file_path}}"
+        on_failure:
+          # Fallback: Try alternate selectors
+          - action: upload
+            selector: "input[accept='image/*']"
+            file: "{{params.file_path}}"
+
+      # 8. Wait for preview to load
+      - id: wait_preview
+        action: wait_for
+        selector: "{{vars.send_media_button}}"
+        timeout: "15s"
+
+      # 9. Add caption if provided
+      - action: condition
+        if: "{{params.caption}}"
+        then:
+          - id: add_caption
+            action: eval
+            script: |
+              (function() {
+                var inputs = document.querySelectorAll('div[contenteditable="true"][role="textbox"]');
+                var captionInput = null;
+                for (var input of inputs) {
+                  var label = input.getAttribute('aria-label') || '';
+                  var placeholder = input.getAttribute('aria-placeholder') || '';
+                  if (label.includes('message') || label.includes('caption') ||
+                      placeholder.includes('message') || placeholder.includes('caption')) {
+                    captionInput = input;
+                    break;
+                  }
+                }
+                if (captionInput) {
+                  captionInput.focus();
+                  document.execCommand('insertText', false, '{{params.caption}}');
+                  return true;
+                }
+                return false;
+              })();
+          - action: sleep
+            duration: "300ms"
+
+      # 10. Click send button
+      - id: send_media
+        action: eval
+        script: |
+          (function() {
+            var btn = document.querySelector('div[aria-label="Send"]') ||
+                      document.querySelector('span[data-icon="send"]')?.closest('div[role="button"]');
+            if (btn) { btn.click(); return true; }
+            return false;
+          })();
+        store_as: send_clicked
+
+      - action: condition
+        if: "{{store.send_clicked}} == true"
+        then:
+          - action: sleep
+            duration: "1s"
+          - action: eval
+            script: "({ status: 'sent', success: true })"
+            store_as: result
+        else:
+          - action: eval
+            script: "({ status: 'send_failed', success: false })"
+            store_as: result
+
+  - action: log
+    message: "Send media completed: {{store.result.status}}"
+
+output:
+  status: "{{store.result.status}}"
+  success: "{{store.result.success}}"
+  phone: "{{params.phone}}"
+  file: "{{params.file_path}}"
+
+on_error:
+  screenshot: true
+  emit:
+    event: whatsapp_send_media_error

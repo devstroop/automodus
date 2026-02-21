@@ -1,0 +1,104 @@
+# WhatsApp Web Locators Configuration
+#
+# CSS selectors for WhatsApp Web elements.
+# Update these when WhatsApp Web UI changes - no workflow modifications needed.
+#
+# Used by: workflows/whatsapp/*.yaml
+
+[dialog]
+root = "[role='dialog']"
+backdrop = "div[data-animate-modal-backdrop='true']"
+popup = "div[data-animate-modal-popup='true']"
+body = "div[data-animate-modal-body='true']"
+
+[auth]
+login_with_phone_link = "span[role='button']"
+login_with_qr_link = "span[role='button']"
+login_label = "text='Log into WhatsApp Web'"
+phone_number_label = "text='Enter phone number'"
+phone_number_input = "[aria-label='Type your phone number.']"
+phone_submit_button = "div[role='button']"
+invalid_phone_dialog = "#app div[data-animate-modal-popup='true'] div[data-animate-modal-body='true']"
+code_on_phone_label = "text='Enter code on phone'"
+code_on_phone_value = "[aria-details='link-device-phone-number-code-screen-instructions']"
+link_code_element = "[aria-details='link-device-phone-number-code-screen-instructions']"
+link_code_digits = "[data-link-code]"
+qr_loading = "svg[role='status']"
+qr_canvas = "canvas[aria-label='Scan this QR code to link a device!']"
+qr_reload_button = "[data-icon='refresh-large']"
+authorized_pane = "#pane-side"
+
+[menu]
+button = "button[title='Menu']"
+dropdown = "[aria-label='Menu']"
+logout = "[aria-label='Log out']"
+logout_confirm = "[aria-label='Log out?']"
+
+[loading]
+progress = "progress[max='100']"
+phone_loader_parent = "#phoneLoaderParent"
+phone_loader = "#phoneLoader"
+
+[chat]
+message_input = "#app #main footer div[aria-placeholder='Type a message']"
+message_contenteditable = "div[contenteditable='true'][aria-placeholder='Type a message']"
+send_button = "span[data-icon='send']"
+send_button_parent = "button span[data-icon='send']"
+chat_list = "#pane-side"
+chat_list_alt = "[data-testid='chat-list']"
+chat_row = "[data-testid='cell-frame-container']"
+chat_name = "[data-testid='cell-frame-title'] span"
+last_message = "[data-testid='last-msg-status']"
+unread_badge = "[data-testid='icon-unread-count']"
+conversation_header = "[data-testid='conversation-info-header-chat-title']"
+
+[attachment]
+button = "button[title='Attach']"
+plus_icon = "[data-icon='plus']"
+menu_plus_icon = "[data-icon='attach-menu-plus']"
+photo_video_menu = "[role='menuitem'][aria-label='Photos & videos']"
+document_menu = "[role='menuitem'][aria-label='Document']"
+photo_video_input = "input[accept='image/*,video/mp4,video/3gpp,video/quicktime']"
+document_input = "input[accept='*']"
+caption_input = "#app div[aria-placeholder='Add a caption']"
+send_button = "#app div[aria-label='Send']"
+
+[message]
+container = "[data-testid='msg-container']"
+text = "span.copyable-text"
+text_alt = "span._ao3e"
+timestamp = "[data-pre-plain-text]"
+meta = "[data-testid='msg-meta']"
+status_check = "[data-testid='msg-check']"
+status_dblcheck = "[data-testid='msg-dblcheck']"
+image_thumb = "[data-testid='image-thumb']"
+video_thumb = "[data-testid='video-thumb']"
+audio_play = "[data-testid='audio-play']"
+document_thumb = "[data-testid='document-thumb']"
+sticker = "[data-testid='sticker']"
+
+[scripts]
+qr_code_base64 = """
+(function() {
+    var canvas = document.querySelector("canvas[aria-label='Scan this QR code to link a device!']");
+    if (canvas) {
+        return canvas.toDataURL('image/png').split(',')[1];
+    }
+    return null;
+})();
+"""
+
+navigate_to_phone = """
+(function(phone) {
+    var cleaned = phone.replace(/[^\\d+]/g, '').replace(/^\\+/, '');
+    var loader = document.querySelector('#phoneLoaderParent');
+    if (!loader) {
+        document.querySelector('#pane-side').innerHTML += '<div id=\"phoneLoaderParent\"></div>';
+    }
+    document.querySelector('#phoneLoaderParent').innerHTML = 
+        '<a id=\"phoneLoader\" href=\"https://api.whatsapp.com/send?phone=' + cleaned + '\" style=\"display:none\"></a>';
+    document.querySelector('#phoneLoader').click();
+    document.querySelector('#phoneLoaderParent').remove();
+    return true;
+})
+"""

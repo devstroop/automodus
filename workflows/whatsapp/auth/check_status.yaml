@@ -1,0 +1,147 @@
+# WhatsApp Authentication Status Check
+#
+# Checks whether the user is authenticated to WhatsApp Web.
+# Returns detailed status information including loading states.
+
+name: whatsapp_check_status
+version: "1.0"
+description: Check WhatsApp Web authentication status
+
+browser:
+  headless: false
+  data_dir: "data/whatsapp_profile"
+
+on:
+  api:
+    path: /whatsapp/auth/status
+    method: GET
+
+vars:
+  whatsapp_url: "https://web.whatsapp.com"
+
+steps:
+  # 1. Navigate to WhatsApp Web (if not already there)
+  - id: ensure_page
+    action: goto
+    url: "{{vars.whatsapp_url}}"
+
+  # 2. Wait a moment for page to update
+  - action: sleep
+    duration: "1s"
+
+  # 3. Check authentication status with detailed info
+  - id: check_auth
+    action: eval
+    script: |
+      (function() {
+        // Check if still loading
+        var isLoading = document.querySelector('progress[max="100"]') !== null ||
+                        document.body.innerText.includes('Loading your chats');
+        
+        if (isLoading) {
+          return {
+            authorized: false,
+            status: 'loading',
+            reason: 'Page is still loading'
+          };
+        }
+        
+        // Check for authenticated state (chat list pane visible)
+        var paneExists = document.querySelector('#pane-side') !== null ||
+                         document.querySelector('[data-testid="chat-list"]') !== null ||
+                         document.querySelector('div[aria-label="Chat list"]') !== null;
+        
+        if (paneExists) {
+          return {
+            authorized: true,
+            status: 'authenticated',
+            reason: 'Chat pane visible'
+          };
+        }
+        
+        // Check for QR code login screen
+        var qrCodeVisible = document.querySelector("canvas[aria-label='Scan this QR code to link a device!']") !== null ||
+                            document.querySelector('canvas[aria-label="Scan me!"]') !== null;
+        
+        // Check for phone number entry screen
+        var phoneEntry = document.body.innerText.includes('Enter phone number') ||
+                         document.querySelector('input[aria-label="Type your phone number."]') !== null;
+        
+        // Check for pairing code entry
+        var codeEntry = document.body.innerText.includes('Enter code on phone') ||
+                        document.querySelector('[aria-details="link-device-phone-number-code-screen-instructions"]') !== null;
+        
+        // Check for general login screen
+        var loginScreen = qrCodeVisible ||
+                          document.body.innerText.includes('Log into WhatsApp Web') ||
+                          document.body.innerText.includes('Use WhatsApp on your computer');
+        
+        if (qrCodeVisible) {
+          return {
+            authorized: false,
+            status: 'qr_ready',
+            reason: 'QR code displayed - waiting for scan'
+          };
+        }
+        
+        if (phoneEntry) {
+          return {
+            authorized: false,
+            status: 'phone_entry',
+            reason: 'Phone number entry screen'
+          };
+        }
+        
+        if (codeEntry) {
+          return {
+            authorized: false,
+            status: 'code_entry',
+            reason: 'Verification code entry screen'
+          };
+        }
+        
+        if (loginScreen) {
+          return {
+            authorized: false,
+            status: 'login_screen',
+            reason: 'Login screen displayed'
+          };
+        }
+        
+        return {
+          authorized: false,
+          status: 'unknown',
+          reason: 'Unable to determine state'
+        };
+      })();
+    store_as: auth_status
+
+  # 4. Get sender ID if authenticated
+  - action: condition
+    if: "{{store.auth_status.authorized}} == true"
+    then:
+      - id: get_sender_id
+        action: eval
+        script: |
+          (function() {
+            var wid = localStorage.getItem('last-wid') || localStorage.getItem('last-wid-md') || '';
+            wid = wid.trim().replace(/^"|"$/g, '');
+            if (wid) {
+              return wid.split('@')[0].split(':')[0];
+            }
+            return null;
+          })();
+        store_as: sender_id
+    else:
+      - action: eval
+        script: "null"
+        store_as: sender_id
+
+  - action: log
+    message: "Auth status: {{store.auth_status.status}} - {{store.auth_status.reason}}"
+
+output:
+  authorized: "{{store.auth_status.authorized}}"
+  status: "{{store.auth_status.status}}"
+  reason: "{{store.auth_status.reason}}"
+  sender_id: "{{store.sender_id}}"

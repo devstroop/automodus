@@ -1,0 +1,112 @@
+# WhatsApp QR Code Login Workflow
+#
+# Authenticates to WhatsApp Web using QR code.
+# Returns the QR code image data (base64) for display.
+#
+# Usage:
+#   - Call this workflow to get the QR code
+#   - Display the QR code to the user
+#   - User scans with their phone
+#   - Check auth status with check_status.yaml
+
+name: whatsapp_qr_login
+version: "1.0"
+description: Get WhatsApp Web QR code for authentication
+
+browser:
+  headless: false
+  data_dir: "data/whatsapp_profile"
+  width: 1280
+  height: 800
+
+on:
+  api:
+    path: /whatsapp/auth/qr
+    method: GET
+
+vars:
+  whatsapp_url: "https://web.whatsapp.com"
+  qr_canvas_selector: "canvas[aria-label='Scan this QR code to link a device!']"
+  auth_pane_selector: "#pane-side"
+  qr_reload_selector: "[data-icon='refresh-large']"
+
+steps:
+  # 1. Navigate to WhatsApp Web
+  - id: navigate
+    action: goto
+    url: "{{vars.whatsapp_url}}"
+
+  # 2. Wait for page to stabilize
+  - id: wait_initial
+    action: sleep
+    duration: "2s"
+
+  # 3. Check if already authenticated
+  - id: check_already_auth
+    action: eval
+    script: |
+      (function() {
+        return document.querySelector('#pane-side') !== null;
+      })();
+    store_as: is_authenticated
+
+  # 4. If already authenticated, return early
+  - action: condition
+    if: "{{store.is_authenticated}} == true"
+    then:
+      - action: log
+        message: "Already authenticated to WhatsApp Web"
+      - action: eval
+        script: "({ status: 'already_authenticated', qr_code: null })"
+        store_as: result
+    else:
+      # 5. Wait for QR code to appear
+      - id: wait_for_qr
+        action: wait_for
+        selector: "{{vars.qr_canvas_selector}}"
+        timeout: "20s"
+        on_failure:
+          # Try to reload QR if expired
+          - action: click
+            selector: "{{vars.qr_reload_selector}}"
+            if: "document.querySelector('{{vars.qr_reload_selector}}') !== null"
+          - action: wait_for
+            selector: "{{vars.qr_canvas_selector}}"
+            timeout: "15s"
+
+      # 6. Extract QR code as base64
+      - id: extract_qr
+        action: eval
+        script: |
+          (function() {
+            var canvas = document.querySelector("canvas[aria-label='Scan this QR code to link a device!']");
+            if (canvas) {
+              return canvas.toDataURL('image/png').split(',')[1];
+            }
+            return null;
+          })();
+        store_as: qr_base64
+
+      # 7. Build result
+      - action: eval
+        script: |
+          ({
+            status: '{{store.qr_base64}}' ? 'qr_ready' : 'qr_not_found',
+            qr_code: '{{store.qr_base64}}' || null
+          })
+        store_as: result
+
+  - action: log
+    message: "QR code retrieval completed with status: {{store.result.status}}"
+
+output:
+  status: "{{store.result.status}}"
+  qr_code: "{{store.result.qr_code}}"
+  is_authenticated: "{{store.is_authenticated}}"
+
+on_error:
+  screenshot: true
+  emit:
+    event: whatsapp_qr_error
+    data:
+      error: "Failed to retrieve QR code"

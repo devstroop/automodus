@@ -1,0 +1,126 @@
+# WhatsApp Logout Workflow
+#
+# Logs out from WhatsApp Web.
+
+name: whatsapp_logout
+version: "1.0"
+description: Logout from WhatsApp Web
+
+browser:
+  headless: false
+  data_dir: "data/whatsapp_profile"
+
+on:
+  api:
+    path: /whatsapp/auth/logout
+    method: POST
+
+vars:
+  whatsapp_url: "https://web.whatsapp.com"
+  menu_button_selector: "button[title='Menu']"
+  logout_button_selector: "[aria-label='Log out']"
+  logout_confirm_selector: "[aria-label='Log out?']"
+
+steps:
+  # 1. Ensure we're on WhatsApp Web
+  - id: navigate
+    action: goto
+    url: "{{vars.whatsapp_url}}"
+
+  # 2. Check if authenticated
+  - id: check_auth
+    action: eval
+    script: "document.querySelector('#pane-side') !== null"
+    store_as: is_authenticated
+
+  # 3. If not authenticated, return
+  - action: condition
+    if: "{{store.is_authenticated}} == false"
+    then:
+      - action: log
+        message: "Not authenticated, nothing to logout"
+      - action: eval
+        script: "({ status: 'not_authenticated', success: false })"
+        store_as: result
+    else:
+      # 4. Click menu button
+      - id: click_menu
+        action: eval
+        script: |
+          (function() {
+            var menuBtn = document.querySelector('button[title="Menu"]') ||
+                          document.querySelector('[data-testid="menu"]') ||
+                          document.querySelector('span[data-icon="menu"]')?.closest('button');
+            if (menuBtn) { menuBtn.click(); return true; }
+            return false;
+          })();
+        store_as: menu_clicked
+
+      - action: sleep
+        duration: "500ms"
+
+      # 5. Click logout in menu
+      - id: click_logout
+        action: eval
+        script: |
+          (function() {
+            var logoutBtn = document.querySelector('[aria-label="Log out"]') ||
+                            Array.from(document.querySelectorAll('div[role="button"]'))
+                              .find(el => el.innerText.includes('Log out'));
+            if (logoutBtn) { logoutBtn.click(); return true; }
+            return false;
+          })();
+        store_as: logout_clicked
+
+      - action: sleep
+        duration: "500ms"
+
+      # 6. Confirm logout if dialog appears
+      - id: confirm_logout
+        action: eval
+        script: |
+          (function() {
+            var confirmDialog = document.querySelector('[aria-label="Log out?"]');
+            if (confirmDialog) {
+              var confirmBtn = confirmDialog.querySelector('button') ||
+                               confirmDialog.querySelector('div[role="button"]');
+              if (confirmBtn) {
+                confirmBtn.click();
+                return true;
+              }
+            }
+            // Also try clicking generic confirm button
+            var btns = document.querySelectorAll('[role="dialog"] button');
+            for (var btn of btns) {
+              if (btn.innerText.includes('Log out')) {
+                btn.click();
+                return true;
+              }
+            }
+            return false;
+          })();
+
+      - action: sleep
+        duration: "2s"
+
+      # 7. Verify logged out
+      - id: verify_logout
+        action: eval
+        script: |
+          (function() {
+            var stillAuth = document.querySelector('#pane-side') !== null;
+            var loginVisible = document.querySelector("canvas[aria-label='Scan this QR code to link a device!']") !== null ||
+                               document.body.innerText.includes('Log into WhatsApp Web');
+            return {
+              status: loginVisible ? 'logged_out' : (stillAuth ? 'logout_failed' : 'logged_out'),
+              success: loginVisible || !stillAuth
+            };
+          })();
+        store_as: result
+
+  - action: log
+    message: "Logout completed with status: {{store.result.status}}"
+
+output:
+  status: "{{store.result.status}}"
+  success: "{{store.result.success}}"

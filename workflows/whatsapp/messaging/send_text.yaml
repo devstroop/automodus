@@ -1,0 +1,179 @@
+# WhatsApp Send Text Message Workflow
+#
+# Sends a text message to a WhatsApp contact.
+#
+# Usage:
+#   phone: Phone number with country code (e.g., "+919876543210")
+#   message: Text message to send (supports multiline)
+
+name: whatsapp_send_text
+version: "1.0"
+description: Send a text message via WhatsApp
+
+browser:
+  headless: false
+  data_dir: "data/whatsapp_profile"
+
+on:
+  api:
+    path: /whatsapp/send/text
+    method: POST
+
+params:
+  phone:
+    type: string
+    required: true
+    description: "Phone number with country code (e.g., +919876543210)"
+  message:
+    type: string
+    required: true
+    description: "Text message to send"
+
+vars:
+  whatsapp_url: "https://web.whatsapp.com"
+  message_input_selector: "#app #main footer div[aria-placeholder='Type a message']"
+  send_button_selector: "button[aria-label='Send']"
+  invalid_phone_dialog: "#app div[data-animate-modal-popup='true'] div[data-animate-modal-body='true']"
+
+steps:
+  # 1. Ensure we're on WhatsApp Web
+  - id: navigate
+    action: goto
+    url: "{{vars.whatsapp_url}}"
+
+  # 2. Check authorization
+  - id: check_auth
+    action: eval
+    script: "document.querySelector('#pane-side') !== null"
+    store_as: is_authenticated
+
+  - action: condition
+    if: "{{store.is_authenticated}} == false"
+    then:
+      - action: log
+        message: "Not authenticated to WhatsApp"
+      - action: eval
+        script: "({ status: 'not_authenticated', success: false, error: 'Please authenticate first' })"
+        store_as: result
+    else:
+      # 3. Navigate to chat using WhatsApp API deep link
+      - id: navigate_to_chat
+        action: eval
+        script: |
+          (function() {
+            var phone = '{{params.phone}}'.replace(/[^\d+]/g, '').replace(/^\+/, '');
+            
+            // Create hidden link and click it
+            var loader = document.querySelector('#phoneLoaderParent');
+            if (!loader) {
+              document.querySelector('#pane-side').innerHTML += '<div id="phoneLoaderParent"></div>';
+            }
+            document.querySelector('#phoneLoaderParent').innerHTML = 
+              '<a id="phoneLoader" href="https://api.whatsapp.com/send?phone=' + phone + '" style="display:none"></a>';
+            document.querySelector('#phoneLoader').click();
+            document.querySelector('#phoneLoaderParent').remove();
+            return true;
+          })();
+
+      - action: sleep
+        duration: "2s"
+
+      # 4. Check for invalid phone number error
+      - id: check_invalid_phone
+        action: eval
+        script: |
+          (function() {
+            var dialog = document.querySelector('#app div[data-animate-modal-popup="true"] div[data-animate-modal-body="true"] div');
+            if (dialog && dialog.innerHTML.trim() === 'Phone number shared via url is invalid.') {
+              // Dismiss the dialog
+              var btns = document.querySelectorAll('#app div[data-animate-modal-popup="true"] button');
+              if (btns.length > 0) btns[btns.length - 1].click();
+              return true;
+            }
+            return false;
+          })();
+        store_as: is_invalid_phone
+
+      - action: condition
+        if: "{{store.is_invalid_phone}} == true"
+        then:
+          - action: eval
+            script: "({ status: 'invalid_phone', success: false, error: 'Invalid phone number' })"
+            store_as: result
+        else:
+          # 5. Wait for message input to appear
+          - id: wait_for_input
+            action: wait_for
+            selector: "{{vars.message_input_selector}}"
+            timeout: "10s"
+            on_failure:
+              - action: eval
+                script: "({ status: 'chat_not_found', success: false, error: 'Could not open chat' })"
+                store_as: result
+
+          # 6. Type the message (handling multiline)
+          - id: type_message
+            action: eval
+            script: |
+              (function() {
+                var input = document.querySelector("#app #main footer div[aria-placeholder='Type a message']");
+                if (!input) return false;
+                
+                input.focus();
+                
+                // Split message by newlines and insert each line
+                var lines = '{{params.message}}'.split('\\n');
+                for (var i = 0; i < lines.length; i++) {
+                  document.execCommand('insertText', false, lines[i]);
+                  if (i < lines.length - 1) {
+                    // Insert line break for multiline messages
+                    document.execCommand('insertLineBreak');
+                  }
+                }
+                return true;
+              })();
+            store_as: typed
+
+          - action: sleep
+            duration: "300ms"
+
+          # 7. Click send button
+          - id: click_send
+            action: eval
+            script: |
+              (function() {
+                var btn = document.querySelector('button[aria-label="Send"]') ||
+                          document.querySelector('span[data-icon="send"]')?.closest('button');
+                if (btn) { btn.click(); return true; }
+                return false;
+              })();
+            store_as: send_clicked
+
+          - action: condition
+            if: "{{store.send_clicked}} == true"
+            then:
+              - action: sleep
+                duration: "500ms"
+              - action: eval
+                script: "({ status: 'sent', success: true })"
+                store_as: result
+            else:
+              - action: eval
+                script: "({ status: 'send_failed', success: false, error: 'Send button not found' })"
+                store_as: result
+
+  - action: log
+    message: "Send text completed: {{store.result.status}}"
+
+output:
+  status: "{{store.result.status}}"
+  success: "{{store.result.success}}"
+  error: "{{store.result.error}}"
+  phone: "{{params.phone}}"
+
+on_error:
+  screenshot: true
+  emit:
+    event: whatsapp_send_error
+    data:
+      phone: "{{params.phone}}"

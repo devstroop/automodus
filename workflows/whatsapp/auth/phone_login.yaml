@@ -1,0 +1,213 @@
+# WhatsApp Phone Number Login Workflow
+#
+# Authenticates to WhatsApp Web using phone number + verification code.
+# Returns the verification code that needs to be entered on the user's phone.
+#
+# Usage:
+#   - Call with phone_number parameter (e.g., "+919876543210")
+#   - Workflow returns the verification code
+#   - User enters the code on their WhatsApp mobile app
+#   - Check auth status with check_status.yaml
+
+name: whatsapp_phone_login
+version: "1.0"
+description: Login to WhatsApp Web using phone number
+
+browser:
+  headless: false
+  data_dir: "data/whatsapp_profile"
+  width: 1280
+  height: 800
+
+on:
+  api:
+    path: /whatsapp/auth/phone
+    method: POST
+
+params:
+  phone_number:
+    type: string
+    required: true
+    description: "Phone number with country code (e.g., +919876543210)"
+
+vars:
+  whatsapp_url: "https://web.whatsapp.com"
+  auth_pane_selector: "#pane-side"
+  phone_input_selector: "[aria-label='Type your phone number.']"
+  link_code_selector: "[aria-details='link-device-phone-number-code-screen-instructions']"
+
+steps:
+  # 1. Navigate to WhatsApp Web
+  - id: navigate
+    action: goto
+    url: "{{vars.whatsapp_url}}"
+
+  # 2. Wait for page to load
+  - id: wait_initial
+    action: sleep
+    duration: "3s"
+
+  # 3. Check if already authenticated
+  - id: check_already_auth
+    action: eval
+    script: "document.querySelector('#pane-side') !== null"
+    store_as: is_authenticated
+
+  # 4. If already authenticated, return early
+  - action: condition
+    if: "{{store.is_authenticated}} == true"
+    then:
+      - action: eval
+        script: |
+          ({ status: 'already_authenticated', verification_code: null })
+        store_as: result
+    else:
+      # 5. Check if we need to switch to phone login
+      - id: check_login_screen
+        action: eval
+        script: |
+          (function() {
+            var hasQrLogin = document.body.innerText.includes('Log into WhatsApp Web') ||
+                             document.querySelector("canvas[aria-label='Scan this QR code to link a device!']");
+            return !!hasQrLogin;
+          })();
+        store_as: on_qr_screen
+
+      # 6. Switch to phone number login if on QR screen
+      - action: condition
+        if: "{{store.on_qr_screen}} == true"
+        then:
+          - action: eval
+            script: |
+              (function() {
+                var links = document.querySelectorAll('span[role="button"]');
+                for (var link of links) {
+                  if (link.innerText.includes('phone number')) {
+                    link.click();
+                    return true;
+                  }
+                }
+                return false;
+              })();
+          - action: sleep
+            duration: "2s"
+
+      # 7. Wait for phone input
+      - id: wait_phone_input
+        action: wait_for
+        selector: "{{vars.phone_input_selector}}"
+        timeout: "10s"
+        on_failure:
+          # Try alternate selector
+          - action: wait_for
+            selector: "input[type='tel']"
+            timeout: "5s"
+
+      # 8. Clear and type phone number
+      - id: focus_input
+        action: click
+        selector: "{{vars.phone_input_selector}}"
+
+      - id: clear_input
+        action: eval
+        script: |
+          (function() {
+            var input = document.querySelector("[aria-label='Type your phone number.']") ||
+                        document.querySelector("input[type='tel']");
+            if (input) {
+              input.focus();
+              input.select();
+              document.execCommand('delete');
+              return true;
+            }
+            return false;
+          })();
+
+      - id: type_phone
+        action: type
+        selector: "{{vars.phone_input_selector}}"
+        text: "{{params.phone_number}}"
+        clear: false
+
+      - action: sleep
+        duration: "1s"
+
+      # 9. Click Next button
+      - id: click_next
+        action: eval
+        script: |
+          (function() {
+            var nextBtn = document.querySelector('text="Next"') ||
+                          Array.from(document.querySelectorAll('div[role="button"]')).find(el => el.innerText === 'Next');
+            if (nextBtn) { nextBtn.click(); return true; }
+            var submit = document.querySelector('button[type="submit"]');
+            if (submit) { submit.click(); return true; }
+            return false;
+          })();
+
+      # 10. Wait for code screen
+      - id: wait_code_screen
+        action: sleep
+        duration: "3s"
+
+      # 11. Extract verification code
+      - id: extract_code
+        action: eval
+        script: |
+          (function() {
+            // Method 1: data-link-code attribute
+            var linkCodeEl = document.querySelector('[data-link-code]');
+            if (linkCodeEl) {
+              var code = linkCodeEl.getAttribute('data-link-code');
+              if (code && code.length >= 6) return code;
+            }
+            
+            // Method 2: Look for code pattern in aria-details element
+            var codeEl = document.querySelector('[aria-details="link-device-phone-number-code-screen-instructions"]');
+            if (codeEl) {
+              var spans = codeEl.querySelectorAll('span[dir="ltr"]');
+              var codeDigits = [];
+              spans.forEach(function(span) {
+                var text = span.innerText.trim();
+                if (text.match(/^[A-Z0-9]$/)) {
+                  codeDigits.push(text);
+                }
+              });
+              if (codeDigits.length >= 6) return codeDigits.join('');
+            }
+            
+            // Method 3: Look for code pattern in body
+            var bodyText = document.body.textContent || '';
+            var codeMatch = bodyText.match(/\b[A-Z0-9]{3,4}[-][A-Z0-9]{3,4}\b/);
+            if (codeMatch) return codeMatch[0];
+            
+            return null;
+          })();
+        store_as: verification_code
+        retry:
+          max: 5
+          delay_ms: 1000
+
+      # 12. Build result
+      - action: eval
+        script: |
+          ({
+            status: '{{store.verification_code}}' ? 'code_ready' : 'code_not_found',
+            verification_code: '{{store.verification_code}}' || null
+          })
+        store_as: result
+
+  - action: log
+    message: "Phone login completed with status: {{store.result.status}}"
+
+output:
+  status: "{{store.result.status}}"
+  verification_code: "{{store.result.verification_code}}"
+  is_authenticated: "{{store.is_authenticated}}"
+
+on_error:
+  screenshot: true
+  emit:
+    event: whatsapp_phone_login_error
+    data:
+      error: "Failed to complete phone login"

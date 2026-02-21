@@ -18,8 +18,13 @@ pub struct LoggingConfig {
 
 impl LoggingConfig {
     pub fn new() -> Self {
+        // Default filter suppresses noisy chromiumoxide WebSocket errors
+        // These are harmless messages when Chrome sends protocol messages
+        // that chromiumoxide doesn't have types for
+        let default_filter = "info,chromiumoxide::conn=warn,chromiumoxide::handler=warn";
+
         Self {
-            filter: std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()),
+            filter: std::env::var("RUST_LOG").unwrap_or_else(|_| default_filter.to_string()),
             json: std::env::var("LOG_JSON")
                 .map(|v| v == "true" || v == "1")
                 .unwrap_or(false),
