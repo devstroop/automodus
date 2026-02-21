@@ -1,0 +1,106 @@
+[server]
+host = "0.0.0.0"
+port = 3000
+
+[browser]
+headless = true
+timeout_ms = 30000
+# Browser arguments for better performance and compatibility
+args = [
+    "--disable-blink-features=AutomationControlled",
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-extensions",
+    "--disable-popup-blocking",
+    "--disable-gpu",
+    "--disable-software-rasterizer"
+]
+
+[auth]
+# Static secret key for scripts/CI/CD pipelines (CHANGE IN PRODUCTION)
+secret_key = "change-this-secret-key-in-production"
+# JWT secret key for signing tokens (CHANGE IN PRODUCTION - min 32 chars)
+jwt_secret = "your-super-secret-jwt-key-change-this-in-production-32chars"
+# Access token expiry in hours
+token_expiry_hours = 24
+# Refresh token expiry in days
+refresh_token_expiry_days = 7
+# NOTE: Admin user is created on first run via setup token (no default credentials)
+
+[logging]
+level = "info"
+# Available levels: trace, debug, info, warn, error
+
+[cache]
+default_ttl_minutes = 15
+
+[cors]
+allow_origins = ["*"]
+allow_methods = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+allow_headers = ["authorization", "content-type"]
+
+[limits]
+# Maximum concurrent requests
+max_concurrent_requests = 50
+# Request timeout in milliseconds
+request_timeout_ms = 30000
+# Maximum file upload size in bytes (10MB)
+max_upload_size = 10485760
+
+# Environment Configuration (can be overridden by environment variables)
+[environment]
+# Environment: "development", "staging", or "production"
+environment = "development"
+# Log level (override with RUST_LOG env var)
+# Accepts: "trace", "debug", "info", "warn", "error" or full format "automodus=debug,hyper=info"
+log_level = "info"
+health_check_interval = 30
+
+# =============================================================================
+# Web UI - Built-in HTMX dashboard (served from templates)
+# =============================================================================
+[web]
+# Enable Web UI serving (set to false for API-only mode)
+enabled = true
+
+# =============================================================================
+# Swagger UI - Interactive API documentation
+# =============================================================================
+[swagger]
+# Enable Swagger UI (set to false to disable API docs in production)
+enabled = true
+# Swagger UI path
+path = "/api-docs"
+
+# =============================================================================
+# MCP - Model Context Protocol for AI agent integration
+# =============================================================================
+[mcp]
+# Enable MCP server (requires --features mcp at compile time)
+enabled = true
+# MCP endpoint path
+endpoint = "/mcp"
+# Enable SSE (Server-Sent Events) transport
+sse_enabled = true
+# SSE heartbeat interval in seconds
+heartbeat_interval_secs = 30
+
+# =============================================================================
+# Webhooks - Fires HTTP callbacks on message.received events
+# =============================================================================
+[webhooks]
+# Enable webhook callbacks
+enabled = false
+# Request timeout in milliseconds
+timeout_ms = 5000
+# Number of retry attempts on failure
+retry_count = 3
+# Delay between retries in milliseconds
+retry_delay_ms = 1000
+
+# Example webhook endpoint:
+# [[webhooks.endpoints]]
+# url = "https://your-server.com/webhook/automodus"
+# secret = "your-hmac-secret-for-signature-verification"
+# headers = { "X-Custom-Header" = "value" }

@@ -1,0 +1,33 @@
+services:
+  automodus:
+    build: .
+    container_name: automodus
+    ports:
+      - "3000:3000"
+    environment:
+      - AUTOMODUS_HOST=0.0.0.0
+      - AUTOMODUS_PORT=3000
+      - AUTOMODUS_SECRET=${AUTOMODUS_SECRET:-your-secure-secret}
+      - AUTOMODUS_FLOWS=/app/flows
+      - RUST_LOG=info
+    volumes:
+      # Persist browser session data
+      - automodus-data:/app/data
+      # Flow definitions
+      - ./flows:/app/flows:ro
+      # Optional: mount custom config
+      # - ./config/app.toml:/app/config/app.toml:ro
+    restart: unless-stopped
+    # Required for Chrome to work in container
+    security_opt:
+      - seccomp=unconfined
+    shm_size: '2gb'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  automodus-data:
