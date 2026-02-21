@@ -1,0 +1,123 @@
+[package]
+name = "automodus"
+version = "0.1.0"
+edition = "2021"
+authors = ["Devstroop Technologies <info@devstroop.com>"]
+description = "Automodus - Programmable workflow automation platform with YAML workflows"
+license = "MIT"
+repository = "https://github.com/devstroop/automodus"
+keywords = ["automation", "browser", "workflow", "yaml", "orchestration"]
+categories = ["web-programming", "asynchronous", "development-tools"]
+
+# Library configuration
+[lib]
+name = "automodus"
+path = "src/lib.rs"
+
+# Binary configuration
+[[bin]]
+name = "automodus"
+path = "src/bin/automodus.rs"
+
+# ============================================================================
+# Features
+# ============================================================================
+
+[features]
+default = []
+
+# MCP (Model Context Protocol) server - optional
+mcp = ["async-stream"]
+
+[dependencies]
+# ============================================================================
+# Core Dependencies (always included)
+# ============================================================================
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+futures-util = "0.3"
+
+# Browser automation
+chromiumoxide = { version = "0.5", features = ["tokio-runtime"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+
+# Configuration
+config = "0.14"
+toml = "0.8"
+
+# Logging and tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Utilities
+uuid = { version = "1.0", features = ["v4", "serde"] }
+base64 = "0.22"
+regex = "1.10"
+glob = "0.3"
+
+# HTTP client (for MCP client / external integrations)
+reqwest = { version = "0.11", default-features = false, features = ["json", "multipart", "rustls-tls"] }
+
+# MIME type detection for file uploads
+mime_guess = "2.0"
+
+# SQLite database
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# HMAC for webhook signatures
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+
+# JWT for local authentication
+jsonwebtoken = "9.3"
+bcrypt = "0.15"
+
+# Web framework
+axum = { version = "0.7", features = ["multipart", "tokio"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# OpenAPI documentation
+utoipa = { version = "4.0", features = ["axum_extras", "chrono"] }
+utoipa-swagger-ui = { version = "7.0", features = ["axum"] }
+
+# ============================================================================
+# Optional Dependencies
+# ============================================================================
+
+# Async streaming (MCP SSE) - optional
+async-stream = { version = "0.3", optional = true }
+
+[dev-dependencies]
+tower-test = "0.4"
+tokio-test = "0.4"
+tempfile = "3.0"
+
+# ============================================================================
+# Build Profiles
+# ============================================================================
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.dev]
+opt-level = 0
+debug = true

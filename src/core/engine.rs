@@ -1,0 +1,476 @@
+//! Workflow Execution Engine
+//!
+//! Executes workflows step by step with browser automation.
+
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::sync::Arc;
+use thiserror::Error;
+use tokio::sync::RwLock;
+use tracing::{debug, error, info, warn};
+
+use crate::actions::{ActionError, ActionOutput, ActionRegistry, BrowserHandle};
+use crate::utils::yaml_to_json;
+use crate::workflow::{CompleteHandler, ErrorHandler, Step, Workflow};
+
+use super::context::ExecutionContext;
+use super::template::TemplateEngine;
+
+/// Workflow execution error
+#[derive(Debug, Error)]
+pub enum WorkflowError {
+    #[error("Workflow not found: {0}")]
+    NotFound(String),
+
+    #[error("Action not found: {0}")]
+    ActionNotFound(String),
+
+    #[error("Action failed: {0}")]
+    ActionFailed(#[from] ActionError),
+
+    #[error("Condition failed: {0}")]
+    ConditionFailed(String),
+
+    #[error("Max retries exceeded for step {0}")]
+    MaxRetries(String),
+
+    #[error("Step timeout: {0}")]
+    Timeout(String),
+
+    #[error("Workflow aborted: {0}")]
+    Aborted(String),
+
+    #[error("Invalid configuration: {0}")]
+    InvalidConfig(String),
+
+    #[error("Browser error: {0}")]
+    BrowserError(String),
+}
+
+/// Result of a workflow execution
+#[derive(Debug, Clone)]
+pub struct WorkflowResult {
+    /// Workflow name
+    pub workflow_name: String,
+
+    /// Workflow execution ID
+    pub workflow_id: String,
+
+    /// Whether execution succeeded
+    pub success: bool,
+
+    /// Output data
+    pub output: Value,
+
+    /// Events emitted during execution
+    pub events: Vec<(String, Value)>,
+
+    /// Error message if failed
+    pub error: Option<String>,
+
+    /// Execution duration in milliseconds
+    pub duration_ms: i64,
+
+    /// Number of steps executed
+    pub steps_executed: usize,
+}
+
+/// Workflow execution engine
+pub struct WorkflowEngine {
+    /// Action registry
+    registry: ActionRegistry,
+
+    /// Event handlers (event name -> list of workflows to trigger)
+    event_handlers: Arc<RwLock<HashMap<String, Vec<String>>>>,
+}
+
+impl WorkflowEngine {
+    /// Create a new workflow engine
+    pub fn new() -> Self {
+        Self {
+            registry: ActionRegistry::new(),
+            event_handlers: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Register an event handler
+    pub async fn on_event(&self, event: &str, workflow_name: &str) {
+        let mut handlers = self.event_handlers.write().await;
+        handlers
+            .entry(event.to_string())
+            .or_default()
+            .push(workflow_name.to_string());
+    }
+
+    /// Execute a workflow
+    pub async fn execute(
+        &self,
+        workflow: &Workflow,
+        browser: &dyn BrowserHandle,
+        params: HashMap<String, Value>,
+    ) -> Result<WorkflowResult, WorkflowError> {
+        let instance_id = uuid::Uuid::new_v4().to_string();
+
+        info!(
+            workflow = %workflow.name,
+            instance_id = %instance_id,
+            "Starting workflow execution"
+        );
+
+        // Create execution context
+        let mut ctx = ExecutionContext::new(&workflow.name, &instance_id);
+
+        // Set initial variables from workflow definition
+        if let Some(vars) = &workflow.vars {
+            for (key, value) in vars {
+                ctx.vars.insert(key.clone(), yaml_to_json(value));
+            }
+        }
+
+        // Set trigger parameters
+        ctx.params = params;
+
+        // Execute steps
+        let result = self.execute_steps(workflow, browser, &mut ctx).await;
+
+        // Build result
+        let duration_ms = ctx.duration().num_milliseconds();
+
+        match result {
+            Ok(output) => {
+                info!(
+                    workflow = %workflow.name,
+                    duration_ms = duration_ms,
+                    steps = ctx.step_index,
+                    "Workflow completed successfully"
+                );
+
+                Ok(WorkflowResult {
+                    workflow_name: workflow.name.clone(),
+                    workflow_id: ctx.workflow_id.clone(),
+                    success: true,
+                    output,
+                    events: ctx.events.clone(),
+                    error: None,
+                    duration_ms,
+                    steps_executed: ctx.step_index,
+                })
+            }
+            Err(e) => {
+                error!(
+                    workflow = %workflow.name,
+                    error = %e,
+                    step = ctx.step_index,
+                    "Workflow execution failed"
+                );
+
+                // Handle error callback if defined
+                if let Some(on_error) = &workflow.on_error {
+                    self.handle_error(on_error, &e, browser, &mut ctx).await;
+                }
+
+                Ok(WorkflowResult {
+                    workflow_name: workflow.name.clone(),
+                    workflow_id: ctx.workflow_id.clone(),
+                    success: false,
+                    output: json!({ "error": e.to_string() }),
+                    events: ctx.events.clone(),
+                    error: Some(e.to_string()),
+                    duration_ms,
+                    steps_executed: ctx.step_index,
+                })
+            }
+        }
+    }
+
+    /// Execute all steps in a workflow
+    async fn execute_steps(
+        &self,
+        workflow: &Workflow,
+        browser: &dyn BrowserHandle,
+        ctx: &mut ExecutionContext,
+    ) -> Result<Value, WorkflowError> {
+        while ctx.step_index < workflow.steps.len() {
+            let step = &workflow.steps[ctx.step_index];
+
+            // Check condition
+            if let Some(condition) = &step.condition {
+                if !self.evaluate_condition(condition, ctx) {
+                    debug!(
+                        workflow = %workflow.name,
+                        step = ctx.step_index,
+                        "Step skipped due to condition"
+                    );
+                    ctx.next_step();
+                    continue;
+                }
+            }
+
+            // Execute step with retries
+            let output = self.execute_step_with_retry(step, browser, ctx).await?;
+
+            // Store output
+            if let Some(data) = &output.data {
+                if let Some(id) = &step.id {
+                    ctx.store_step_output(id, data.clone());
+                }
+            }
+
+            // Merge store values
+            for (key, value) in output.store {
+                ctx.store_value(key, value);
+            }
+
+            // Emit events
+            if let Some((event, data)) = output.emit {
+                ctx.emit_event(&event, data);
+            }
+
+            // Handle control flow
+            if output.skip {
+                info!(workflow = %workflow.name, "Workflow skipped by step");
+                break;
+            }
+
+            if let Some(goto_id) = output.goto {
+                // Find step index by ID
+                if let Some(idx) = workflow
+                    .steps
+                    .iter()
+                    .position(|s| s.id.as_deref() == Some(&goto_id))
+                {
+                    ctx.goto_step(idx);
+                    continue;
+                } else {
+                    return Err(WorkflowError::InvalidConfig(format!(
+                        "Step not found: {}",
+                        goto_id
+                    )));
+                }
+            }
+
+            ctx.next_step();
+        }
+
+        // Build output
+        let output = if let Some(output_defs) = &workflow.output {
+            ctx.build_output(output_defs)
+        } else {
+            // Default output: all stored values
+            Value::Object(
+                ctx.store
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+            )
+        };
+
+        // Handle on_complete callback
+        if let Some(on_complete) = &workflow.on_complete {
+            self.handle_complete(on_complete, browser, ctx).await;
+        }
+
+        Ok(output)
+    }
+
+    /// Execute a step with retry logic
+    async fn execute_step_with_retry(
+        &self,
+        step: &Step,
+        browser: &dyn BrowserHandle,
+        ctx: &mut ExecutionContext,
+    ) -> Result<ActionOutput, WorkflowError> {
+        let max_retries = step.retry.as_ref().map(|r| r.max.unwrap_or(3)).unwrap_or(0);
+
+        let retry_delay = step
+            .retry
+            .as_ref()
+            .map(|r| r.delay_ms.unwrap_or(1000))
+            .unwrap_or(1000);
+
+        let mut last_error = None;
+
+        for attempt in 0..=max_retries {
+            if attempt > 0 {
+                warn!(
+                    workflow = %ctx.workflow_name,
+                    step = ctx.step_index,
+                    attempt = attempt,
+                    "Retrying step"
+                );
+                tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay)).await;
+            }
+
+            match self.execute_step(step, browser, ctx).await {
+                Ok(output) => return Ok(output),
+                Err(e) => {
+                    if attempt < max_retries {
+                        warn!(
+                            workflow = %ctx.workflow_name,
+                            step = ctx.step_index,
+                            error = %e,
+                            "Step failed, will retry"
+                        );
+                        last_error = Some(e);
+                    } else {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            WorkflowError::ActionFailed(ActionError::Internal("Unknown error".into()))
+        }))
+    }
+
+    /// Execute a single step
+    async fn execute_step(
+        &self,
+        step: &Step,
+        browser: &dyn BrowserHandle,
+        ctx: &ExecutionContext,
+    ) -> Result<ActionOutput, WorkflowError> {
+        // Get action from registry
+        let action = self
+            .registry
+            .get(&step.action)
+            .ok_or_else(|| WorkflowError::ActionNotFound(step.action.clone()))?;
+
+        // Render parameters with template engine
+        let rendered_params = TemplateEngine::render_params(&step.params, ctx);
+
+        debug!(
+            workflow = %ctx.workflow_name,
+            step = ctx.step_index,
+            action = %step.action,
+            "Executing action"
+        );
+
+        // Create action context
+        let action_ctx = ctx.to_action_context(step.id.as_deref());
+
+        // Execute action
+        let output = action
+            .execute(&rendered_params, &action_ctx, browser)
+            .await?;
+
+        // Handle step-level emit
+        if let Some(emit) = &step.emit {
+            let mut result = output;
+            let data = json!({
+                "workflow": ctx.workflow_name,
+                "step": ctx.step_index,
+                "data": emit.data
+            });
+            result.emit = Some((emit.event.clone(), data));
+            return Ok(result);
+        }
+
+        Ok(output)
+    }
+
+    /// Evaluate a condition expression
+    fn evaluate_condition(&self, condition: &str, ctx: &ExecutionContext) -> bool {
+        // Render the condition with template values
+        let rendered = TemplateEngine::render(condition, ctx);
+
+        // Simple evaluation: check for truthy values
+        // TODO: Implement proper expression evaluation
+        match rendered.to_lowercase().as_str() {
+            "true" | "yes" | "1" => true,
+            "false" | "no" | "0" | "" => false,
+            _ => !rendered.is_empty() && !rendered.contains("{{"),
+        }
+    }
+
+    /// Handle error callback
+    async fn handle_error(
+        &self,
+        handler: &ErrorHandler,
+        error: &WorkflowError,
+        browser: &dyn BrowserHandle,
+        ctx: &mut ExecutionContext,
+    ) {
+        // Store error info
+        ctx.store_value(
+            "_error",
+            json!({
+                "message": error.to_string(),
+                "step": ctx.step_index,
+            }),
+        );
+
+        // Emit error event if specified
+        if let Some(emit) = &handler.emit {
+            ctx.emit_event(
+                &emit.event,
+                json!({
+                    "workflow": ctx.workflow_name,
+                    "error": error.to_string(),
+                    "step": ctx.step_index,
+                }),
+            );
+        }
+
+        // Take screenshot if requested
+        if handler.screenshot.unwrap_or(false) {
+            if let Ok(bytes) = browser.screenshot(false).await {
+                use base64::{engine::general_purpose::STANDARD, Engine};
+                ctx.store_value("_error_screenshot", Value::String(STANDARD.encode(&bytes)));
+            }
+        }
+
+        // Execute error steps if defined
+        if let Some(steps) = &handler.steps {
+            for step in steps {
+                if let Err(e) = self.execute_step(step, browser, ctx).await {
+                    error!(
+                        workflow = %ctx.workflow_name,
+                        error = %e,
+                        "Error handler step failed"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Handle completion callback
+    async fn handle_complete(
+        &self,
+        handler: &CompleteHandler,
+        browser: &dyn BrowserHandle,
+        ctx: &mut ExecutionContext,
+    ) {
+        // Emit completion event if specified
+        if let Some(emit) = &handler.emit {
+            ctx.emit_event(
+                &emit.event,
+                json!({
+                    "workflow": ctx.workflow_name,
+                    "duration_ms": ctx.duration().num_milliseconds(),
+                    "steps": ctx.step_index,
+                }),
+            );
+        }
+
+        // Execute completion steps if defined
+        if let Some(steps) = &handler.steps {
+            for step in steps {
+                if let Err(e) = self.execute_step(step, browser, ctx).await {
+                    error!(
+                        workflow = %ctx.workflow_name,
+                        error = %e,
+                        "Completion handler step failed"
+                    );
+                }
+            }
+        }
+    }
+}
+
+impl Default for WorkflowEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}

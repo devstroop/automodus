@@ -1,0 +1,55 @@
+# Rust
+target/
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Environment files
+.env
+docker/.env
+.env.local
+.env.production
+
+# SSL certificates
+docker/ssl/
+*.pem
+*.key
+*.crt
+
+# Backup files
+backups/
+*.backup
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+
+# Docker volumes
+docker/data/
+docker/volumes/
+
+# Editor files
+*~
+.#*
+\#*#
+
+# Local config overrides
+config/app.toml
+config/local.toml
+
+
+/data/*.db
+.playwright-mcp
