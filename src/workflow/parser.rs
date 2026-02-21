@@ -240,4 +240,47 @@ steps:
         assert!(vars.contains_key("base_url"));
         assert!(vars.contains_key("timeout"));
     }
+
+    #[test]
+    fn test_parse_whatsapp_workflows() {
+        use std::fs;
+
+        // List of WhatsApp workflow file paths relative to project root
+        let workflow_files = [
+            "workflows/whatsapp/auth/qr_login.yaml",
+            "workflows/whatsapp/auth/phone_login.yaml",
+            "workflows/whatsapp/auth/check_status.yaml",
+            "workflows/whatsapp/auth/logout.yaml",
+            "workflows/whatsapp/messaging/send.yaml",
+            "workflows/whatsapp/messaging/send_text.yaml",
+            "workflows/whatsapp/messaging/send_media.yaml",
+            "workflows/whatsapp/messaging/send_document.yaml",
+            "workflows/whatsapp/chat/get_chats.yaml",
+            "workflows/whatsapp/chat/get_messages.yaml",
+            "workflows/whatsapp/chat/watch_messages.yaml",
+            "workflows/whatsapp/chat/navigate.yaml",
+        ];
+
+        for file in workflow_files {
+            let path = std::path::Path::new(file);
+            if path.exists() {
+                let content = fs::read_to_string(path)
+                    .unwrap_or_else(|e| panic!("Failed to read {}: {}", file, e));
+
+                // Just verify YAML parses into our Workflow struct
+                let result: Result<super::super::schema::Workflow, _> =
+                    serde_yaml::from_str(&content);
+                assert!(
+                    result.is_ok(),
+                    "Failed to parse {}: {:?}",
+                    file,
+                    result.err()
+                );
+
+                let workflow = result.unwrap();
+                assert!(!workflow.name.is_empty(), "{} should have a name", file);
+                assert!(!workflow.steps.is_empty(), "{} should have steps", file);
+            }
+        }
+    }
 }

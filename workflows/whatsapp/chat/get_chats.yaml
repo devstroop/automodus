@@ -1,0 +1,155 @@
+# WhatsApp Get Chats Workflow
+#
+# Retrieves the list of visible chats from the WhatsApp Web sidebar.
+# Returns chat names, last messages, unread counts, and more.
+
+name: whatsapp_get_chats
+version: "1.0"
+description: Get list of WhatsApp chats
+
+browser:
+  headless: false
+  data_dir: "data/whatsapp_profile"
+
+on:
+  api:
+    path: /whatsapp/chats
+    method: GET
+
+params:
+  limit:
+    type: number
+    default: 50
+    description: "Maximum number of chats to return"
+
+vars:
+  whatsapp_url: "https://web.whatsapp.com"
+
+steps:
+  # 1. Ensure on WhatsApp Web
+  - id: navigate
+    action: goto
+    url: "{{vars.whatsapp_url}}"
+
+  # 2. Check authorization
+  - id: check_auth
+    action: eval
+    script: "document.querySelector('#pane-side') !== null"
+    store_as: is_authenticated
+
+  - action: condition
+    if: "{{store.is_authenticated}} == false"
+    then:
+      - action: eval
+        script: "({ chats: [], error: 'Not authenticated' })"
+        store_as: result
+    else:
+      # 3. Extract chat list from sidebar
+      - id: extract_chats
+        action: eval
+        script: |
+          (function() {
+            var chats = [];
+            var rows = document.querySelectorAll('[data-testid="cell-frame-container"], div[role="listitem"], div[role="row"]');
+            
+            rows.forEach(function(row, index) {
+              if (index >= {{params.limit}}) return;
+              
+              try {
+                // Get chat name
+                var nameEl = row.querySelector('[data-testid="cell-frame-title"] span') ||
+                             row.querySelector('span[title]') ||
+                             row.querySelector('[dir="auto"]');
+                
+                if (!nameEl) return;
+                
+                var name = nameEl.innerText || nameEl.getAttribute('title') || '';
+                if (!name || name === 'Loading…') return;
+                
+                // Get last message
+                var lastMsg = null;
+                var lastMsgContainer = row.querySelector('[data-testid="last-msg-status"]');
+                if (lastMsgContainer) {
+                  var parent = lastMsgContainer.closest('div');
+                  if (parent) {
+                    var spans = parent.querySelectorAll('span');
+                    for (var span of spans) {
+                      if (!span.querySelector('[data-icon]') && span.innerText && span.innerText.trim()) {
+                        lastMsg = span.innerText.trim();
+                        break;
+                      }
+                    }
+                  }
+                }
+                
+                // Get timestamp
+                var timeEl = row.querySelector('[data-testid="cell-frame-primary-detail"]');
+                var timestamp = timeEl ? timeEl.innerText : null;
+                
+                // Get unread count
+                var unreadEl = row.querySelector('[data-testid="icon-unread-count"]');
+                var unreadCount = 0;
+                if (unreadEl) {
+                  var text = unreadEl.innerText || '';
+                  var match = text.match(/\d+/);
+                  unreadCount = match ? parseInt(match[0]) : 0;
+                }
+                
+                // Check if group
+                var isGroup = row.querySelector('[data-icon="default-group"]') !== null;
+                
+                // Get avatar URL
+                var avatarEl = row.querySelector('img[src*="pps.whatsapp.net"]');
+                var avatarUrl = avatarEl ? avatarEl.src : null;
+                
+                // Try to extract chat ID
+                var chatId = null;
+                var el = row;
+                for (var i = 0; i < 5 && el; i++) {
+                  var dataId = el.getAttribute('data-id');
+                  if (dataId && dataId.includes('@')) {
+                    chatId = dataId;
+                    break;
+                  }
+                  el = el.parentElement;
+                }
+                
+                // Fallback: Extract phone from name
+                if (!chatId) {
+                  var cleanName = name.replace(/[^\d+]/g, '').replace(/^\+/, '');
+                  if (cleanName.length >= 10 && cleanName.length <= 15) {
+                    chatId = cleanName + '@c.us';
+                  } else {
+                    chatId = 'name:' + name;
+                  }
+                }
+                
+                chats.push({
+                  id: chatId,
+                  name: name,
+                  last_message: lastMsg,
+                  timestamp: timestamp,
+                  unread_count: unreadCount,
+                  is_group: isGroup,
+                  avatar_url: avatarUrl
+                });
+              } catch(e) {
+                // Skip problematic rows
+              }
+            });
+            
+            return { chats: chats, count: chats.length };
+          })();
+        store_as: result
+
+  - action: log
+    message: "Retrieved {{store.result.count}} chats"
+
+output:
+  chats: "{{store.result.chats}}"
+  count: "{{store.result.count}}"
+  authenticated: "{{store.is_authenticated}}"
+
+on_error:
+  emit:
+    event: whatsapp_get_chats_error
