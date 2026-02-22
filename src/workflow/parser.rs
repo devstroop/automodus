@@ -115,7 +115,10 @@ impl WorkflowParser {
                 }
             }
             "condition" => {
-                if !step.params.contains_key("if") {
+                // Note: 'if' key at step level is captured by step.condition (serde rename),
+                // not in params. Check both for compatibility.
+                let has_if = step.condition.is_some() || step.params.contains_key("if");
+                if !has_if {
                     anyhow::bail!("Step {} (condition): 'if' parameter is required", index);
                 }
                 if !step.params.contains_key("then") {
@@ -145,7 +148,8 @@ impl WorkflowParser {
             "tab.new" | "tab.switch" | "tab.close" => {}
             "back" | "forward" | "reload" => {}
             // HTTP actions
-            "http.get" | "http.post" | "http.put" | "http.patch" | "http.delete" | "http.request" => {}
+            "http.get" | "http.post" | "http.put" | "http.patch" | "http.delete"
+            | "http.request" => {}
             // Utility actions
             "log" | "debug" | "print" => {}
             "wait_upload" => {}
