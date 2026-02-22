@@ -4,17 +4,17 @@ This document outlines the debug mode implementation for automodus workflows.
 
 ## Current State
 
-| Component | Status | Gap |
-|-----------|--------|-----|
-| `DebugConfig` struct | ❌ Not implemented | Add to `workflow/schema.rs` |
-| `debug` field on Workflow | ❌ Not implemented | Schema change required |
-| `debug` field on Step | ❌ Not implemented | Schema change required |
-| CLI `--debug` flags | ❌ Not implemented | Add to arg parsing |
-| Engine debug context | ❌ Not implemented | Thread through `ExecutionContext` |
-| CDP console listener | ❌ Not implemented | Add to browser adapter |
-| CDP network listener | ❌ Not implemented | Add to browser adapter |
-| Element highlighting | ❌ Not implemented | JS injection in adapter |
-| Screenshot capture | ⚠️ Partial | Exists but not wired to debug |
+| Component | Status | Notes |
+|-----------|--------|-------|
+| `DebugConfig` struct | ✅ Implemented | `workflow/schema.rs` |
+| `debug` field on Workflow | ✅ Implemented | `workflow/schema.rs` |
+| `debug` field on Step | ✅ Implemented | `workflow/schema.rs` |
+| CLI `--debug` flags | ✅ Implemented | `bin/automodus.rs` |
+| Engine debug context | ✅ Implemented | `core/context.rs`, `core/engine.rs` |
+| CDP console listener | ⚠️ Basic | JS injection; real CDP listener deferred |
+| CDP network listener | ⚠️ Basic | Performance API; real CDP listener deferred |
+| Element highlighting | ✅ Implemented | `core/engine.rs` |
+| Screenshot capture | ✅ Implemented | Wired to debug modes |
 
 ## Overview
 
