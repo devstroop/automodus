@@ -278,29 +278,29 @@ Foundation for persistent sessions. Largest effort.
 ---
 
 ### Issue #13: Create SessionManager
-**Status:** 🟡 In Progress (basic session CRUD done, browser lifecycle not unified)  
+**Status:** ✅ Done  
 **File:** `src/core/app.rs` (integrated into AppCore)  
 **Depends:** #12  
 **Estimate:** 1.5-2 days
 
 > **Note:** Browser lifecycle has edge cases (crash recovery, zombie processes).
-> **Audit (2026-02-22):** Session CRUD (create/get/close/list) works in AppCore, but
-> browser launch is still duplicated in `api/state.rs::get_page()` and `bin/automodus.rs::run_shell()`.
-> AppCore `Session.browser` is a placeholder `Option<BrowserHandle>` (stub, not real browser).
-> No idle timeout cleanup exists.
+> **Audit (2026-02-22):** Session CRUD works. Browser launch was duplicated.
+> **Fix (2026-02-22):** All browser launch sites now use `modules::browser::launch` helpers.
+> AppCore owns the browser; ServerState delegates via `core.get_page()`. Idle cleanup implemented.
 
 **Tasks:**
 - [x] Session management integrated into `src/core/app.rs`
-- [ ] Extract browser launch logic from `api/state.rs` and `bin/automodus.rs`
+- [x] Extract browser launch logic from `api/state.rs` and `bin/automodus.rs`
 - [x] Implement `Session` struct with `keep_alive` field
 - [x] Implement session create/get/close/list in AppCore
-- [ ] Implement `cleanup_idle()` for idle timeout
-- [ ] Single source of truth for browser lifecycle
-- [ ] Handle browser crash/disconnect gracefully
+- [x] Implement `cleanup_idle_sessions()` for idle timeout
+- [x] Single source of truth for browser lifecycle (AppCore)
+- [ ] Handle browser crash/disconnect gracefully (deferred)
 
-**Removes duplication from:**
-- `src/api/state.rs` (ServerState browser management) — **still duplicated**
-- `src/bin/automodus.rs` (shell browser launch) — **still duplicated**
+**Unified browser launch:**
+- `src/modules/browser/launch.rs` — single launch helper used everywhere
+- `src/core/app.rs` — AppCore owns browser + page adapter
+- `src/api/state.rs` — ServerState delegates `get_page()` to AppCore
 
 ---
 
@@ -344,21 +344,23 @@ automodus daemon stop
 ---
 
 ### Issue #15: Merge HTTP server into daemon
-**Status:** 🟡 In Progress  
+**Status:** ✅ Done  
 **File:** `src/daemon/mod.rs`, `src/api/server.rs`  
 **Depends:** #11, #12  
 **Estimate:** 4-6 hours
 
 > **Audit (2026-02-22):** HTTP server CAN start inside `Daemon::run()`, but `serve` command
-> still calls `api::run_server()` directly (not daemon). `ServerState` in `api/state.rs`
-> manages its own browser independently of `AppCore` — two separate state systems coexist.
+> still calls `api::run_server()` directly (not daemon).
+> **Fix (2026-02-22):** `serve` now routes through `Daemon::start()` + `Daemon::run()`.
+> `ServerState` delegates browser to `AppCore` via `create_state_with_core()`. Daemon passes
+> its `AppCore` to the HTTP server, eliminating parallel state.
 
 **Tasks:**
 - [x] Add `enable_http` config option to DaemonConfig
 - [x] Move HTTP server startup into `Daemon::run()`
 - [x] Share shutdown signal between socket and HTTP handlers
-- [ ] Update `serve` command to start daemon (backward compat)
-- [ ] Remove standalone server state management
+- [x] Update `serve` command to start daemon (backward compat)
+- [x] ServerState delegates to AppCore (shared browser)
 
 ---
 
@@ -382,18 +384,17 @@ automodus daemon stop
 ---
 
 ### Issue #15b: Backward compatibility for serve command
-**Status:** 🟡 In Progress  
+**Status:** ✅ Done  
 **File:** `src/bin/automodus.rs`  
 **Depends:** #14, #15  
 **Estimate:** 1 hour
 
-> **Audit (2026-02-22):** `serve` prints deprecation warning but does NOT internally call
-> `daemon start`. It calls `api::run_server()` directly in foreground mode.
-> The command works but doesn't route through the daemon architecture.
+> **Audit (2026-02-22):** `serve` used to call `api::run_server()` directly.
+> **Fix (2026-02-22):** Now calls `daemon.start()` + `daemon.run()` with HTTP enabled.
 
 **Tasks:**
 - [x] Keep `automodus serve` command working
-- [ ] Internally call `daemon start` with HTTP enabled
+- [x] Internally start daemon in foreground with HTTP enabled
 - [x] Print deprecation warning
 - [x] Document in help text
 
@@ -713,6 +714,9 @@ Final debug features.
 |------|---------|
 | 2026-02-22 | Initial issue list from SHELL.md and DEBUG.md review |
 | 2026-02-22 | Codebase audit: corrected #13 → 🟡, #15 → 🟡, #15b → 🟡, #16 → 🟡 (not wired), #18 → 🟡 (basic done) |
+| 2026-02-22 | #13 ✅: Unified browser lifecycle (AppCore owns browser, deduped launch), idle session cleanup |
+| 2026-02-22 | #15 ✅: ServerState delegates to AppCore, daemon passes shared core to HTTP server |
+| 2026-02-22 | #15b ✅: `serve` routes through daemon.start()+run() instead of api::run_server() |
 
 ---
 
