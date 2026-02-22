@@ -675,6 +675,14 @@ Shell Commands:
     run <file> [k=v...]  Run workflow file
     list                 List workflows
 
+  Sessions:
+    session new [name] [--keep-alive]  Create a new session
+    session list                       List all sessions
+    session switch <id|name>           Switch active session
+    session close [id|name]            Close a session (current if omitted)
+    session info                       Show current session details
+    session keep-alive [id] [on|off]   Toggle keep-alive
+
   Debug:
     debug on [--profile=NAME]  Enable debug mode
     debug off                   Disable debug mode
@@ -687,6 +695,7 @@ Shell Commands:
     quit                 Exit shell
 
 Shortcuts: r=run, g=goto, c=click, t=type, w=wait, s=status, ls=list, hl=highlight, q=quit
+            sess=session, sw=switch, ka=keep-alive
 "#
         );
     }
