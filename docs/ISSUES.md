@@ -402,12 +402,26 @@ Stateless shell connecting to daemon.
 **Depends:** #11, cargo deps (rustyline, dirs)  
 **Estimate:** 1 day
 
+> **User pain point:** Current shell uses `std::io::BufRead` - no arrow key history, no line editing.
+
 **Tasks:**
 - [ ] Create `src/shell/mod.rs` and `src/shell/client.rs`
 - [ ] Implement daemon connection via Unix socket
 - [ ] Replace inline browser launch with daemon commands
 - [ ] Add rustyline for readline support
-- [ ] Implement history save/load
+- [ ] **Arrow up/down cycles through command history**
+- [ ] **Home/End, Ctrl+A/E for line navigation**
+- [ ] **Ctrl+R for reverse history search**
+- [ ] Implement history save/load (`~/.local/share/automodus/history.txt`)
+
+**Acceptance:**
+```
+$ automodus shell
+automodus> goto https://example.com
+automodus> click "#btn"
+automodus> [UP ARROW]  # Shows: click "#btn"
+automodus> [UP ARROW]  # Shows: goto https://example.com
+```
 
 ---
 
