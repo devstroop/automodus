@@ -193,7 +193,15 @@ impl WorkflowEngine {
         while ctx.step_index < workflow.steps.len() {
             let step = &workflow.steps[ctx.step_index];
 
-            // Check condition
+            // Handle `condition` action specially (with then/else blocks)
+            // Must check BEFORE step-level condition because `if:` gets captured into step.condition
+            if step.action == "condition" {
+                self.execute_condition_action(step, browser, ctx).await?;
+                ctx.next_step();
+                continue;
+            }
+
+            // Check condition (step-level `if:`) - for non-condition actions
             if let Some(condition) = &step.condition {
                 if !self.evaluate_condition(condition, ctx) {
                     debug!(
@@ -324,6 +332,80 @@ impl WorkflowEngine {
         }))
     }
 
+    /// Execute a condition action with then/else branches
+    async fn execute_condition_action(
+        &self,
+        step: &Step,
+        browser: &dyn BrowserHandle,
+        ctx: &mut ExecutionContext,
+    ) -> Result<(), WorkflowError> {
+        // Get the `if` condition - check step.condition first (captured by serde rename),
+        // then fall back to params["if"]
+        let condition_str = step
+            .condition
+            .as_deref()
+            .or_else(|| step.params.get("if").and_then(|v| v.as_str()))
+            .ok_or_else(|| {
+                WorkflowError::InvalidConfig("condition action requires 'if' parameter".into())
+            })?;
+
+        // Evaluate the condition
+        let condition_result = self.evaluate_condition(condition_str, ctx);
+
+        debug!(
+            workflow = %ctx.workflow_name,
+            step = ctx.step_index,
+            condition = %condition_str,
+            result = condition_result,
+            "Evaluating condition"
+        );
+
+        // Get the appropriate branch
+        let steps_to_execute: Vec<Step> = if condition_result {
+            // Execute 'then' branch
+            step.params
+                .get("then")
+                .and_then(|v| serde_yaml::from_value(v.clone()).ok())
+                .unwrap_or_default()
+        } else {
+            // Execute 'else' branch
+            step.params
+                .get("else")
+                .and_then(|v| serde_yaml::from_value(v.clone()).ok())
+                .unwrap_or_default()
+        };
+
+        // Execute the branch steps
+        for nested_step in &steps_to_execute {
+            // Handle nested condition actions recursively
+            if nested_step.action == "condition" {
+                // Use Box::pin for recursive async call
+                Box::pin(self.execute_condition_action(nested_step, browser, ctx)).await?;
+            } else {
+                let output = self.execute_step(nested_step, browser, ctx).await?;
+
+                // Store output
+                if let Some(data) = &output.data {
+                    if let Some(id) = &nested_step.id {
+                        ctx.store_step_output(id, data.clone());
+                    }
+                }
+
+                // Merge store values
+                for (key, value) in output.store {
+                    ctx.store_value(key, value);
+                }
+
+                // Emit events
+                if let Some((event, data)) = output.emit {
+                    ctx.emit_event(&event, data);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Execute a single step
     async fn execute_step(
         &self,
@@ -374,12 +456,31 @@ impl WorkflowEngine {
     fn evaluate_condition(&self, condition: &str, ctx: &ExecutionContext) -> bool {
         // Render the condition with template values
         let rendered = TemplateEngine::render(condition, ctx);
+        let rendered_lower = rendered.to_lowercase();
+        let rendered_trimmed = rendered_lower.trim();
 
-        // Simple evaluation: check for truthy values
-        // TODO: Implement proper expression evaluation
-        match rendered.to_lowercase().as_str() {
+        // Handle equality expressions: "x == y" or "x != y"
+        if let Some((left, right)) = rendered_trimmed.split_once("==") {
+            let left = left.trim();
+            let right = right.trim();
+            // Handle != by checking if left ends with !
+            if left.ends_with('!') {
+                let left = left.trim_end_matches('!').trim();
+                return left != right;
+            }
+            return left == right;
+        }
+
+        if let Some((left, right)) = rendered_trimmed.split_once("!=") {
+            let left = left.trim();
+            let right = right.trim();
+            return left != right;
+        }
+
+        // Simple truthiness check
+        match rendered_trimmed {
             "true" | "yes" | "1" => true,
-            "false" | "no" | "0" | "" => false,
+            "false" | "no" | "0" | "" | "null" | "none" => false,
             _ => !rendered.is_empty() && !rendered.contains("{{"),
         }
     }
