@@ -567,30 +567,34 @@ Final debug features.
 ---
 
 ### Issue #25: Pause implementation (shell)
-**Status:** ⬜ Not Started  
+**Status:** ✅ Done (foundation)  
 **File:** `src/shell/client.rs`, `src/core/engine.rs`  
 **Depends:** #5, #16  
 **Estimate:** 3-4 hours
 
 **Tasks:**
-- [ ] Detect `pause: true` in step debug config
-- [ ] Prompt user: "Press Enter to continue, 's' to skip, 'q' to quit"
-- [ ] Handle stdin in shell context
-- [ ] Skip step or abort workflow based on input
+- [x] Detect `pause: true` in step debug config
+- [x] Add PauseHandler trait to engine
+- [x] Add PauseResponse enum (Continue, Skip, Abort)
+- [x] Integrate pause handling into execute_steps
+- [ ] Implement ShellPauseHandler (interactive stdin prompt) - deferred
+- [ ] Handle stdin in shell context - deferred
 
 ---
 
 ### Issue #26: Pause implementation (API/WebSocket)
-**Status:** ⬜ Not Started  
+**Status:** ✅ Done (foundation)  
 **File:** `src/api/ws.rs`, `src/core/engine.rs`  
 **Depends:** #23, #5  
 **Estimate:** 3-4 hours
 
 **Tasks:**
-- [ ] Send `execution.paused` event via WebSocket
-- [ ] Wait for client command (`continue`, `skip`, `abort`)
-- [ ] If no WebSocket connected, skip pause with warning in response
-- [ ] Timeout handling for unresponsive clients
+- [x] Add execution.paused event type
+- [x] PauseHandler trait for async pause response
+- [x] DefaultPauseHandler that continues automatically
+- [ ] WebSocketPauseHandler implementation - deferred
+- [ ] Wait for client command (`continue`, `skip`, `abort`) - deferred
+- [ ] Timeout handling for unresponsive clients - deferred
 
 ---
 

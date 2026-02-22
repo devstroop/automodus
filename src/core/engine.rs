@@ -17,6 +17,47 @@ use crate::workflow::{CompleteHandler, ErrorHandler, Step, Workflow};
 use super::context::ExecutionContext;
 use super::template::TemplateEngine;
 
+/// Pause response from handler
+#[derive(Debug, Clone, PartialEq)]
+pub enum PauseResponse {
+    /// Continue execution
+    Continue,
+    /// Skip current step
+    Skip,
+    /// Abort workflow
+    Abort,
+}
+
+/// Handler for debug pause events
+#[async_trait::async_trait]
+pub trait PauseHandler: Send + Sync {
+    /// Called when execution is paused at a step
+    /// Returns the action to take (continue, skip, or abort)
+    async fn on_pause(
+        &self,
+        workflow: &str,
+        step: usize,
+        action: &str,
+        selector: Option<&str>,
+    ) -> PauseResponse;
+}
+
+/// Default pause handler that always continues
+pub struct DefaultPauseHandler;
+
+#[async_trait::async_trait]
+impl PauseHandler for DefaultPauseHandler {
+    async fn on_pause(
+        &self,
+        _workflow: &str,
+        _step: usize,
+        _action: &str,
+        _selector: Option<&str>,
+    ) -> PauseResponse {
+        PauseResponse::Continue
+    }
+}
+
 /// Workflow execution error
 #[derive(Debug, Error)]
 pub enum WorkflowError {
@@ -126,6 +167,25 @@ impl WorkflowEngine {
         params: HashMap<String, Value>,
         debug_config: ResolvedDebugConfig,
     ) -> Result<WorkflowResult, WorkflowError> {
+        self.execute_with_pause_handler(
+            workflow,
+            browser,
+            params,
+            debug_config,
+            &DefaultPauseHandler,
+        )
+        .await
+    }
+
+    /// Execute a workflow with debug configuration and custom pause handler
+    pub async fn execute_with_pause_handler(
+        &self,
+        workflow: &Workflow,
+        browser: &dyn BrowserHandle,
+        params: HashMap<String, Value>,
+        debug_config: ResolvedDebugConfig,
+        pause_handler: &dyn PauseHandler,
+    ) -> Result<WorkflowResult, WorkflowError> {
         let instance_id = uuid::Uuid::new_v4().to_string();
 
         info!(
@@ -153,7 +213,7 @@ impl WorkflowEngine {
 
         // Execute steps
         let result = self
-            .execute_steps(workflow, browser, &mut ctx, &mut debug_screenshots)
+            .execute_steps(workflow, browser, &mut ctx, &mut debug_screenshots, pause_handler)
             .await;
 
         // Build result
@@ -216,6 +276,7 @@ impl WorkflowEngine {
         browser: &dyn BrowserHandle,
         ctx: &mut ExecutionContext,
         debug_screenshots: &mut Vec<String>,
+        pause_handler: &dyn PauseHandler,
     ) -> Result<Value, WorkflowError> {
         while ctx.step_index < workflow.steps.len() {
             let step = &workflow.steps[ctx.step_index];
@@ -232,6 +293,36 @@ impl WorkflowEngine {
                     "Applying debug delay before step"
                 );
                 tokio::time::sleep(tokio::time::Duration::from_millis(step_debug.delay)).await;
+            }
+
+            // Handle pause if configured
+            if step_debug.pause {
+                let selector = step.params.get("selector").and_then(|v| v.as_str());
+                let response = pause_handler
+                    .on_pause(&workflow.name, ctx.step_index, &step.action, selector)
+                    .await;
+
+                match response {
+                    PauseResponse::Continue => {
+                        debug!(
+                            workflow = %workflow.name,
+                            step = ctx.step_index,
+                            "Continuing after pause"
+                        );
+                    }
+                    PauseResponse::Skip => {
+                        info!(
+                            workflow = %workflow.name,
+                            step = ctx.step_index,
+                            "Skipping step due to pause response"
+                        );
+                        ctx.next_step();
+                        continue;
+                    }
+                    PauseResponse::Abort => {
+                        return Err(WorkflowError::Aborted("User aborted at pause".to_string()));
+                    }
+                }
             }
 
             // Capture screenshot before step if configured
@@ -267,7 +358,7 @@ impl WorkflowEngine {
 
             // Execute step with retries
             let result = self
-                .execute_step_with_retry(step, browser, ctx, &step_debug, debug_screenshots)
+                .execute_step_with_retry(step, browser, ctx, &step_debug, debug_screenshots, pause_handler)
                 .await;
 
             // Handle execution result
@@ -373,6 +464,7 @@ impl WorkflowEngine {
         ctx: &mut ExecutionContext,
         step_debug: &ResolvedDebugConfig,
         debug_screenshots: &mut Vec<String>,
+        _pause_handler: &dyn PauseHandler,
     ) -> Result<ActionOutput, WorkflowError> {
         let max_retries = step.retry.as_ref().map(|r| r.max.unwrap_or(3)).unwrap_or(0);
 
