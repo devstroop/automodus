@@ -10,7 +10,6 @@
 
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::Duration;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Atomic counter for unique test directories
@@ -193,8 +192,6 @@ mod lifecycle_tests {
 
 #[cfg(test)]
 mod shutdown_tests {
-    use super::*;
-
     #[test]
     fn test_shutdown_signal_handling() {
         // Verify SIGTERM and SIGINT constants are correct
@@ -215,8 +212,6 @@ mod shutdown_tests {
 
 #[cfg(test)]
 mod config_tests {
-    use super::*;
-
     #[test]
     fn test_default_config_paths() {
         let home = dirs::home_dir().expect("Home directory");
