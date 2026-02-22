@@ -26,7 +26,7 @@ on:
 
 vars:
   whatsapp_url: "https://web.whatsapp.com"
-  qr_canvas_selector: "canvas[aria-label='Scan this QR code to link a device!']"
+  qr_selector: "[aria-label='Scan this QR code to link a device!']"
   auth_pane_selector: "#pane-side"
   qr_reload_selector: "[data-icon='refresh-large']"
 
@@ -63,7 +63,7 @@ steps:
       # 5. Wait for QR code to appear
       - id: wait_for_qr
         action: wait_for
-        selector: "{{vars.qr_canvas_selector}}"
+        selector: "{{vars.qr_selector}}"
         timeout: "20s"
         on_failure:
           # Try to reload QR if expired
@@ -71,18 +71,32 @@ steps:
             selector: "{{vars.qr_reload_selector}}"
             if: "document.querySelector('{{vars.qr_reload_selector}}') !== null"
           - action: wait_for
-            selector: "{{vars.qr_canvas_selector}}"
+            selector: "{{vars.qr_selector}}"
             timeout: "15s"
 
-      # 6. Extract QR code as base64
+      # 6. Extract QR code - handle both img (src) and canvas (toDataURL)
       - id: extract_qr
         action: eval
         script: |
           (function() {
-            var canvas = document.querySelector("canvas[aria-label='Scan this QR code to link a device!']");
-            if (canvas) {
-              return canvas.toDataURL('image/png').split(',')[1];
+            var el = document.querySelector("[aria-label='Scan this QR code to link a device!']");
+            if (!el) return null;
+            
+            // If it's a canvas, use toDataURL
+            if (el.tagName === 'CANVAS') {
+              return el.toDataURL('image/png').split(',')[1];
             }
+            
+            // If it's an img, get src (may be data URL or blob)
+            if (el.tagName === 'IMG') {
+              var src = el.src;
+              if (src.startsWith('data:image')) {
+                return src.split(',')[1];
+              }
+              // For blob URLs, return the URL itself
+              return src;
+            }
+            
             return null;
           })();
         store_as: qr_base64
