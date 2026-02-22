@@ -207,11 +207,32 @@ impl ExecutionContext {
     /// Resolve a reference like "params.x", "vars.y", "store.z", "steps.id.output"
     fn resolve_reference(&self, key: &str) -> Option<Value> {
         if let Some(name) = key.strip_prefix("params.") {
-            self.get_param(name).cloned()
+            // Handle nested access: params.foo.bar
+            let parts: Vec<&str> = name.splitn(2, '.').collect();
+            let value = self.get_param(parts[0])?;
+            if parts.len() > 1 {
+                get_nested_value(value, parts[1])
+            } else {
+                Some(value.clone())
+            }
         } else if let Some(name) = key.strip_prefix("vars.") {
-            self.get_var(name).cloned()
+            // Handle nested access: vars.foo.bar
+            let parts: Vec<&str> = name.splitn(2, '.').collect();
+            let value = self.get_var(parts[0])?;
+            if parts.len() > 1 {
+                get_nested_value(value, parts[1])
+            } else {
+                Some(value.clone())
+            }
         } else if let Some(name) = key.strip_prefix("store.") {
-            self.get_stored(name).cloned()
+            // Handle nested access: store.result.status
+            let parts: Vec<&str> = name.splitn(2, '.').collect();
+            let value = self.get_stored(parts[0])?;
+            if parts.len() > 1 {
+                get_nested_value(value, parts[1])
+            } else {
+                Some(value.clone())
+            }
         } else if let Some(rest) = key.strip_prefix("steps.") {
             // Format: steps.step_id.output or steps.step_id.output.field
             let parts: Vec<&str> = rest.splitn(2, '.').collect();
