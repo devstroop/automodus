@@ -100,7 +100,7 @@ pub mod api;
 // ============================================================================
 
 // Workflow types
-pub use workflow::{Workflow, WorkflowLoader, WorkflowParser, Step};
+pub use workflow::{Step, Workflow, WorkflowLoader, WorkflowParser};
 
 // Action types
 pub use actions::{

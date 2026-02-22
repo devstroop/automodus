@@ -343,9 +343,9 @@ impl Action for HttpRequestAction {
             })
             .ok_or_else(|| ActionError::MissingParameter("method".into()))?;
 
-        let method: Method = method_str
-            .parse()
-            .map_err(|_| ActionError::InvalidParameter(format!("Invalid HTTP method: {}", method_str)))?;
+        let method: Method = method_str.parse().map_err(|_| {
+            ActionError::InvalidParameter(format!("Invalid HTTP method: {}", method_str))
+        })?;
 
         let (url, headers, store_as) = extract_request_params(params)?;
         let body = extract_body(params);
