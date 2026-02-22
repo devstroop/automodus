@@ -11,16 +11,15 @@
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
+use std::sync::atomic::{AtomicU32, Ordering};
 
-/// Test daemon directory
-fn daemon_test_dir() -> PathBuf {
-    std::env::temp_dir().join("automodus-daemon-test")
-}
+/// Atomic counter for unique test directories
+static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 
-/// Clean up test directory
-fn cleanup_test_dir() {
-    let dir = daemon_test_dir();
-    let _ = std::fs::remove_dir_all(&dir);
+/// Get unique test directory for each test
+fn unique_test_dir(prefix: &str) -> PathBuf {
+    let count = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+    std::env::temp_dir().join(format!("automodus-{}-{}", prefix, count))
 }
 
 // ============================================================================
@@ -45,8 +44,8 @@ mod pid_file_tests {
     #[test]
     fn test_stale_pid_detection() {
         // Create a test PID file with an invalid PID
-        let test_dir = daemon_test_dir();
-        let _ = std::fs::create_dir_all(&test_dir);
+        let test_dir = unique_test_dir("stale-pid");
+        std::fs::create_dir_all(&test_dir).expect("Create test directory");
         let pid_file = test_dir.join("daemon.pid");
         
         // Write a PID that definitely doesn't exist (very high number)
@@ -79,7 +78,8 @@ mod pid_file_tests {
             }
         }
         
-        cleanup_test_dir();
+        // Clean up this test's directory
+        let _ = std::fs::remove_dir_all(&test_dir);
     }
 }
 
@@ -104,10 +104,7 @@ mod socket_tests {
 
     #[test]
     fn test_socket_directory_creation() {
-        let test_dir = daemon_test_dir();
-        
-        // Clean up first
-        let _ = std::fs::remove_dir_all(&test_dir);
+        let test_dir = unique_test_dir("socket-dir");
         
         // Create directory
         std::fs::create_dir_all(&test_dir).expect("Create test directory");
@@ -115,7 +112,8 @@ mod socket_tests {
         // Verify directory exists
         assert!(test_dir.is_dir());
         
-        cleanup_test_dir();
+        // Clean up this test's directory
+        let _ = std::fs::remove_dir_all(&test_dir);
     }
 }
 
