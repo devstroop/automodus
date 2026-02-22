@@ -24,6 +24,8 @@ pub mod handlers;
 pub mod schemas;
 pub mod server;
 pub mod state;
+pub mod ws;
 
 pub use server::{create_router, run_server, ApiDoc};
 pub use state::{create_state, ServerState};
+pub use ws::{ServerEvent, WsEvent};

@@ -522,7 +522,7 @@ Full API parity with shell.
 ---
 
 ### Issue #23: WebSocket implementation
-**Status:** ⬜ Not Started  
+**Status:** ✅ Done  
 **File:** `src/api/ws.rs` (new)  
 **Depends:** #12, cargo deps (tokio-tungstenite)  
 **Estimate:** 1.5-2 days
@@ -530,12 +530,12 @@ Full API parity with shell.
 > **Note:** Protocol handling and client reconnection need care.
 
 **Tasks:**
-- [ ] Create `src/api/ws.rs`
-- [ ] Implement `/ws` endpoint
-- [ ] Subscribe to `AppCore::events` broadcast
-- [ ] Forward execution events to connected clients
-- [ ] Handle client commands (continue, skip, abort)
-- [ ] Version protocol messages
+- [x] Create `src/api/ws.rs`
+- [x] Implement `/ws` endpoint
+- [x] Subscribe to `AppCore::events` broadcast
+- [x] Forward execution events to connected clients
+- [x] Handle client commands (continue, skip, abort)
+- [x] Version protocol messages
 
 **Events:**
 ```json

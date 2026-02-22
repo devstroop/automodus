@@ -17,6 +17,7 @@ use crate::config::AppConfig;
 use super::handlers::*;
 use super::schemas::*;
 use super::state::{create_state, ServerState};
+use super::ws::ws_handler;
 
 /// OpenAPI documentation
 #[derive(OpenApi)]
@@ -117,6 +118,8 @@ pub fn create_router(state: Arc<ServerState>) -> Router {
         .route("/api/executions", get(list_executions_handler))
         .route("/api/executions/:id", get(get_execution_handler))
         .route("/api/executions/:id", delete(cancel_execution_handler))
+        // WebSocket endpoint
+        .route("/ws", get(ws_handler))
         // State
         .with_state(state)
         // Swagger UI
