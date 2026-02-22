@@ -13,6 +13,40 @@ use crate::core::WorkflowEngine;
 use crate::modules::ChromePageAdapter;
 use crate::workflow::{Workflow, WorkflowParser};
 
+/// Browser session managed by the server
+#[derive(Debug, Clone)]
+pub struct ServerSession {
+    /// Unique session ID
+    pub id: String,
+    /// Optional friendly name
+    pub name: Option<String>,
+    /// Creation timestamp
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Last activity timestamp
+    pub last_activity: chrono::DateTime<chrono::Utc>,
+    /// Keep browser alive between workflows
+    pub keep_alive: bool,
+}
+
+impl ServerSession {
+    /// Create a new session
+    pub fn new(name: Option<String>, keep_alive: bool) -> Self {
+        let now = chrono::Utc::now();
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            name,
+            created_at: now,
+            last_activity: now,
+            keep_alive,
+        }
+    }
+
+    /// Update last activity timestamp
+    pub fn touch(&mut self) {
+        self.last_activity = chrono::Utc::now();
+    }
+}
+
 /// Shared state for the API server
 pub struct ServerState {
     /// Workflow execution engine
@@ -25,6 +59,10 @@ pub struct ServerState {
     pub page_adapter: Mutex<Option<ChromePageAdapter>>,
     /// Configuration
     pub config: AppConfig,
+    /// Active sessions (id -> Session)
+    pub sessions: RwLock<HashMap<String, ServerSession>>,
+    /// Maximum concurrent sessions
+    pub max_sessions: usize,
 }
 
 impl ServerState {
@@ -36,6 +74,8 @@ impl ServerState {
             browser: Mutex::new(None),
             page_adapter: Mutex::new(None),
             config,
+            sessions: RwLock::new(HashMap::new()),
+            max_sessions: 10, // Default max sessions
         }
     }
 
@@ -157,6 +197,57 @@ impl ServerState {
         *page_guard = Some(adapter.clone());
 
         Ok(adapter)
+    }
+
+    // --- Session Management ---
+
+    /// Create a new session
+    pub async fn create_session(
+        &self,
+        name: Option<String>,
+        keep_alive: bool,
+    ) -> Result<ServerSession, String> {
+        let mut sessions = self.sessions.write().await;
+
+        if sessions.len() >= self.max_sessions {
+            return Err("Maximum sessions reached".to_string());
+        }
+
+        let session = ServerSession::new(name, keep_alive);
+        let id = session.id.clone();
+        sessions.insert(id.clone(), session.clone());
+
+        info!("Created session: {}", id);
+        Ok(session)
+    }
+
+    /// Get a session by ID
+    pub async fn get_session(&self, id: &str) -> Option<ServerSession> {
+        self.sessions.read().await.get(id).cloned()
+    }
+
+    /// List all sessions
+    pub async fn list_sessions(&self) -> Vec<ServerSession> {
+        self.sessions.read().await.values().cloned().collect()
+    }
+
+    /// Close a session by ID
+    pub async fn close_session(&self, id: &str) -> Result<(), String> {
+        let mut sessions = self.sessions.write().await;
+
+        if sessions.remove(id).is_none() {
+            return Err(format!("Session '{}' not found", id));
+        }
+
+        info!("Closed session: {}", id);
+        Ok(())
+    }
+
+    /// Touch a session to update last activity
+    pub async fn touch_session(&self, id: &str) {
+        if let Some(session) = self.sessions.write().await.get_mut(id) {
+            session.touch();
+        }
     }
 }
 
