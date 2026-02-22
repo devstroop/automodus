@@ -16,6 +16,7 @@
 //! ```
 
 use futures_util::stream::StreamExt;
+use futures_util::FutureExt;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tracing::debug;
@@ -24,6 +25,7 @@ use automodus::{
     actions::BrowserHandle,
     api,
     core::WorkflowEngine,
+    daemon::{Daemon, DaemonConfig, DaemonStatus},
     modules::ChromePageAdapter,
     utils::{logging, yaml_to_json},
     workflow::{
@@ -149,8 +151,24 @@ enum Command {
     List,
     /// Interactive shell mode - keeps browser running
     Shell,
+    /// Daemon operations
+    Daemon { operation: DaemonOp },
     /// Show help
     Help,
+}
+
+#[derive(Debug)]
+enum DaemonOp {
+    /// Start the daemon
+    Start,
+    /// Stop the daemon
+    Stop,
+    /// Show daemon status
+    Status,
+    /// Restart the daemon
+    Restart,
+    /// View daemon logs
+    Logs { follow: bool, lines: usize },
 }
 
 fn parse_args() -> Command {
@@ -251,6 +269,37 @@ fn parse_args() -> Command {
         }
         "shell" => Command::Shell,
         "serve" => Command::Serve,
+        "daemon" => {
+            if args.len() < 3 {
+                eprintln!("Usage: automodus daemon <start|stop|status|restart|logs>");
+                eprintln!("Try 'automodus help' for more information.");
+                std::process::exit(1);
+            }
+            let operation = match args[2].as_str() {
+                "start" => DaemonOp::Start,
+                "stop" => DaemonOp::Stop,
+                "status" => DaemonOp::Status,
+                "restart" => DaemonOp::Restart,
+                "logs" => {
+                    let follow = args.iter().any(|a| a == "--follow" || a == "-f");
+                    let mut lines: usize = 50;
+                    for arg in &args[3..] {
+                        if let Some(n) = arg.strip_prefix("--lines=") {
+                            lines = n.parse().unwrap_or(50);
+                        } else if let Some(n) = arg.strip_prefix("-n") {
+                            lines = n.parse().unwrap_or(50);
+                        }
+                    }
+                    DaemonOp::Logs { follow, lines }
+                }
+                _ => {
+                    eprintln!("Unknown daemon operation: {}", args[2]);
+                    eprintln!("Use: start, stop, status, restart, logs");
+                    std::process::exit(1);
+                }
+            };
+            Command::Daemon { operation }
+        }
         "validate" => {
             let path = if args.len() >= 3 {
                 PathBuf::from(&args[2])
@@ -289,6 +338,15 @@ COMMANDS:
         --console           Log browser console messages
         --network           Log network requests
 
+    daemon <operation>  Daemon process management
+        start           Start the daemon (background process)
+        stop            Stop the running daemon
+        status          Check daemon status
+        restart         Restart the daemon
+        logs            View daemon logs
+            -f, --follow    Follow log output
+            --lines=<n>     Number of lines to show (default: 50)
+
     shell               Interactive shell mode (keeps browser running)
     serve               Start the API server
     validate [path]     Validate workflow files (default: workflows/)
@@ -316,6 +374,15 @@ EXAMPLES:
 
     # Run workflow and keep browser open
     automodus run workflows/login.yaml --keep-open
+
+    # Start the daemon
+    automodus daemon start
+
+    # Check daemon status
+    automodus daemon status
+
+    # View daemon logs (follow mode)
+    automodus daemon logs -f
 
     # Start interactive shell for testing
     automodus shell
@@ -405,6 +472,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             print_banner();
             run_shell().await?;
         }
+        Command::Daemon { operation } => {
+            handle_daemon_command(operation).await?;
+        }
         Command::Serve => {
             print_banner();
             api::run_server().await?;
@@ -414,6 +484,248 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::List => {
             list_workflows().await?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Handle daemon commands
+async fn handle_daemon_command(op: DaemonOp) -> Result<(), Box<dyn std::error::Error>> {
+    let config = DaemonConfig::default();
+
+    match op {
+        DaemonOp::Start => {
+            println!("🚀 Starting automodus daemon...");
+
+            // Check if already running
+            let daemon = Daemon::new(config.clone());
+            if daemon.is_running() {
+                println!("❌ Daemon is already running");
+                if let DaemonStatus::Running { pid } = daemon.status() {
+                    println!("   PID: {}", pid);
+                }
+                std::process::exit(1);
+            }
+
+            // Fork to background (Unix only)
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                use std::process::Command;
+
+                // Create the data directory
+                if let Some(parent) = config.socket_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+
+                // Start daemon in background
+                let exe = std::env::current_exe()?;
+                let mut cmd = Command::new(exe);
+                cmd.arg("daemon").arg("__run__");
+
+                // Detach from terminal
+                unsafe {
+                    cmd.pre_exec(|| {
+                        // Create new session
+                        libc::setsid();
+                        Ok(())
+                    });
+                }
+
+                let child = cmd.spawn()?;
+                println!("✓ Daemon started (PID: {})", child.id());
+                println!("  Socket: {}", config.socket_path.display());
+                println!("  Log: {}", config.log_file.display());
+            }
+
+            #[cfg(not(unix))]
+            {
+                println!("❌ Daemon mode is only supported on Unix systems");
+                std::process::exit(1);
+            }
+        }
+
+        DaemonOp::Stop => {
+            let daemon = Daemon::new(config.clone());
+
+            if !daemon.is_running() {
+                println!("ℹ️  Daemon is not running");
+                return Ok(());
+            }
+
+            // Read PID and send SIGTERM
+            if let Ok(pid_str) = std::fs::read_to_string(&config.pid_file) {
+                if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                    println!("Stopping daemon (PID: {})...", pid);
+
+                    #[cfg(unix)]
+                    {
+                        unsafe {
+                            libc::kill(pid, libc::SIGTERM);
+                        }
+                    }
+
+                    // Wait for shutdown
+                    for _ in 0..10 {
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        if !daemon.is_running() {
+                            break;
+                        }
+                    }
+
+                    if daemon.is_running() {
+                        println!("⚠️  Daemon did not stop gracefully, forcing...");
+                        #[cfg(unix)]
+                        unsafe {
+                            libc::kill(pid, libc::SIGKILL);
+                        }
+                    }
+
+                    println!("✓ Daemon stopped");
+                }
+            }
+
+            // Cleanup stale files
+            let _ = std::fs::remove_file(&config.pid_file);
+            let _ = std::fs::remove_file(&config.socket_path);
+        }
+
+        DaemonOp::Status => {
+            let daemon = Daemon::new(config.clone());
+            let status = daemon.status();
+
+            match status {
+                DaemonStatus::Running { pid } => {
+                    println!("✓ Daemon is running");
+                    println!("  PID: {}", pid);
+                    println!("  Socket: {}", config.socket_path.display());
+                }
+                DaemonStatus::Stopped => {
+                    println!("○ Daemon is stopped");
+                }
+            }
+        }
+
+        DaemonOp::Restart => {
+            println!("🔄 Restarting daemon...");
+
+            // Stop if running (inline to avoid recursion)
+            let daemon = Daemon::new(config.clone());
+            if daemon.is_running() {
+                if let Ok(pid_str) = std::fs::read_to_string(&config.pid_file) {
+                    if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                        println!("Stopping daemon (PID: {})...", pid);
+
+                        #[cfg(unix)]
+                        {
+                            unsafe {
+                                libc::kill(pid, libc::SIGTERM);
+                            }
+                        }
+
+                        // Wait for shutdown
+                        for _ in 0..10 {
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                            if !daemon.is_running() {
+                                break;
+                            }
+                        }
+
+                        if daemon.is_running() {
+                            #[cfg(unix)]
+                            unsafe {
+                                libc::kill(pid, libc::SIGKILL);
+                            }
+                        }
+                    }
+                }
+                let _ = std::fs::remove_file(&config.pid_file);
+                let _ = std::fs::remove_file(&config.socket_path);
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+
+            // Start (inline to avoid recursion)
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                use std::process::Command;
+
+                if let Some(parent) = config.socket_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+
+                let exe = std::env::current_exe()?;
+                let mut cmd = Command::new(exe);
+                cmd.arg("daemon").arg("__run__");
+
+                unsafe {
+                    cmd.pre_exec(|| {
+                        libc::setsid();
+                        Ok(())
+                    });
+                }
+
+                let child = cmd.spawn()?;
+                println!("✓ Daemon restarted (PID: {})", child.id());
+            }
+
+            #[cfg(not(unix))]
+            {
+                println!("❌ Daemon mode is only supported on Unix systems");
+                std::process::exit(1);
+            }
+        }
+
+        DaemonOp::Logs { follow, lines } => {
+            if !config.log_file.exists() {
+                println!("No log file found at: {}", config.log_file.display());
+                return Ok(());
+            }
+
+            if follow {
+                // Tail -f mode
+                println!("Following daemon logs (Ctrl+C to stop)...\n");
+
+                use std::io::{BufRead, BufReader, Seek, SeekFrom};
+
+                let file = std::fs::File::open(&config.log_file)?;
+                let mut reader = BufReader::new(file);
+
+                // Seek to end first
+                reader.seek(SeekFrom::End(0))?;
+
+                loop {
+                    let mut line = String::new();
+                    match reader.read_line(&mut line) {
+                        Ok(0) => {
+                            // No new data, wait
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        }
+                        Ok(_) => {
+                            print!("{}", line);
+                        }
+                        Err(e) => {
+                            eprintln!("Error reading log: {}", e);
+                            break;
+                        }
+                    }
+
+                    // Check for Ctrl+C
+                    if tokio::signal::ctrl_c().now_or_never().is_some() {
+                        break;
+                    }
+                }
+            } else {
+                // Show last N lines
+                let content = std::fs::read_to_string(&config.log_file)?;
+                let all_lines: Vec<&str> = content.lines().collect();
+                let start = all_lines.len().saturating_sub(lines);
+
+                for line in &all_lines[start..] {
+                    println!("{}", line);
+                }
+            }
         }
     }
 

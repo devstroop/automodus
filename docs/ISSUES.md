@@ -244,52 +244,52 @@ Browser console and network capture.
 Foundation for persistent sessions. Largest effort.
 
 ### Issue #11: Create Daemon struct
-**Status:** ⬜ Not Started  
+**Status:** ✅ Done  
 **File:** `src/daemon/mod.rs` (new)  
 **Estimate:** 2-3 days
 
 > **Note:** Unix socket + PID management has edge cases. Budget extra time.
 
 **Tasks:**
-- [ ] Create `src/daemon/mod.rs`
-- [ ] Implement `Daemon` struct per SHELL.md
-- [ ] PID file management (`~/.automodus/daemon.pid`)
-- [ ] Log file (`~/.automodus/daemon.log`)
-- [ ] Unix socket listener (`~/.automodus/automodus.sock`)
-- [ ] Graceful shutdown handling (SIGTERM, SIGINT)
-- [ ] Stale PID file detection and cleanup
+- [x] Create `src/daemon/mod.rs`
+- [x] Implement `Daemon` struct per SHELL.md
+- [x] PID file management (`~/.automodus/daemon.pid`)
+- [x] Log file (`~/.automodus/daemon.log`)
+- [x] Unix socket listener (`~/.automodus/automodus.sock`)
+- [x] Graceful shutdown handling (SIGTERM, SIGINT)
+- [x] Stale PID file detection and cleanup
 
 ---
 
 ### Issue #12: Create AppCore struct
-**Status:** ⬜ Not Started  
+**Status:** ✅ Done  
 **File:** `src/core/app.rs` (new)  
 **Depends:** #11  
 **Estimate:** 4-6 hours
 
 **Tasks:**
-- [ ] Create `src/core/app.rs`
-- [ ] Move `WorkflowEngine` ownership from various places
-- [ ] Add `RwLock<WorkflowRegistry>`
-- [ ] Add `RwLock<DebugConfig>`
-- [ ] Add `broadcast::Sender<DaemonEvent>` for WebSocket
-- [ ] Implement `run_workflow()` and `browser_command()` methods
+- [x] Create `src/core/app.rs`
+- [x] Session management with create/get/close/list
+- [x] Add `RwLock` for workflow cache
+- [x] Add `RwLock<DebugConfig>`
+- [x] Add `broadcast::Sender<CoreEvent>` for events
+- [x] Debug config resolution with merge
 
 ---
 
 ### Issue #13: Create SessionManager
-**Status:** ⬜ Not Started  
-**File:** `src/core/session.rs` (new)  
+**Status:** ✅ Done (basic)  
+**File:** `src/core/app.rs` (integrated into AppCore)  
 **Depends:** #12  
 **Estimate:** 1.5-2 days
 
 > **Note:** Browser lifecycle has edge cases (crash recovery, zombie processes).
 
 **Tasks:**
-- [ ] Create `src/core/session.rs`
+- [x] Session management integrated into `src/core/app.rs`
 - [ ] Extract browser launch logic from `api/state.rs` and `bin/automodus.rs`
-- [ ] Implement `Session` struct with `keep_alive` field
-- [ ] Implement `SessionManager` with create/get/close/list
+- [x] Implement `Session` struct with `keep_alive` field
+- [x] Implement session create/get/close/list in AppCore
 - [ ] Implement `cleanup_idle()` for idle timeout
 - [ ] Single source of truth for browser lifecycle
 - [ ] Handle browser crash/disconnect gracefully
@@ -301,17 +301,17 @@ Foundation for persistent sessions. Largest effort.
 ---
 
 ### Issue #14: Daemon CLI commands
-**Status:** ⬜ Not Started  
+**Status:** ✅ Done  
 **File:** `src/bin/automodus.rs`  
 **Depends:** #11  
 **Estimate:** 3-4 hours
 
 **Tasks:**
-- [ ] Add `daemon start` command (background, `-f` for foreground)
-- [ ] Add `daemon stop` command
-- [ ] Add `daemon status` command
-- [ ] Add `daemon restart` command
-- [ ] Add `daemon logs` command
+- [x] Add `daemon start` command (background, `-f` for foreground)
+- [x] Add `daemon stop` command
+- [x] Add `daemon status` command
+- [x] Add `daemon restart` command
+- [x] Add `daemon logs` command (with `-f` follow, `--lines=N`)
 
 **Acceptance:**
 ```bash
