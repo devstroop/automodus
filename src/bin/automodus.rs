@@ -22,13 +22,13 @@ use std::sync::Arc;
 
 use automodus::{
     actions::BrowserHandle,
-    core::{AppCore, WorkflowEngine},
+    core::{AppCore, ShellPauseHandler, WorkflowEngine},
     daemon::{Daemon, DaemonConfig, DaemonStatus},
     modules::ChromePageAdapter,
     shell::{ShellClient, ShellCommand, ShellConfig},
     utils::{logging, yaml_to_json},
     workflow::{
-        schema::{CaptureMode, DebugConfig, DebugProfile, LogLevel},
+        schema::{CaptureMode, DebugConfig, DebugProfile, LogLevel, ResolvedDebugConfig},
         WorkflowLoader, WorkflowParser,
     },
 };
@@ -820,7 +820,7 @@ async fn run_workflow(
         println!("  Params: {:?}", params.keys().collect::<Vec<_>>());
     }
     let result = engine
-        .execute_with_debug(&workflow, &adapter, params, resolved_debug)
+        .execute_with_pause_handler(&workflow, &adapter, params, resolved_debug, &ShellPauseHandler, None)
         .await
         .map_err(|e| format!("Workflow execution failed: {}", e))?;
 
@@ -2175,7 +2175,7 @@ async fn run_workflow_with_adapter(
     params.extend(extra_params);
 
     let result = engine
-        .execute(&workflow, adapter, params)
+        .execute_with_pause_handler(&workflow, adapter, params, ResolvedDebugConfig::default(), &ShellPauseHandler, None)
         .await
         .map_err(|e| format!("Workflow execution failed: {}", e))?;
 
