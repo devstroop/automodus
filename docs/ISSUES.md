@@ -609,8 +609,8 @@ Final debug features.
 ---
 
 ### Issue #25: Pause implementation (shell)
-**Status:** ✅ Done (foundation)  
-**File:** `src/shell/client.rs`, `src/core/engine.rs`  
+**Status:** ✅ Done  
+**File:** `src/shell/client.rs`, `src/core/engine.rs`, `src/bin/automodus.rs`  
 **Depends:** #5, #16  
 **Estimate:** 3-4 hours
 
@@ -619,14 +619,14 @@ Final debug features.
 - [x] Add PauseHandler trait to engine
 - [x] Add PauseResponse enum (Continue, Skip, Abort)
 - [x] Integrate pause handling into execute_steps
-- [ ] Implement ShellPauseHandler (interactive stdin prompt) - deferred
-- [ ] Handle stdin in shell context - deferred
+- [x] Implement ShellPauseHandler (interactive stdin prompt)
+- [x] Wire ShellPauseHandler into CLI `run_workflow()` and shell `run_workflow_with_adapter()`
 
 ---
 
 ### Issue #26: Pause implementation (API/WebSocket)
-**Status:** ✅ Done (foundation)  
-**File:** `src/api/ws.rs`, `src/core/engine.rs`  
+**Status:** ✅ Done  
+**File:** `src/api/ws.rs`, `src/api/state.rs`, `src/api/handlers.rs`, `src/core/engine.rs`  
 **Depends:** #23, #5  
 **Estimate:** 3-4 hours
 
@@ -634,9 +634,9 @@ Final debug features.
 - [x] Add execution.paused event type
 - [x] PauseHandler trait for async pause response
 - [x] DefaultPauseHandler that continues automatically
-- [ ] WebSocketPauseHandler implementation - deferred
-- [ ] Wait for client command (`continue`, `skip`, `abort`) - deferred
-- [ ] Timeout handling for unresponsive clients - deferred
+- [x] WebSocketPauseHandler implementation (`src/api/state.rs`)
+- [x] Wait for client command (`continue`, `skip`, `abort`) via oneshot channel
+- [x] Wire WebSocketPauseHandler into API workflow execution (`handlers.rs`)
 
 ---
 
@@ -787,6 +787,9 @@ steps:
 | 2026-02-23 | #16: Updated merge note — `feature/sub-workflows` rebased and merged via PR #1 |
 | 2026-02-23 | Added Issue #28: Sub-workflow composition (WorkflowResolver, call action, ARCHITECTURE.md) |
 | 2026-02-23 | Audit: Verified all 34 issues match codebase reality |
+| 2026-02-23 | #25 ✅: ShellPauseHandler wired into CLI `run_workflow()` and shell `run_workflow_with_adapter()` |
+| 2026-02-23 | #26 ✅: WebSocketPauseHandler already implemented in `state.rs`, wired in `handlers.rs` |
+| 2026-02-23 | Added 5 pause handler tests (continue, skip, abort, disabled, default) |
 
 ---
 

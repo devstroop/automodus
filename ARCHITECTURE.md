@@ -72,6 +72,7 @@ src/
 │
 ├── daemon/                 # Daemon process
 │   ├── mod.rs              # Daemon struct, lifecycle, socket listener
+│   ├── protocol.rs         # Typed socket protocol (SocketRequest/SocketResponse, framing)
 │   └── config.rs           # DaemonConfig (TOML from ~/.automodus/)
 │
 ├── shell/                  # Interactive shell
@@ -92,6 +93,7 @@ src/
     ├── logging.rs          # Tracing/subscriber setup
     ├── convert.rs          # YAML↔JSON conversion
     ├── trace.rs            # TraceLogger (JSONL debug output)
+    ├── debug.rs            # Debug utilities
     └── metrics.rs          # Metrics collection
 ```
 
@@ -445,12 +447,13 @@ API errors return:
 
 ## Known Architectural Debt
 
-1. **Pause handlers are partial** — `PauseHandler` trait exists with `DefaultPauseHandler` (auto-continue), but `ShellPauseHandler` (interactive stdin) and `WebSocketPauseHandler` (client command wait) are not implemented.
+No remaining architectural debt items. All previously tracked items have been resolved.
 
 ### Resolved Debt
 
 - ~~Shell runs standalone~~ — Shell now auto-detects running daemon and routes commands via Unix socket protocol (`handle_socket_connection`, `dispatch_request`, `DaemonClient`).
 - ~~Dual session stores~~ — `ServerSession` removed. `ServerState` delegates to `AppCore`'s `SessionStore` as single source of truth.
 - ~~Console/network capture uses JS injection~~ — Replaced with native CDP event listeners (`EventConsoleApiCalled`, `EventRequestWillBeSent`/`EventResponseReceived`) via `start_console_listener()` and `start_network_listener()`.
+- ~~Pause handlers are partial~~ — `ShellPauseHandler` (stdin-based) wired into CLI and shell. `WebSocketPauseHandler` (oneshot channel) wired into API. Both support Continue/Skip/Abort.
 
 See [docs/ISSUES.md](docs/ISSUES.md) for the full issue tracker.
