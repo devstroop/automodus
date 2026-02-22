@@ -3,6 +3,8 @@
 //! Long-running background process that owns browser sessions and workflow execution.
 //! Implements Docker-style daemon/client separation.
 
+pub mod config;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::UnixListener;
@@ -10,6 +12,11 @@ use tokio::sync::broadcast;
 use tracing::{error, info, warn};
 
 use crate::core::AppCore;
+
+pub use config::{
+    ensure_config_exists, load_config, validate_config, BrowserSection, DaemonConfigFile,
+    DaemonSection, HttpSection, LimitsSection, Viewport,
+};
 
 /// Daemon configuration
 #[derive(Debug, Clone)]
