@@ -9,7 +9,7 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use crate::config::AppConfig;
-use crate::core::{AppCore, Session, SessionInfo as CoreSessionInfo, WorkflowEngine};
+use crate::core::{AppCore, CoreEvent, Session, SessionInfo as CoreSessionInfo, WorkflowEngine};
 use crate::modules::ChromePageAdapter;
 use crate::workflow::{Workflow, WorkflowParser};
 use crate::api::schemas::ExecutionStatus;
@@ -73,6 +73,25 @@ impl ServerState {
     /// Create a new server state with a shared AppCore
     pub fn with_core(config: AppConfig, core: Arc<AppCore>) -> Self {
         let (event_tx, _) = tokio::sync::broadcast::channel(256);
+
+        // Bridge CoreEvent → ServerEvent so WebSocket clients receive daemon events
+        let mut core_rx = core.subscribe();
+        let bridge_tx = event_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                match core_rx.recv().await {
+                    Ok(event) => {
+                        if let Some(server_event) = convert_core_event(event) {
+                            let _ = bridge_tx.send(server_event);
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("CoreEvent bridge lagged, missed {} events", n);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
 
         Self {
             core,
@@ -324,4 +343,26 @@ pub fn create_state(config: AppConfig) -> Arc<ServerState> {
 /// Create a shared server state backed by a shared AppCore
 pub fn create_state_with_core(config: AppConfig, core: Arc<AppCore>) -> Arc<ServerState> {
     Arc::new(ServerState::with_core(config, core))
+}
+
+/// Convert a CoreEvent to a ServerEvent, returning None for events without a WS equivalent.
+fn convert_core_event(event: CoreEvent) -> Option<ServerEvent> {
+    match event {
+        CoreEvent::SessionCreated { id } => Some(ServerEvent::SessionCreated { id }),
+        CoreEvent::SessionClosed { id } => Some(ServerEvent::SessionClosed { id }),
+        CoreEvent::ExecutionStarted { id, workflow } => {
+            Some(ServerEvent::ExecutionStarted { id, workflow })
+        }
+        CoreEvent::ExecutionStep { id, step, action } => {
+            Some(ServerEvent::ExecutionStep { id, step, action })
+        }
+        CoreEvent::ExecutionComplete { id, success } => {
+            Some(ServerEvent::ExecutionComplete { id, success })
+        }
+        CoreEvent::ExecutionError { id, error } => {
+            Some(ServerEvent::ExecutionError { id, error })
+        }
+        // WorkflowLoaded, WorkflowUnloaded, DebugConfigChanged have no WS equivalent
+        _ => None,
+    }
 }

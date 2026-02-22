@@ -197,8 +197,13 @@ pub async fn run_workflow_handler(
         }
     };
 
-    // Execute workflow
+    // Execute workflow with tracking
     info!("Executing workflow: {}", workflow.name);
+
+    let total_steps = workflow.steps.len();
+    let exec_id = state
+        .start_execution(&workflow.name, total_steps, request.params.clone())
+        .await;
 
     let result = state
         .engine
@@ -206,28 +211,48 @@ pub async fn run_workflow_handler(
         .await;
 
     match result {
-        Ok(result) => (
-            StatusCode::OK,
-            Json(RunWorkflowResponse {
-                success: result.success,
-                workflow_name: result.workflow_name,
-                duration_ms: result.duration_ms,
-                steps_executed: result.steps_executed,
-                output: result.output,
-                error: result.error,
-            }),
-        ),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(RunWorkflowResponse {
-                success: false,
-                workflow_name: name,
-                duration_ms: 0,
-                steps_executed: 0,
-                output: serde_json::Value::Null,
-                error: Some(e.to_string()),
-            }),
-        ),
+        Ok(result) => {
+            state
+                .complete_execution(
+                    &exec_id,
+                    result.success,
+                    result.output.clone(),
+                    result.error.clone(),
+                )
+                .await;
+            (
+                StatusCode::OK,
+                Json(RunWorkflowResponse {
+                    success: result.success,
+                    workflow_name: result.workflow_name,
+                    duration_ms: result.duration_ms,
+                    steps_executed: result.steps_executed,
+                    output: result.output,
+                    error: result.error,
+                }),
+            )
+        }
+        Err(e) => {
+            state
+                .complete_execution(
+                    &exec_id,
+                    false,
+                    serde_json::Value::Null,
+                    Some(e.to_string()),
+                )
+                .await;
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(RunWorkflowResponse {
+                    success: false,
+                    workflow_name: name,
+                    duration_ms: 0,
+                    steps_executed: 0,
+                    output: serde_json::Value::Null,
+                    error: Some(e.to_string()),
+                }),
+            )
+        }
     }
 }
 
