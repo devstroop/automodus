@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
@@ -108,11 +109,13 @@ pub enum ShellCommand {
 #[derive(Clone)]
 struct ShellCompleter {
     commands: Vec<String>,
+    session_subcommands: Vec<String>,
     workflow_dirs: Vec<PathBuf>,
+    session_names: Arc<RwLock<Vec<String>>>,
 }
 
 impl ShellCompleter {
-    fn new(workflow_dirs: Vec<PathBuf>) -> Self {
+    fn new(workflow_dirs: Vec<PathBuf>, session_names: Arc<RwLock<Vec<String>>>) -> Self {
         Self {
             commands: vec![
                 "run".to_string(),
@@ -131,11 +134,21 @@ impl ShellCompleter {
                 "debug".to_string(),
                 "highlight".to_string(),
                 "trace".to_string(),
+                "session".to_string(),
                 "help".to_string(),
                 "quit".to_string(),
                 "exit".to_string(),
             ],
+            session_subcommands: vec![
+                "new".to_string(),
+                "list".to_string(),
+                "switch".to_string(),
+                "close".to_string(),
+                "info".to_string(),
+                "keep-alive".to_string(),
+            ],
             workflow_dirs,
+            session_names,
         }
     }
 
@@ -169,6 +182,60 @@ impl ShellCompleter {
 
         completions
     }
+
+    fn complete_session_subcommand(&self, partial: &str) -> Vec<Pair> {
+        self.session_subcommands
+            .iter()
+            .filter(|s| s.starts_with(partial))
+            .map(|s| Pair {
+                display: s.clone(),
+                replacement: s.clone(),
+            })
+            .collect()
+    }
+
+    fn complete_session_name(&self, partial: &str) -> Vec<Pair> {
+        let names = self.session_names.read().unwrap_or_else(|e| e.into_inner());
+        names
+            .iter()
+            .filter(|n| n.starts_with(partial) || partial.is_empty())
+            .map(|n| Pair {
+                display: n.clone(),
+                replacement: n.clone(),
+            })
+            .collect()
+    }
+
+    fn complete_file_path(&self, partial: &str) -> Vec<Pair> {
+        let (dir, prefix) = if let Some(pos) = partial.rfind('/') {
+            (&partial[..=pos], &partial[pos + 1..])
+        } else {
+            ("", partial)
+        };
+
+        let search_dir = if dir.is_empty() { "." } else { dir };
+        let mut completions = Vec::new();
+
+        if let Ok(entries) = std::fs::read_dir(search_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with(prefix) || prefix.is_empty() {
+                    let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                    let full = if dir.is_empty() {
+                        if is_dir { format!("{}/", name) } else { name.clone() }
+                    } else {
+                        if is_dir { format!("{}{}/", dir, name) } else { format!("{}{}", dir, name) }
+                    };
+                    completions.push(Pair {
+                        display: full.clone(),
+                        replacement: full,
+                    });
+                }
+            }
+        }
+
+        completions
+    }
 }
 
 impl Completer for ShellCompleter {
@@ -193,7 +260,9 @@ impl Completer for ShellCompleter {
                 if line.ends_with(' ') {
                     // Command complete, suggest arguments
                     match parts[0] {
-                        "run" | "r" => Ok((pos, self.complete_workflow(""))),
+                        "run" | "r" | "trace" => Ok((pos, self.complete_workflow(""))),
+                        "screenshot" | "ss" => Ok((pos, self.complete_file_path(""))),
+                        "session" => Ok((pos, self.complete_session_subcommand(""))),
                         _ => Ok((pos, vec![])),
                     }
                 } else {
@@ -207,9 +276,40 @@ impl Completer for ShellCompleter {
                 let last = parts.last().unwrap_or(&"");
 
                 match cmd {
-                    "run" | "r" => {
+                    "run" | "r" | "trace" => {
                         let start = line.rfind(' ').map(|i| i + 1).unwrap_or(0);
                         Ok((start, self.complete_workflow(last)))
+                    }
+                    "screenshot" | "ss" => {
+                        let start = line.rfind(' ').map(|i| i + 1).unwrap_or(0);
+                        Ok((start, self.complete_file_path(last)))
+                    }
+                    "session" => {
+                        let start = line.rfind(' ').map(|i| i + 1).unwrap_or(0);
+                        if parts.len() == 2 {
+                            // Completing subcommand
+                            if line.ends_with(' ') {
+                                // Subcommand done, suggest session names for switch/close/keep-alive
+                                match parts[1] {
+                                    "switch" | "close" | "keep-alive" => {
+                                        Ok((pos, self.complete_session_name("")))
+                                    }
+                                    _ => Ok((pos, vec![]))
+                                }
+                            } else {
+                                Ok((start, self.complete_session_subcommand(last)))
+                            }
+                        } else if parts.len() >= 3 {
+                            // Completing session name arg
+                            match parts[1] {
+                                "switch" | "close" | "keep-alive" => {
+                                    Ok((start, self.complete_session_name(last)))
+                                }
+                                _ => Ok((pos, vec![]))
+                            }
+                        } else {
+                            Ok((pos, vec![]))
+                        }
                     }
                     _ => Ok((pos, vec![])),
                 }
