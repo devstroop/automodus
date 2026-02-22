@@ -1,10 +1,12 @@
 //! Interaction actions: click, type, select, hover
+//! Supports extended selectors: text:, text*:, role:, xpath:, CSS
 
 use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashMap;
 
 use crate::actions::registry::{Action, ActionContext, ActionError, ActionOutput, BrowserHandle};
+use crate::modules::browser::selector::{parse_selector, selector_hover_js, selector_to_js};
 
 /// Click on element
 pub struct ClickAction;
@@ -98,16 +100,22 @@ impl Action for SelectAction {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ActionError::MissingParameter("value".to_string()))?;
 
-        // Use JavaScript to select option
+        // Parse and resolve selector
+        let parsed = parse_selector(selector);
+        let element_js = selector_to_js(&parsed);
+
+        // Use JavaScript to select option with extended selector support
         let script = format!(
-            r#"
-            const select = document.querySelector('{}');
-            if (!select) throw new Error('Select not found');
-            select.value = '{}';
-            select.dispatchEvent(new Event('change', {{ bubbles: true }}));
-            "#,
+            r#"(function() {{
+                const select = {};
+                if (!select) throw new Error('Select not found: {}');
+                select.value = {};
+                select.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                return true;
+            }})()"#,
+            element_js,
             selector.replace('\'', "\\'"),
-            value.replace('\'', "\\'")
+            serde_json::to_string(value).unwrap()
         );
 
         browser.eval(&script).await?;
@@ -139,16 +147,9 @@ impl Action for HoverAction {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ActionError::MissingParameter("selector".to_string()))?;
 
-        // Use JavaScript to trigger hover events
-        let script = format!(
-            r#"
-            const el = document.querySelector('{}');
-            if (!el) throw new Error('Element not found');
-            el.dispatchEvent(new MouseEvent('mouseover', {{ bubbles: true }}));
-            el.dispatchEvent(new MouseEvent('mouseenter', {{ bubbles: true }}));
-            "#,
-            selector.replace('\'', "\\'")
-        );
+        // Parse selector and use JavaScript with extended selector support
+        let parsed = parse_selector(selector);
+        let script = selector_hover_js(&parsed);
 
         browser.eval(&script).await?;
 
