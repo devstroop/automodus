@@ -4,6 +4,20 @@ Track implementation progress for automodus. Update status as work progresses.
 
 **Legend:** ⬜ Not Started | 🟡 In Progress | ✅ Done | ❌ Blocked
 
+**Summary:** 33 issues across 8 priorities
+
+| Priority | Issues | Description | Est. Total |
+|----------|--------|-------------|------------|
+| **P1** | #1-4 | Debug schema (foundation) | ~1 day |
+| **P2** | #5-8 | Engine debug integration | ~1.5 days |
+| **P3** | #9-10 | CDP listeners | ~1 day |
+| **P4** | #11-15b | Daemon architecture | ~2 weeks |
+| **P5** | #16-19 | Shell refactor | ~1 week |
+| **P6** | #20-23 | API enhancement | ~1 week |
+| **P7** | #24-27 | Debug UX | ~2 days |
+| **P8** | #31-33 | Integration tests | ~1 day |
+| **Backlog** | #29-30 | Future work | - |
+
 ---
 
 ## Priority 1: Debug Schema (Foundation)
@@ -133,8 +147,11 @@ if ctx.debug.delay > 0 {
 **Depends:** #5  
 **Estimate:** 2-3 hours
 
+> **Note:** `ErrorHandler::screenshot: Option<bool>` already exists in `schema.rs` but isn't wired to execution.
+
 **Tasks:**
 - [ ] Create `data/debug/` directory on init
+- [ ] Wire existing `ErrorHandler::screenshot` to debug system
 - [ ] Capture screenshot when step fails and `capture != None`
 - [ ] Implement filename format: `{timestamp}_{workflow}_step{n}_{phase}.png`
 - [ ] Add capture path to `WorkflowResult`
@@ -235,7 +252,9 @@ Foundation for persistent sessions. Largest effort.
 ### Issue #11: Create Daemon struct
 **Status:** ⬜ Not Started  
 **File:** `src/daemon/mod.rs` (new)  
-**Estimate:** 1-2 days
+**Estimate:** 2-3 days
+
+> **Note:** Unix socket + PID management has edge cases. Budget extra time.
 
 **Tasks:**
 - [ ] Create `src/daemon/mod.rs`
@@ -243,7 +262,8 @@ Foundation for persistent sessions. Largest effort.
 - [ ] PID file management (`~/.automodus/daemon.pid`)
 - [ ] Log file (`~/.automodus/daemon.log`)
 - [ ] Unix socket listener (`~/.automodus/automodus.sock`)
-- [ ] Graceful shutdown handling
+- [ ] Graceful shutdown handling (SIGTERM, SIGINT)
+- [ ] Stale PID file detection and cleanup
 
 ---
 
@@ -267,7 +287,9 @@ Foundation for persistent sessions. Largest effort.
 **Status:** ⬜ Not Started  
 **File:** `src/core/session.rs` (new)  
 **Depends:** #12  
-**Estimate:** 1 day
+**Estimate:** 1.5-2 days
+
+> **Note:** Browser lifecycle has edge cases (crash recovery, zombie processes).
 
 **Tasks:**
 - [ ] Create `src/core/session.rs`
@@ -276,10 +298,11 @@ Foundation for persistent sessions. Largest effort.
 - [ ] Implement `SessionManager` with create/get/close/list
 - [ ] Implement `cleanup_idle()` for idle timeout
 - [ ] Single source of truth for browser lifecycle
+- [ ] Handle browser crash/disconnect gracefully
 
 **Removes duplication from:**
-- `src/api/state.rs:70-130`
-- `src/bin/automodus.rs:235-270`
+- `src/api/state.rs` (ServerState browser management)
+- `src/bin/automodus.rs` (shell browser launch)
 
 ---
 
@@ -305,6 +328,23 @@ automodus daemon stop
 
 ---
 
+### Issue #14a: Unify error types
+**Status:** ⬜ Not Started  
+**File:** `src/error.rs`  
+**Depends:** #11  
+**Estimate:** 2-3 hours
+
+> **Note:** Moved from backlog - daemon needs `ErrorCode` enum for proper API responses.
+
+**Tasks:**
+- [ ] Merge `AutomodusError` and proposed `AppError`
+- [ ] Add `ErrorCode` enum per SHELL.md spec
+- [ ] Add daemon-specific codes: `DaemonNotRunning`, `DaemonAlreadyRunning`, `DaemonConnectionFailed`
+- [ ] Implement `From<AutomodusError>` for API error response
+- [ ] Update all error handling sites
+
+---
+
 ### Issue #15: Merge HTTP server into daemon
 **Status:** ⬜ Not Started  
 **File:** `src/daemon/mod.rs`, `src/api/server.rs`  
@@ -316,6 +356,39 @@ automodus daemon stop
 - [ ] Share `AppCore` between socket and HTTP handlers
 - [ ] Update `serve` command to start daemon (backward compat)
 - [ ] Remove standalone server state management
+
+---
+
+### Issue #15a: Daemon config file loading
+**Status:** ⬜ Not Started  
+**File:** `src/daemon/config.rs` (new)  
+**Depends:** #11  
+**Estimate:** 2-3 hours
+
+**Tasks:**
+- [ ] Create `DaemonConfig` struct matching SHELL.md spec
+- [ ] Load from `~/.automodus/daemon.toml` if exists
+- [ ] Fall back to defaults
+- [ ] Validate config values (port ranges, paths)
+- [ ] Create default config file on first run
+
+**Config locations:**
+- `~/.automodus/daemon.toml` (user global)
+- `config/app.toml` (workspace override)
+
+---
+
+### Issue #15b: Backward compatibility for serve command
+**Status:** ⬜ Not Started  
+**File:** `src/bin/automodus.rs`  
+**Depends:** #14, #15  
+**Estimate:** 1 hour
+
+**Tasks:**
+- [ ] Keep `automodus serve` command working
+- [ ] Internally call `daemon start` with HTTP enabled
+- [ ] Print deprecation warning
+- [ ] Document in help text
 
 ---
 
@@ -441,7 +514,9 @@ Full API parity with shell.
 **Status:** ⬜ Not Started  
 **File:** `src/api/ws.rs` (new)  
 **Depends:** #12, cargo deps (tokio-tungstenite)  
-**Estimate:** 1 day
+**Estimate:** 1.5-2 days
+
+> **Note:** Protocol handling and client reconnection need care.
 
 **Tasks:**
 - [ ] Create `src/api/ws.rs`
@@ -525,19 +600,6 @@ Final debug features.
 
 ## Backlog / Future
 
-### Issue #28: Unify error types
-**Status:** ⬜ Not Started  
-**File:** `src/error.rs`  
-**Estimate:** 2-3 hours
-
-**Tasks:**
-- [ ] Merge `AutomodusError` and proposed `AppError`
-- [ ] Add `ErrorCode` enum for API responses
-- [ ] Implement `From<AutomodusError>` for API error response
-- [ ] Update all error handling sites
-
----
-
 ### Issue #29: Tab management
 **Status:** ⬜ Not Started  
 **File:** `src/modules/browser/actions/tabs.rs`  
@@ -564,6 +626,54 @@ Final debug features.
 
 ---
 
+## Priority 8: Integration Tests
+
+> **Note:** Run these after each phase to catch regressions.
+
+### Issue #31: Daemon integration tests
+**Status:** ⬜ Not Started  
+**File:** `tests/daemon_tests.rs` (new)  
+**Depends:** #11, #14  
+**Estimate:** 3-4 hours
+
+**Tasks:**
+- [ ] Test daemon start/stop lifecycle
+- [ ] Test PID file creation and cleanup
+- [ ] Test stale PID detection
+- [ ] Test socket communication
+- [ ] Test graceful shutdown
+
+---
+
+### Issue #32: Shell-daemon integration tests  
+**Status:** ⬜ Not Started  
+**File:** `tests/shell_tests.rs` (new)  
+**Depends:** #16, #31  
+**Estimate:** 3-4 hours
+
+**Tasks:**
+- [ ] Test shell connects to running daemon
+- [ ] Test shell fails gracefully when daemon not running
+- [ ] Test commands route through daemon
+- [ ] Test browser survives shell exit
+- [ ] Test multiple shells can connect
+
+---
+
+### Issue #33: Session persistence tests
+**Status:** ⬜ Not Started  
+**File:** `tests/session_tests.rs` (new)  
+**Depends:** #13, #31  
+**Estimate:** 2-3 hours
+
+**Tasks:**
+- [ ] Test session survives shell disconnect
+- [ ] Test session idle timeout
+- [ ] Test `keep_alive` prevents timeout
+- [ ] Test auth state (cookies) persists
+
+---
+
 ## Revision History
 
 | Date | Changes |
@@ -576,12 +686,17 @@ Final debug features.
 
 ```
 Phase 0 (Debug Schema):     #1 → #2 → #3 → #4
-Phase 1a (Daemon Core):     #11 → #12 → #14
-Phase 1b (Sessions):        #13 → #15
+Phase 1a (Daemon Core):     #11 → #12 → #14 → #14a (errors)
+Phase 1a+ (Config):         #15a (daemon config)
+Phase 1b (Sessions):        #13 → #15 → #15b (serve compat)
 Phase 1c (Shell):           #16 → #17 → #18 → #19
+Phase 1-Tests:              #31 → #32 → #33
 Phase 2 (Engine Debug):     #5 → #6 → #7 → #8
 Phase 3 (CDP):              #9 → #10
 Phase 4 (API):              #20 → #21 → #22 → #23
 Phase 5 (Debug UX):         #24 → #25 → #26 → #27
-Backlog:                    #28, #29, #30
+Backlog:                    #29, #30
 ```
+
+**Total Issues:** 33  
+**Critical Path:** #1 → #11 → #12 → #13 → #16 (debug schema → daemon → shell)
