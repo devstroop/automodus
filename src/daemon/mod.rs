@@ -627,6 +627,40 @@ async fn dispatch_request(core: &Arc<AppCore>, request: SocketRequest) -> Socket
             Err(e) => SocketResponse::err(format!("Browser error: {}", e)),
         },
 
+        SocketRequest::BrowserFind { selector } => match core.get_page().await {
+            Ok(adapter) => {
+                let js = format!(
+                    r#"(function() {{
+                        var els = document.querySelectorAll('{}');
+                        var results = [];
+                        for (var i = 0; i < Math.min(els.length, 10); i++) {{
+                            var el = els[i];
+                            results.push({{
+                                tag: el.tagName.toLowerCase(),
+                                id: el.id || null,
+                                classes: el.className || null,
+                                text: (el.textContent || '').trim().substring(0, 100)
+                            }});
+                        }}
+                        return JSON.stringify({{ count: els.length, matches: results }});
+                    }})()
+                    "#,
+                    selector.replace('\\', "\\\\").replace('\'', "\\'")
+                );
+                match adapter.eval(&js).await {
+                    Ok(val) => {
+                        let json_str = val.as_str().unwrap_or("{}");
+                        match serde_json::from_str::<serde_json::Value>(json_str) {
+                            Ok(data) => SocketResponse::ok_data(data),
+                            Err(_) => SocketResponse::ok_data(serde_json::json!({"count": 0, "matches": []})),
+                        }
+                    }
+                    Err(e) => SocketResponse::err(e.to_string()),
+                }
+            }
+            Err(e) => SocketResponse::err(format!("Browser error: {}", e)),
+        },
+
         // --- Tab Management ---
         SocketRequest::BrowserTabList => match core.get_page().await {
             Ok(adapter) => match adapter.list_tabs().await {
@@ -1027,6 +1061,15 @@ impl DaemonClient {
             })
             .await?;
         Self::unwrap_response(resp).map(|_| ()).map_err(DaemonError::CommandFailed)
+    }
+
+    pub async fn browser_find(&mut self, selector: &str) -> Result<serde_json::Value, DaemonError> {
+        let resp = self
+            .request(SocketRequest::BrowserFind {
+                selector: selector.to_string(),
+            })
+            .await?;
+        Self::unwrap_response(resp).map_err(DaemonError::CommandFailed)
     }
 
     // --- Tabs ---

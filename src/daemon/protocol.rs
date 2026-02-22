@@ -84,6 +84,8 @@ pub enum SocketRequest {
     BrowserReload,
     /// Highlight an element
     BrowserHighlight { selector: String },
+    /// Find elements matching a selector
+    BrowserFind { selector: String },
 
     // --- Tab Management ---
     /// List open tabs
