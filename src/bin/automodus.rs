@@ -792,6 +792,12 @@ async fn run_workflow(
     if let Err(e) = adapter.start_console_listener().await {
         eprintln!("Warning: failed to start console listener: {}", e);
     }
+    if let Err(e) = adapter.start_network_listener().await {
+        eprintln!("Warning: failed to start network listener: {}", e);
+    }
+    if let Err(e) = adapter.start_crash_listener().await {
+        eprintln!("Warning: failed to start crash listener: {}", e);
+    }
     let engine = WorkflowEngine::new();
 
     println!("\n▶ Executing workflow...\n");
@@ -905,6 +911,12 @@ async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
     let adapter = ChromePageAdapter::with_browser(page, browser_ref);
     if let Err(e) = adapter.start_console_listener().await {
         eprintln!("Warning: failed to start console listener: {}", e);
+    }
+    if let Err(e) = adapter.start_network_listener().await {
+        eprintln!("Warning: failed to start network listener: {}", e);
+    }
+    if let Err(e) = adapter.start_crash_listener().await {
+        eprintln!("Warning: failed to start crash listener: {}", e);
     }
     let engine = WorkflowEngine::new();
 

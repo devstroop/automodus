@@ -118,6 +118,12 @@ impl AppCore {
         if let Err(e) = adapter.start_console_listener().await {
             warn!("Failed to start console listener: {}", e);
         }
+        if let Err(e) = adapter.start_network_listener().await {
+            warn!("Failed to start network listener: {}", e);
+        }
+        if let Err(e) = adapter.start_crash_listener().await {
+            warn!("Failed to start crash listener: {}", e);
+        }
         *self.page_adapter.lock().await = Some(adapter.clone());
 
         Ok(adapter)
