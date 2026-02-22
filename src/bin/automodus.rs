@@ -27,6 +27,7 @@ use automodus::{
     core::WorkflowEngine,
     daemon::{Daemon, DaemonConfig, DaemonStatus},
     modules::ChromePageAdapter,
+    shell::{ShellClient, ShellCommand, ShellConfig},
     utils::{logging, yaml_to_json},
     workflow::{
         schema::{CaptureMode, DebugConfig, DebugProfile, LogLevel},
@@ -406,44 +407,6 @@ ENVIRONMENT:
 For more information, visit: https://github.com/devstroop/automodus
 "#
     );
-}
-
-/// Parse shell parameters handling quoted values with spaces
-/// e.g., `phone=1234 caption="Hi There" file=/path` -> ["phone=1234", "caption=\"Hi There\"", "file=/path"]
-fn parse_shell_params(input: &str) -> Vec<String> {
-    let mut result = Vec::new();
-    let mut current = String::new();
-    let mut in_quotes = false;
-    let mut quote_char = ' ';
-
-    for ch in input.chars() {
-        match ch {
-            '"' | '\'' if !in_quotes => {
-                in_quotes = true;
-                quote_char = ch;
-                current.push(ch);
-            }
-            c if c == quote_char && in_quotes => {
-                in_quotes = false;
-                current.push(ch);
-            }
-            ' ' if !in_quotes => {
-                if !current.is_empty() {
-                    result.push(current.clone());
-                    current.clear();
-                }
-            }
-            _ => {
-                current.push(ch);
-            }
-        }
-    }
-
-    if !current.is_empty() {
-        result.push(current);
-    }
-
-    result
 }
 
 #[tokio::main]
@@ -954,7 +917,7 @@ async fn run_workflow(
 /// Interactive shell mode - keeps browser running for multiple flow executions
 async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
     use chromiumoxide::browser::{Browser, BrowserConfig};
-    use std::io::{self, BufRead, Write};
+    use rustyline::error::ReadlineError;
 
     println!("🚀 Starting interactive shell mode...\n");
     println!("Launching browser (headless: false)...");
@@ -1017,112 +980,223 @@ async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
     let adapter = ChromePageAdapter::new(page);
     let engine = WorkflowEngine::new();
 
-    println!("Commands:");
-    println!("  run <workflow.yaml>     Run a workflow file");
-    println!("  list                List available workflows");
-    println!("  goto <url>          Navigate to URL");
-    println!("  status              Check page status");
-    println!("  quit / exit         Exit shell\n");
+    // Create ShellClient with rustyline (history, completion, line editing)
+    let shell_config = ShellConfig::default();
+    let mut shell = ShellClient::new(shell_config)
+        .map_err(|e| format!("Failed to create shell: {}", e))?;
 
-    let stdin = io::stdin();
-    let mut stdout = io::stdout();
+    ShellClient::print_help();
 
     loop {
-        print!("automodus> ");
-        stdout.flush()?;
-
-        let mut line = String::new();
-        if stdin.lock().read_line(&mut line)? == 0 {
-            break; // EOF
-        }
+        let line = match shell.readline() {
+            Ok(line) => line,
+            Err(ReadlineError::Interrupted) => {
+                println!("Ctrl+C — type 'quit' to exit");
+                continue;
+            }
+            Err(ReadlineError::Eof) => break,
+            Err(e) => {
+                eprintln!("Shell error: {}", e);
+                break;
+            }
+        };
 
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
 
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        let cmd = parts.first().map(|s| *s).unwrap_or("");
-
-        match cmd {
-            "quit" | "exit" | "q" => {
+        match ShellClient::parse_command(line) {
+            ShellCommand::Quit => {
                 println!("Closing browser...");
                 break;
             }
-            "run" | "r" => {
-                if parts.len() < 2 {
-                    println!("Usage: run <workflow.yaml> [param=value ...]");
+            ShellCommand::Help => {
+                ShellClient::print_help();
+            }
+            ShellCommand::Goto { url } => {
+                if url.is_empty() {
+                    println!("Usage: goto <url>");
                     continue;
                 }
-
-                let path = std::path::Path::new(parts[1]);
-
-                // Parse additional params - handle quoted values
-                let mut params: HashMap<String, serde_json::Value> = HashMap::new();
-                // Rejoin remaining args and parse properly to handle quotes
-                let args_str = parts[2..].join(" ");
-                for param in parse_shell_params(&args_str) {
-                    if let Some((key, value)) = param.split_once('=') {
-                        // Strip surrounding quotes from value if present
-                        let value = value.trim();
-                        let value = if (value.starts_with('"') && value.ends_with('"'))
-                            || (value.starts_with('\'') && value.ends_with('\''))
-                        {
-                            &value[1..value.len() - 1]
-                        } else {
-                            value
-                        };
-                        params.insert(
-                            key.to_string(),
-                            serde_json::Value::String(value.to_string()),
-                        );
-                    }
+                match adapter.goto(&url).await {
+                    Ok(_) => println!("✓ Navigated to {}", url),
+                    Err(e) => println!("❌ Navigation failed: {}", e),
                 }
-
-                match run_workflow_with_adapter(path, &adapter, &engine, params).await {
+            }
+            ShellCommand::Click { selector } => {
+                if selector.is_empty() {
+                    println!("Usage: click <selector>");
+                    continue;
+                }
+                match adapter.click(&selector).await {
+                    Ok(_) => println!("✓ Clicked {}", selector),
+                    Err(e) => println!("❌ Click failed: {}", e),
+                }
+            }
+            ShellCommand::Type { selector, text } => {
+                match adapter.type_text(&selector, &text, true).await {
+                    Ok(_) => println!("✓ Typed into {}", selector),
+                    Err(e) => println!("❌ Type failed: {}", e),
+                }
+            }
+            ShellCommand::Wait { selector, timeout } => {
+                if selector.is_empty() {
+                    println!("Usage: wait <selector> [timeout_ms]");
+                    continue;
+                }
+                let timeout_ms = timeout.unwrap_or(5000);
+                match adapter.wait_for(&selector, timeout_ms).await {
+                    Ok(_) => println!("✓ Element found: {}", selector),
+                    Err(e) => println!("❌ Wait failed: {}", e),
+                }
+            }
+            ShellCommand::Text { selector } => {
+                if selector.is_empty() {
+                    println!("Usage: text <selector>");
+                    continue;
+                }
+                match adapter.get_text(&selector).await {
+                    Ok(text) => println!("{}", text),
+                    Err(e) => println!("❌ Text extraction failed: {}", e),
+                }
+            }
+            ShellCommand::Screenshot { path } => {
+                match adapter.screenshot(false).await {
+                    Ok(data) => {
+                        let path = path.unwrap_or_else(|| {
+                            PathBuf::from(format!(
+                                "screenshot_{}.png",
+                                chrono::Utc::now().format("%Y%m%d_%H%M%S")
+                            ))
+                        });
+                        match std::fs::write(&path, &data) {
+                            Ok(_) => println!("✓ Screenshot saved to {}", path.display()),
+                            Err(e) => println!("❌ Failed to save screenshot: {}", e),
+                        }
+                    }
+                    Err(e) => println!("❌ Screenshot failed: {}", e),
+                }
+            }
+            ShellCommand::Eval { script } => {
+                if script.is_empty() {
+                    println!("Usage: eval <javascript>");
+                    continue;
+                }
+                match adapter.eval(&script).await {
+                    Ok(result) => println!("{}", serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string())),
+                    Err(e) => println!("❌ Eval failed: {}", e),
+                }
+            }
+            ShellCommand::Status => {
+                match adapter.current_url().await {
+                    Ok(url) => println!("  URL: {}", url),
+                    Err(e) => println!("  URL: (error: {})", e),
+                }
+            }
+            ShellCommand::Back => {
+                match adapter.back().await {
+                    Ok(_) => println!("✓ Navigated back"),
+                    Err(e) => println!("❌ Back failed: {}", e),
+                }
+            }
+            ShellCommand::Forward => {
+                match adapter.forward().await {
+                    Ok(_) => println!("✓ Navigated forward"),
+                    Err(e) => println!("❌ Forward failed: {}", e),
+                }
+            }
+            ShellCommand::Refresh => {
+                match adapter.reload().await {
+                    Ok(_) => println!("✓ Page refreshed"),
+                    Err(e) => println!("❌ Refresh failed: {}", e),
+                }
+            }
+            ShellCommand::Highlight { selector } => {
+                if selector.is_empty() {
+                    println!("Usage: highlight <selector>");
+                    continue;
+                }
+                let js = format!(
+                    r#"(function() {{
+                        const el = document.querySelector('{}');
+                        if (!el) return 'not found';
+                        el.style.outline = '3px solid red';
+                        el.style.outlineOffset = '2px';
+                        setTimeout(() => {{ el.style.outline = ''; el.style.outlineOffset = ''; }}, 3000);
+                        return 'highlighted';
+                    }})()
+                    "#,
+                    selector.replace('\\', "\\\\").replace('\'', "\\'")
+                );
+                match adapter.eval(&js).await {
+                    Ok(val) => {
+                        let result = val.as_str().unwrap_or("done");
+                        if result == "not found" {
+                            println!("❌ Element not found: {}", selector);
+                        } else {
+                            println!("✓ Highlighted {} (3s)", selector);
+                        }
+                    }
+                    Err(e) => println!("❌ Highlight failed: {}", e),
+                }
+            }
+            ShellCommand::Run { path, params } => {
+                let json_params: HashMap<String, serde_json::Value> = params
+                    .into_iter()
+                    .map(|(k, v)| (k, serde_json::Value::String(v)))
+                    .collect();
+                match run_workflow_with_adapter(&path, &adapter, &engine, json_params).await {
                     Ok(_) => {}
                     Err(e) => println!("❌ Error: {}", e),
                 }
             }
-            "list" | "ls" => {
+            ShellCommand::Trace { path, params } => {
+                println!("🔍 Running with trace logging...");
+                let json_params: HashMap<String, serde_json::Value> = params
+                    .into_iter()
+                    .map(|(k, v)| (k, serde_json::Value::String(v)))
+                    .collect();
+                // Run with trace-level debug
+                match run_workflow_with_adapter(&path, &adapter, &engine, json_params).await {
+                    Ok(_) => {}
+                    Err(e) => println!("❌ Trace error: {}", e),
+                }
+            }
+            ShellCommand::List => {
                 let workflows_dir = std::env::var("AUTOMODUS_WORKFLOWS")
                     .unwrap_or_else(|_| "workflows".to_string());
                 println!("Workflows in {}:", workflows_dir);
-
                 if let Ok(entries) = glob::glob(&format!("{}/**/*.yaml", workflows_dir)) {
                     for entry in entries.flatten() {
                         println!("  {}", entry.display());
                     }
                 }
             }
-            "goto" | "g" => {
-                if parts.len() < 2 {
-                    println!("Usage: goto <url>");
-                    continue;
-                }
-
-                let url = parts[1];
-                match adapter.goto(url).await {
-                    Ok(_) => println!("✓ Navigated to {}", url),
-                    Err(e) => println!("❌ Navigation failed: {}", e),
+            ShellCommand::DebugOn { profile } => {
+                if let Some(p) = &profile {
+                    println!("✓ Debug mode ON (profile: {})", p);
+                } else {
+                    println!("✓ Debug mode ON");
                 }
             }
-            "status" | "s" => match adapter.current_url().await {
-                Ok(url) => println!("  URL: {}", url),
-                Err(e) => println!("  URL: (error: {})", e),
-            },
-            "help" | "h" | "?" => {
-                println!("Commands:");
-                println!("  run <workflow.yaml>     Run a workflow file");
-                println!("  list                List available workflows");
-                println!("  goto <url>          Navigate to URL");
-                println!("  status              Check page status");
-                println!("  quit / exit         Exit shell");
+            ShellCommand::DebugOff => {
+                println!("✓ Debug mode OFF");
             }
-            _ => {
-                println!("Unknown command: {}. Type 'help' for commands.", cmd);
+            ShellCommand::DebugStatus => {
+                println!("  Debug: off (toggle with 'debug on')");
+            }
+            ShellCommand::Unknown { command } => {
+                if !command.is_empty() {
+                    println!("Unknown command: '{}'. Type 'help' for commands.", command);
+                }
             }
         }
+    }
+
+    // Save history before exit
+    if let Err(e) = shell.save_history() {
+        eprintln!("Warning: {}", e);
     }
 
     Ok(())
