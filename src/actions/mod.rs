@@ -9,7 +9,7 @@ pub mod control;
 pub mod registry;
 
 pub use registry::{
-    Action, ActionContext, ActionError, ActionOutput, ActionRegistry, BrowserHandle,
+    Action, ActionContext, ActionError, ActionOutput, ActionRegistry, BrowserHandle, TabInfo,
 };
 
 // Core actions (module-agnostic)
@@ -37,6 +37,7 @@ pub use crate::modules::browser::actions::{
     SleepAction,
     // Tabs
     TabCloseAction,
+    TabListAction,
     TabNewAction,
     TabSwitchAction,
     TypeAction,

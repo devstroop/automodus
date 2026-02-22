@@ -101,6 +101,16 @@ pub enum ShellCommand {
     SessionInfo,
     /// Toggle keep-alive on a session
     SessionKeepAlive { target: Option<String>, toggle: Option<bool> },
+    /// List open tabs
+    Tabs,
+    /// Open a new tab
+    TabNew { url: Option<String> },
+    /// Switch to a tab by index
+    TabSwitch { index: usize },
+    /// Close a tab by index
+    TabClose { index: Option<usize> },
+    /// Export page to PDF
+    Pdf { path: Option<PathBuf> },
     /// Unknown command
     Unknown { command: String },
 }
@@ -135,6 +145,9 @@ impl ShellCompleter {
                 "highlight".to_string(),
                 "trace".to_string(),
                 "session".to_string(),
+                "tabs".to_string(),
+                "tab".to_string(),
+                "pdf".to_string(),
                 "help".to_string(),
                 "quit".to_string(),
                 "exit".to_string(),
@@ -455,6 +468,15 @@ impl ShellClient {
             },
             "trace" => Self::parse_trace_command(args),
             "session" | "sess" => Self::parse_session_command(args),
+            "tabs" => ShellCommand::Tabs,
+            "tab" => Self::parse_tab_command(args),
+            "pdf" => ShellCommand::Pdf {
+                path: if args.is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(args))
+                },
+            },
             "help" | "h" | "?" => ShellCommand::Help,
             "quit" | "exit" | "q" => ShellCommand::Quit,
             _ => ShellCommand::Unknown {
@@ -613,6 +635,45 @@ impl ShellClient {
         }
     }
 
+    fn parse_tab_command(args: &str) -> ShellCommand {
+        let parts: Vec<&str> = args.split_whitespace().collect();
+
+        if parts.is_empty() {
+            return ShellCommand::Tabs;
+        }
+
+        match parts[0] {
+            "new" => {
+                let url = parts.get(1).map(|s| s.to_string());
+                ShellCommand::TabNew { url }
+            }
+            "switch" | "sw" => {
+                if let Some(idx) = parts.get(1).and_then(|s| s.parse::<usize>().ok()) {
+                    ShellCommand::TabSwitch { index: idx }
+                } else {
+                    ShellCommand::Unknown {
+                        command: "tab switch <index>".to_string(),
+                    }
+                }
+            }
+            "close" => {
+                let index = parts.get(1).and_then(|s| s.parse::<usize>().ok());
+                ShellCommand::TabClose { index }
+            }
+            "list" | "ls" => ShellCommand::Tabs,
+            _ => {
+                // Try as index for quick switch: "tab 2"
+                if let Ok(idx) = parts[0].parse::<usize>() {
+                    ShellCommand::TabSwitch { index: idx }
+                } else {
+                    ShellCommand::Unknown {
+                        command: format!("tab {}", args),
+                    }
+                }
+            }
+        }
+    }
+
     /// Tokenize arguments handling quoted strings
     fn tokenize_args(input: &str) -> Vec<String> {
         let mut result = Vec::new();
@@ -668,6 +729,7 @@ Shell Commands:
   Inspection:
     text <selector>      Get element text
     screenshot [path]    Take screenshot
+    pdf [path]           Export page to PDF
     eval <js>            Execute JavaScript
     status               Show page URL
 
@@ -683,10 +745,18 @@ Shell Commands:
     session info                       Show current session details
     session keep-alive [id] [on|off]   Toggle keep-alive
 
+  Tabs:
+    tabs                     List open tabs
+    tab new [url]            Open a new tab
+    tab switch <index>       Switch to tab by index
+    tab <index>              Switch to tab (shortcut)
+    tab close [index]        Close tab (current if omitted)
+
   Debug:
     debug on [--profile=NAME]  Enable debug mode
     debug off                   Disable debug mode
     debug status                Show debug status
+    debug clean                 Remove old debug files
     highlight <selector>        Highlight an element
     trace <file>                Run workflow with trace logging
 
@@ -695,7 +765,7 @@ Shell Commands:
     quit                 Exit shell
 
 Shortcuts: r=run, g=goto, c=click, t=type, w=wait, s=status, ls=list, hl=highlight, q=quit
-            sess=session, sw=switch, ka=keep-alive
+            sess=session, sw=switch, ka=keep-alive, ss=screenshot
 "#
         );
     }
