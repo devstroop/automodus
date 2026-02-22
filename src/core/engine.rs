@@ -422,7 +422,7 @@ impl WorkflowEngine {
 
             // Handle `call` action — invoke a sub-workflow
             if step.action == "call" {
-                self.execute_call_action(step, browser, ctx, debug_screenshots, pause_handler)
+                self.execute_call_action(step, browser, ctx, debug_screenshots, pause_handler, cancel_token)
                     .await?;
                 ctx.next_step();
                 continue;
@@ -624,6 +624,7 @@ impl WorkflowEngine {
         ctx: &mut ExecutionContext,
         debug_screenshots: &mut Vec<String>,
         pause_handler: &dyn PauseHandler,
+        cancel_token: &Option<CancellationToken>,
     ) -> Result<(), WorkflowError> {
         // Check recursion depth
         if ctx.call_depth >= MAX_CALL_DEPTH {
@@ -719,7 +720,7 @@ impl WorkflowEngine {
 
         // Execute sub-workflow steps (Box::pin for recursive async)
         let result = Box::pin(
-            self.execute_steps(&sub_workflow, browser, &mut child_ctx, debug_screenshots, pause_handler)
+            self.execute_steps(&sub_workflow, browser, &mut child_ctx, debug_screenshots, pause_handler, cancel_token)
         ).await;
 
         // Propagate tab index changes back to parent
@@ -1124,6 +1125,7 @@ impl Default for WorkflowEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actions::TabInfo;
     use crate::workflow::{Workflow, WorkflowParser, WorkflowResolver};
 
     /// Mock browser that does nothing (for testing non-browser actions)
@@ -1149,9 +1151,11 @@ mod tests {
         async fn switch_tab(&self, _idx: usize) -> Result<(), ActionError> { Ok(()) }
         async fn close_tab(&self, _idx: usize) -> Result<(), ActionError> { Ok(()) }
         async fn tab_count(&self) -> Result<usize, ActionError> { Ok(1) }
+        async fn list_tabs(&self) -> Result<Vec<TabInfo>, ActionError> { Ok(vec![]) }
         async fn set_file_input_files(&self, _sel: &str, _paths: Vec<String>) -> Result<(), ActionError> { Ok(()) }
         async fn set_file_chooser_intercept(&self, _enabled: bool) -> Result<(), ActionError> { Ok(()) }
         async fn upload_via_file_chooser(&self, _trigger: Option<&str>, _paths: Vec<String>, _timeout: u64) -> Result<(), ActionError> { Ok(()) }
+        async fn pdf(&self) -> Result<Vec<u8>, ActionError> { Ok(vec![]) }
     }
 
     /// Mock resolver that returns workflows from a HashMap
