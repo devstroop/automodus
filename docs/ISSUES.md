@@ -340,14 +340,15 @@ automodus daemon stop
 ---
 
 ### Issue #15: Merge HTTP server into daemon
-**Status:** ⬜ Not Started  
+**Status:** ✅ Done  
 **File:** `src/daemon/mod.rs`, `src/api/server.rs`  
 **Depends:** #11, #12  
 **Estimate:** 4-6 hours
 
 **Tasks:**
-- [ ] Move HTTP server startup into `Daemon::start()`
-- [ ] Share `AppCore` between socket and HTTP handlers
+- [x] Add `enable_http` config option to DaemonConfig
+- [x] Move HTTP server startup into `Daemon::run()`
+- [x] Share shutdown signal between socket and HTTP handlers
 - [ ] Update `serve` command to start daemon (backward compat)
 - [ ] Remove standalone server state management
 

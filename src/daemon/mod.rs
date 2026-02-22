@@ -28,6 +28,8 @@ pub struct DaemonConfig {
     pub max_sessions: usize,
     /// Debug output directory
     pub debug_dir: PathBuf,
+    /// Enable HTTP server
+    pub enable_http: bool,
 }
 
 impl Default for DaemonConfig {
@@ -44,6 +46,7 @@ impl Default for DaemonConfig {
             http_port: 8080,
             max_sessions: 10,
             debug_dir: PathBuf::from("data/debug"),
+            enable_http: true,
         }
     }
 }
@@ -177,6 +180,25 @@ impl Daemon {
 
         let core = self.core.clone();
         let mut shutdown_rx = self.shutdown_tx.subscribe();
+
+        // Optionally start HTTP server
+        if self.config.enable_http {
+            let http_host = self.config.http_host.clone();
+            let http_port = self.config.http_port;
+            let http_shutdown_rx = self.shutdown_tx.subscribe();
+
+            tokio::spawn(async move {
+                match start_http_server(http_host, http_port, http_shutdown_rx).await {
+                    Ok(_) => info!("HTTP server stopped"),
+                    Err(e) => error!("HTTP server error: {}", e),
+                }
+            });
+
+            info!(
+                "HTTP server running on http://{}:{}",
+                self.config.http_host, self.config.http_port
+            );
+        }
 
         loop {
             tokio::select! {
@@ -340,6 +362,56 @@ async fn handle_socket_connection(
 ) -> Result<(), DaemonError> {
     // TODO: Implement socket protocol
     // For now, this is a placeholder
+    Ok(())
+}
+
+/// Start HTTP server (runs until shutdown signal)
+async fn start_http_server(
+    host: String,
+    port: u16,
+    mut shutdown_rx: broadcast::Receiver<()>,
+) -> Result<(), DaemonError> {
+    use crate::api;
+    use crate::config::AppConfig;
+
+    // Load configuration (use defaults if not found)
+    let mut config = AppConfig::load().unwrap_or_default();
+    config.server.host = host.clone();
+    config.server.port = port;
+
+    // Create server state
+    let state = api::create_state(config);
+
+    // Load workflows
+    let workflows_dir =
+        std::env::var("AUTOMODUS_WORKFLOWS").unwrap_or_else(|_| "workflows".to_string());
+    if let Err(e) = state.load_workflows(&workflows_dir).await {
+        warn!("Failed to load workflows: {}", e);
+    }
+
+    // Create router
+    let app = api::create_router(state);
+
+    // Bind listener
+    let addr = format!("{}:{}", host, port);
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .map_err(|e| DaemonError::StartupFailed(format!("Failed to bind HTTP server: {}", e)))?;
+
+    info!("HTTP server listening on http://{}", addr);
+
+    // Graceful shutdown
+    let shutdown_signal = async move {
+        let _ = shutdown_rx.recv().await;
+        info!("HTTP server shutting down...");
+    };
+
+    // Serve
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal)
+        .await
+        .map_err(|e| DaemonError::StartupFailed(format!("HTTP server error: {}", e)))?;
+
     Ok(())
 }
 
