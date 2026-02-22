@@ -4,11 +4,16 @@
 //! Supports extended selector patterns: text:, text*:, role:, xpath:, CSS
 
 use async_trait::async_trait;
+use chromiumoxide::cdp::browser_protocol::inspector::EventTargetCrashed;
+use chromiumoxide::cdp::browser_protocol::network::{
+    EventRequestWillBeSent, EventResponseReceived,
+};
 use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
 use chromiumoxide::cdp::js_protocol::runtime::EventConsoleApiCalled;
 use chromiumoxide::page::Page;
 use futures::StreamExt;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -75,10 +80,24 @@ pub struct ChromePageAdapter {
     browser: Option<Arc<Mutex<Option<chromiumoxide::browser::Browser>>>>,
     /// Captured console logs (populated by CDP listener)
     console_logs: Arc<Mutex<Vec<ConsoleEntry>>>,
-    /// Captured network requests (when network capture is enabled)
+    /// Captured network requests (populated by CDP listener)
     network_logs: Arc<Mutex<Vec<NetworkEntry>>>,
+    /// In-flight requests keyed by request_id (method, url, start_time)
+    pending_requests: Arc<Mutex<HashMap<String, PendingRequest>>>,
     /// Whether the CDP console listener is already running
     console_listener_active: Arc<AtomicBool>,
+    /// Whether the CDP network listener is already running
+    network_listener_active: Arc<AtomicBool>,
+    /// Set to true when the browser target crashes
+    browser_crashed: Arc<AtomicBool>,
+}
+
+/// In-flight request tracked between RequestWillBeSent and ResponseReceived
+#[derive(Debug, Clone)]
+struct PendingRequest {
+    method: String,
+    url: String,
+    timestamp: std::time::Instant,
 }
 
 impl ChromePageAdapter {
@@ -91,7 +110,10 @@ impl ChromePageAdapter {
             browser: None,
             console_logs: Arc::new(Mutex::new(Vec::new())),
             network_logs: Arc::new(Mutex::new(Vec::new())),
+            pending_requests: Arc::new(Mutex::new(HashMap::new())),
             console_listener_active: Arc::new(AtomicBool::new(false)),
+            network_listener_active: Arc::new(AtomicBool::new(false)),
+            browser_crashed: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -107,7 +129,10 @@ impl ChromePageAdapter {
             browser: Some(browser),
             console_logs: Arc::new(Mutex::new(Vec::new())),
             network_logs: Arc::new(Mutex::new(Vec::new())),
+            pending_requests: Arc::new(Mutex::new(HashMap::new())),
             console_listener_active: Arc::new(AtomicBool::new(false)),
+            network_listener_active: Arc::new(AtomicBool::new(false)),
+            browser_crashed: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -211,60 +236,142 @@ impl ChromePageAdapter {
         Ok(entries)
     }
 
-    /// Capture network requests via Performance API
-    pub async fn capture_network_logs(&self) -> Result<Vec<NetworkEntry>, ActionError> {
+    /// Start the native CDP network listener.
+    ///
+    /// Enables `Network.enable` and subscribes to `RequestWillBeSent` + `ResponseReceived`.
+    /// Correlates request/response pairs by `request_id` to build `NetworkEntry` items
+    /// with method, url, status, and duration. Safe to call multiple times.
+    pub async fn start_network_listener(&self) -> Result<(), ActionError> {
+        if self.network_listener_active.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
+
         let page = self.page.lock().await;
 
-        let js = r#"
-        (function() {
-            const entries = performance.getEntriesByType('resource');
-            return entries.map(e => ({
-                timestamp: performance.timeOrigin + e.startTime,
-                method: 'GET',  // Performance API doesn't expose method
-                url: e.name,
-                status: null,   // Not available via Performance API
-                duration_ms: Math.round(e.duration)
-            }));
-        })()
-        "#;
-
-        let result = page.evaluate(js).await.map_err(|e| {
-            ActionError::BrowserError(format!("Failed to capture network logs: {}", e))
+        // Enable the Network domain
+        use chromiumoxide::cdp::browser_protocol::network::EnableParams;
+        page.execute(EnableParams::default()).await.map_err(|e| {
+            ActionError::BrowserError(format!("Failed to enable Network domain: {}", e))
         })?;
 
-        let entries: Vec<NetworkEntry> = if let Some(arr) = result.value().and_then(|v| v.as_array()) {
-            arr.iter()
-                .filter_map(|item| {
-                    let timestamp_ms = item.get("timestamp")?.as_f64()? as i64;
-                    let method = item.get("method")?.as_str()?.to_string();
-                    let url = item.get("url")?.as_str()?.to_string();
-                    let status = item.get("status").and_then(|v| v.as_u64()).map(|s| s as u32);
-                    let duration_ms = item.get("duration_ms").and_then(|v| v.as_u64());
-                    Some(NetworkEntry {
-                        timestamp: chrono::DateTime::from_timestamp_millis(timestamp_ms)
-                            .unwrap_or_else(chrono::Utc::now),
-                        method,
-                        url,
-                        status,
-                        duration_ms,
-                    })
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+        // Subscribe to request and response events
+        let mut req_stream = page.event_listener::<EventRequestWillBeSent>().await.map_err(|e| {
+            ActionError::BrowserError(format!("Failed to subscribe to request events: {}", e))
+        })?;
+        let mut resp_stream = page.event_listener::<EventResponseReceived>().await.map_err(|e| {
+            ActionError::BrowserError(format!("Failed to subscribe to response events: {}", e))
+        })?;
+        drop(page);
 
-        // Store in adapter
+        // Spawn request tracker
+        let pending = Arc::clone(&self.pending_requests);
+        let req_active = Arc::clone(&self.network_listener_active);
+        tokio::spawn(async move {
+            while let Some(event) = req_stream.next().await {
+                let id = event.request_id.inner().clone();
+                let entry = PendingRequest {
+                    method: event.request.method.clone(),
+                    url: event.request.url.clone(),
+                    timestamp: std::time::Instant::now(),
+                };
+                pending.lock().await.insert(id, entry);
+            }
+            req_active.store(false, Ordering::SeqCst);
+        });
+
+        // Spawn response tracker
+        let pending2 = Arc::clone(&self.pending_requests);
+        let logs = Arc::clone(&self.network_logs);
+        let resp_active = Arc::clone(&self.network_listener_active);
+        tokio::spawn(async move {
+            while let Some(event) = resp_stream.next().await {
+                let id = event.request_id.inner().clone();
+                let (method, url, duration_ms) = {
+                    let mut map = pending2.lock().await;
+                    if let Some(req) = map.remove(&id) {
+                        let dur = req.timestamp.elapsed().as_millis() as u64;
+                        (req.method, req.url, Some(dur))
+                    } else {
+                        // Response without tracked request — use response data
+                        (String::from("?"), event.response.url.clone(), None)
+                    }
+                };
+
+                let status = event.response.status as u32;
+                let entry = NetworkEntry {
+                    timestamp: chrono::Utc::now(),
+                    method,
+                    url,
+                    status: Some(status),
+                    duration_ms,
+                };
+                debug!("{}", entry.format());
+                logs.lock().await.push(entry);
+            }
+            resp_active.store(false, Ordering::SeqCst);
+        });
+
+        info!("CDP network listener started");
+        Ok(())
+    }
+
+    /// Drain captured network logs collected by the CDP listener.
+    ///
+    /// Returns all entries accumulated since the last drain and clears the buffer.
+    pub async fn capture_network_logs(&self) -> Result<Vec<NetworkEntry>, ActionError> {
         let mut logs = self.network_logs.lock().await;
-        logs.extend(entries.clone());
-
+        let entries: Vec<NetworkEntry> = logs.drain(..).collect();
         Ok(entries)
+    }
+
+    /// Start a crash detection listener.
+    ///
+    /// Subscribes to `Inspector.targetCrashed`. When the event fires, sets
+    /// `browser_crashed` to true so callers can detect the crash.
+    pub async fn start_crash_listener(&self) -> Result<(), ActionError> {
+        if self.browser_crashed.load(Ordering::SeqCst) {
+            return Ok(()); // already crashed, no point starting
+        }
+
+        let page = self.page.lock().await;
+        let mut crash_stream = page.event_listener::<EventTargetCrashed>().await.map_err(|e| {
+            ActionError::BrowserError(format!("Failed to subscribe to crash events: {}", e))
+        })?;
+        drop(page);
+
+        let crashed = Arc::clone(&self.browser_crashed);
+        tokio::spawn(async move {
+            if let Some(_event) = crash_stream.next().await {
+                warn!("Browser target crashed!");
+                crashed.store(true, Ordering::SeqCst);
+            }
+        });
+
+        info!("CDP crash listener started");
+        Ok(())
+    }
+
+    /// Check if the browser is still alive (not crashed).
+    pub fn is_browser_alive(&self) -> bool {
+        !self.browser_crashed.load(Ordering::SeqCst)
+    }
+
+    /// Check browser health and return an error if crashed.
+    fn check_browser_health(&self) -> Result<(), ActionError> {
+        if self.browser_crashed.load(Ordering::SeqCst) {
+            Err(ActionError::BrowserError(
+                "Browser has crashed. Restart the browser to continue.".into(),
+            ))
+        } else {
+            Ok(())
+        }
     }
 }
 
 #[async_trait]
 impl BrowserHandle for ChromePageAdapter {
     async fn goto(&self, url: &str) -> Result<(), ActionError> {
+        self.check_browser_health()?;
         debug!("Navigating to: {}", url);
         let page = self.page.lock().await;
         page.goto(url)
@@ -280,6 +387,7 @@ impl BrowserHandle for ChromePageAdapter {
     }
 
     async fn click(&self, selector: &str) -> Result<(), ActionError> {
+        self.check_browser_health()?;
         debug!("Clicking: {}", selector);
         let page = self.page.lock().await;
 
@@ -308,6 +416,7 @@ impl BrowserHandle for ChromePageAdapter {
     }
 
     async fn type_text(&self, selector: &str, text: &str, clear: bool) -> Result<(), ActionError> {
+        self.check_browser_health()?;
         debug!("Typing into: {}", selector);
         let page = self.page.lock().await;
 
@@ -345,6 +454,7 @@ impl BrowserHandle for ChromePageAdapter {
     }
 
     async fn get_text(&self, selector: &str) -> Result<String, ActionError> {
+        self.check_browser_health()?;
         debug!("Getting text from: {}", selector);
         let page = self.page.lock().await;
 
@@ -561,6 +671,7 @@ impl BrowserHandle for ChromePageAdapter {
     }
 
     async fn screenshot(&self, full_page: bool) -> Result<Vec<u8>, ActionError> {
+        self.check_browser_health()?;
         debug!("Taking screenshot (full_page: {})", full_page);
         let page = self.page.lock().await;
 
@@ -584,6 +695,7 @@ impl BrowserHandle for ChromePageAdapter {
     }
 
     async fn eval(&self, script: &str) -> Result<Value, ActionError> {
+        self.check_browser_health()?;
         debug!("Evaluating script");
         let page = self.page.lock().await;
 
