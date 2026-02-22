@@ -659,6 +659,35 @@ Final debug features.
 
 ## Backlog / Future
 
+### Issue #28: Sub-workflow composition
+**Status:** ✅ Done  
+**File:** `src/core/engine.rs`, `src/workflow/loader.rs`, `src/workflow/mod.rs`  
+**Estimate:** 1-2 days
+
+**Tasks:**
+- [x] Add `WorkflowResolver` trait (`async fn resolve(&self, name: &str) -> Result<Workflow>`)
+- [x] Implement `WorkflowLoader` as filesystem-based resolver
+- [x] Add `call_depth` tracking to `ExecutionContext` (MAX_CALL_DEPTH = 16)
+- [x] Implement `execute_call_action()` — sub-workflow invocation with param forwarding
+- [x] Add `with_resolver()` constructor to `WorkflowEngine`
+- [x] Wire `WorkflowLoader` as resolver in CLI and shell entry points
+- [x] Thread `cancel_token` through recursive `execute_call_action` calls
+- [x] Add 7 unit tests (basic, nested, no-resolver, not-found, max-depth, params, condition)
+- [x] Add 3 example composition workflows (`workflows/examples/compose/`)
+- [x] Add `ARCHITECTURE.md` documentation
+
+**Workflow syntax:**
+```yaml
+steps:
+  - action: call
+    workflow: sub_workflow_name
+    params:
+      key: "{{params.value}}"
+    store_as: result
+```
+
+---
+
 ### Issue #29: Tab management
 **Status:** ✅ Done  
 **File:** `src/modules/browser/actions/tabs.rs`  
@@ -763,6 +792,7 @@ Phase 1a (Daemon Core):     #11 → #12 → #14 → #14a (errors)
 Phase 1a+ (Config):         #15a (daemon config)
 Phase 1b (Sessions):        #13 → #15 → #15b (serve compat)
 Phase 1c (Shell):           #16 → #17 → #18 → #19
+Phase 1d (Composition):     #28 (sub-workflows)
 Phase 1-Tests:              #31 → #32 → #33
 Phase 2 (Engine Debug):     #5 → #6 → #7 → #8
 Phase 3 (CDP):              #9 → #10
