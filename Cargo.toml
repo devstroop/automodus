@@ -36,6 +36,7 @@ mcp = ["async-stream"]
 
 # Async runtime
 tokio = { version = "1.0", features = ["full"] }
+tokio-util = "0.7"
 async-trait = "0.1"
 futures = "0.3"
 futures-util = "0.3"
