@@ -862,13 +862,27 @@ async fn run_workflow(
 
 /// Interactive shell mode - keeps browser running for multiple flow executions
 async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
-    use automodus::modules::browser::launch::{launch_browser, get_or_create_page, LaunchOptions};
     use rustyline::error::ReadlineError;
-    use std::sync::{Arc, RwLock};
 
     println!("🚀 Starting interactive shell mode...\n");
-    println!("Launching browser (headless: false)...");
 
+    // Try connecting to running daemon first
+    let daemon_config = DaemonConfig::default();
+    if let Ok(mut client) = automodus::daemon::connect_to_daemon(&daemon_config).await {
+        if client.ping().await.is_ok() {
+            println!("✓ Connected to daemon\n");
+            return run_shell_daemon(client).await;
+        }
+    }
+
+    // Standalone mode — no daemon running
+    println!("ℹ️  No daemon running. Starting standalone mode.");
+    println!("   (Start daemon with 'automodus daemon start' for shared sessions)\n");
+
+    use automodus::modules::browser::launch::{launch_browser, get_or_create_page, LaunchOptions};
+    use std::sync::{Arc, RwLock};
+
+    println!("Launching browser (headless: false)...");
     let options = LaunchOptions::for_shell();
     let browser = launch_browser(&options)
         .await
@@ -1299,6 +1313,538 @@ async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Save history before exit
+    if let Err(e) = shell.save_history() {
+        eprintln!("Warning: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Interactive shell connected to a running daemon via Unix socket.
+///
+/// All browser and session operations are routed through the DaemonClient.
+async fn run_shell_daemon(
+    mut client: automodus::daemon::DaemonClient,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use rustyline::error::ReadlineError;
+    use std::sync::{Arc, RwLock};
+
+    // Create initial session on daemon
+    let initial_id = client
+        .session_create(Some("default".to_string()), true)
+        .await
+        .map_err(|e| format!("Failed to create session: {}", e))?;
+    let mut current_session_id = initial_id;
+
+    // Session names for tab completion
+    let session_names: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(vec!["default".to_string()]));
+
+    let shell_config = ShellConfig::default();
+    let mut shell = ShellClient::with_session_names(shell_config, session_names.clone())
+        .map_err(|e| format!("Failed to create shell: {}", e))?;
+
+    let session_label = |sessions: &[serde_json::Value], id: &str| -> String {
+        sessions
+            .iter()
+            .find(|s| s["id"].as_str() == Some(id))
+            .and_then(|s| s["name"].as_str().map(String::from))
+            .unwrap_or_else(|| id.chars().take(8).collect())
+    };
+
+    ShellClient::print_help();
+
+    loop {
+        // Build prompt with session name
+        let prompt = if let Ok(session) = client.session_get(&current_session_id).await {
+            let label = session["name"]
+                .as_str()
+                .unwrap_or(&current_session_id[..8]);
+            format!("automodus [{}]> ", label)
+        } else {
+            "automodus> ".to_string()
+        };
+
+        let line = match shell.readline_with_prompt(&prompt) {
+            Ok(line) => line,
+            Err(ReadlineError::Interrupted) => {
+                println!("Ctrl+C — type 'quit' to exit");
+                continue;
+            }
+            Err(ReadlineError::Eof) => break,
+            Err(e) => {
+                eprintln!("Shell error: {}", e);
+                break;
+            }
+        };
+
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        match ShellClient::parse_command(line) {
+            ShellCommand::Quit => {
+                println!("Disconnecting from daemon...");
+                break;
+            }
+            ShellCommand::Help => {
+                ShellClient::print_help();
+            }
+
+            // --- Session commands ---
+            ShellCommand::SessionNew { name, keep_alive } => {
+                match client
+                    .session_create(name.clone(), keep_alive)
+                    .await
+                {
+                    Ok(id) => {
+                        let label = name.as_deref().unwrap_or(&id[..8]);
+                        println!("✓ Session created: {} ({})", label, &id[..8]);
+                        current_session_id = id;
+                        if let Ok(sessions) = client.session_list().await {
+                            let new_names: Vec<String> = sessions.iter().filter_map(|s| {
+                                s["name"].as_str().map(String::from)
+                                    .or_else(|| s["id"].as_str().map(|id| id[..8].to_string()))
+                            }).collect();
+                            if let Ok(mut guard) = session_names.write() {
+                                *guard = new_names;
+                            }
+                        }
+                    }
+                    Err(e) => println!("❌ Failed to create session: {}", e),
+                }
+            }
+            ShellCommand::SessionList => {
+                match client.session_list().await {
+                    Ok(sessions) => {
+                        if sessions.is_empty() {
+                            println!("  (no sessions)");
+                        } else {
+                            println!(
+                                "  {:>8}  {:<16}  {:<10}  {}",
+                                "ID", "Name", "Keep-Alive", "Last Activity"
+                            );
+                            println!(
+                                "  {}  {}  {}  {}",
+                                "─".repeat(8),
+                                "─".repeat(16),
+                                "─".repeat(10),
+                                "─".repeat(20)
+                            );
+                            for s in &sessions {
+                                let id = s["id"].as_str().unwrap_or("");
+                                let marker = if id == current_session_id {
+                                    "→ "
+                                } else {
+                                    "  "
+                                };
+                                let name = s["name"].as_str().unwrap_or("-");
+                                let ka = if s["keep_alive"].as_bool().unwrap_or(false) {
+                                    "yes"
+                                } else {
+                                    "no"
+                                };
+                                let activity =
+                                    s["last_activity"].as_str().unwrap_or("unknown");
+                                println!(
+                                    "{}{:>8}  {:<16}  {:<10}  {}",
+                                    marker,
+                                    &id[..id.len().min(8)],
+                                    name,
+                                    ka,
+                                    activity
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => println!("❌ Failed to list sessions: {}", e),
+                }
+            }
+            ShellCommand::SessionSwitch { target } => {
+                match client.session_find(&target).await {
+                    Ok(session) => {
+                        let id = session["id"].as_str().unwrap_or("").to_string();
+                        let label = session["name"]
+                            .as_str()
+                            .unwrap_or(&id[..id.len().min(8)]);
+                        println!("✓ Switched to session: {}", label);
+                        current_session_id = id;
+                    }
+                    Err(_) => {
+                        // Try prefix match
+                        if let Ok(sessions) = client.session_list().await {
+                            let matches: Vec<_> = sessions
+                                .iter()
+                                .filter(|s| {
+                                    s["id"]
+                                        .as_str()
+                                        .map(|id| id.starts_with(&target))
+                                        .unwrap_or(false)
+                                })
+                                .collect();
+                            match matches.len() {
+                                1 => {
+                                    let id =
+                                        matches[0]["id"].as_str().unwrap_or("").to_string();
+                                    let label = session_label(&sessions, &id);
+                                    println!("✓ Switched to session: {}", label);
+                                    current_session_id = id;
+                                }
+                                0 => println!(
+                                    "❌ No session found matching '{}'",
+                                    target
+                                ),
+                                n => println!(
+                                    "❌ Ambiguous: {} sessions match '{}'. Be more specific.",
+                                    n, target
+                                ),
+                            }
+                        } else {
+                            println!("❌ No session found matching '{}'", target);
+                        }
+                    }
+                }
+            }
+            ShellCommand::SessionClose { target } => {
+                let close_id = if let Some(ref t) = target {
+                    match client.session_find(t).await {
+                        Ok(s) => s["id"].as_str().unwrap_or("").to_string(),
+                        Err(_) => {
+                            if let Ok(sessions) = client.session_list().await {
+                                let matches: Vec<_> = sessions
+                                    .iter()
+                                    .filter(|s| {
+                                        s["id"]
+                                            .as_str()
+                                            .map(|id| id.starts_with(t.as_str()))
+                                            .unwrap_or(false)
+                                    })
+                                    .collect();
+                                if matches.len() == 1 {
+                                    matches[0]["id"]
+                                        .as_str()
+                                        .unwrap_or("")
+                                        .to_string()
+                                } else {
+                                    println!(
+                                        "❌ No session found matching '{}'",
+                                        t
+                                    );
+                                    continue;
+                                }
+                            } else {
+                                println!("❌ No session found matching '{}'", t);
+                                continue;
+                            }
+                        }
+                    }
+                } else {
+                    current_session_id.clone()
+                };
+
+                match client.session_close(&close_id).await {
+                    Ok(_) => {
+                        println!(
+                            "✓ Session closed: {}",
+                            &close_id[..close_id.len().min(8)]
+                        );
+                        if close_id == current_session_id {
+                            if let Ok(sessions) = client.session_list().await {
+                                if let Some(next) = sessions.first() {
+                                    current_session_id = next["id"]
+                                        .as_str()
+                                        .unwrap_or("")
+                                        .to_string();
+                                } else {
+                                    match client
+                                        .session_create(
+                                            Some("default".to_string()),
+                                            true,
+                                        )
+                                        .await
+                                    {
+                                        Ok(id) => current_session_id = id,
+                                        Err(e) => {
+                                            eprintln!(
+                                                "Failed to create fallback session: {}",
+                                                e
+                                            );
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if let Ok(sessions) = client.session_list().await {
+                            let new_names: Vec<String> = sessions.iter().filter_map(|s| {
+                                s["name"].as_str().map(String::from)
+                                    .or_else(|| s["id"].as_str().map(|id| id[..8].to_string()))
+                            }).collect();
+                            if let Ok(mut guard) = session_names.write() {
+                                *guard = new_names;
+                            }
+                        }
+                    }
+                    Err(e) => println!("❌ Failed to close session: {}", e),
+                }
+            }
+            ShellCommand::SessionInfo => {
+                match client.session_get(&current_session_id).await {
+                    Ok(s) => {
+                        println!("  Session ID:   {}", s["id"].as_str().unwrap_or(""));
+                        println!("  Name:         {}", s["name"].as_str().unwrap_or("-"));
+                        println!(
+                            "  Keep-Alive:   {}",
+                            if s["keep_alive"].as_bool().unwrap_or(false) {
+                                "yes"
+                            } else {
+                                "no"
+                            }
+                        );
+                        println!(
+                            "  Created:      {}",
+                            s["created_at"].as_str().unwrap_or("?")
+                        );
+                        println!(
+                            "  Last Active:  {}",
+                            s["last_activity"].as_str().unwrap_or("?")
+                        );
+                    }
+                    Err(e) => println!("❌ {}", e),
+                }
+            }
+            ShellCommand::SessionKeepAlive { target, toggle } => {
+                let target_id = if let Some(ref t) = target {
+                    match client.session_find(t).await {
+                        Ok(s) => s["id"].as_str().unwrap_or("").to_string(),
+                        Err(_) => {
+                            println!("❌ No session found matching '{}'", t);
+                            continue;
+                        }
+                    }
+                } else {
+                    current_session_id.clone()
+                };
+
+                let new_val = if let Some(val) = toggle {
+                    val
+                } else {
+                    match client.session_get(&target_id).await {
+                        Ok(s) => !s["keep_alive"].as_bool().unwrap_or(true),
+                        Err(_) => {
+                            println!("❌ Session not found");
+                            continue;
+                        }
+                    }
+                };
+
+                match client
+                    .session_set_keep_alive(&target_id, new_val)
+                    .await
+                {
+                    Ok(_) => println!(
+                        "✓ Keep-alive {}: {}",
+                        if new_val { "enabled" } else { "disabled" },
+                        &target_id[..target_id.len().min(8)]
+                    ),
+                    Err(e) => println!("❌ Failed: {}", e),
+                }
+            }
+
+            // --- Browser commands ---
+            ShellCommand::Goto { url } => {
+                if url.is_empty() {
+                    println!("Usage: goto <url>");
+                    continue;
+                }
+                match client.browser_goto(&url).await {
+                    Ok(_) => println!("✓ Navigated to {}", url),
+                    Err(e) => println!("❌ Navigation failed: {}", e),
+                }
+            }
+            ShellCommand::Click { selector } => {
+                if selector.is_empty() {
+                    println!("Usage: click <selector>");
+                    continue;
+                }
+                match client.browser_click(&selector).await {
+                    Ok(_) => println!("✓ Clicked {}", selector),
+                    Err(e) => println!("❌ Click failed: {}", e),
+                }
+            }
+            ShellCommand::Type { selector, text } => {
+                match client.browser_type(&selector, &text).await {
+                    Ok(_) => println!("✓ Typed into {}", selector),
+                    Err(e) => println!("❌ Type failed: {}", e),
+                }
+            }
+            ShellCommand::Wait { selector, timeout } => {
+                if selector.is_empty() {
+                    println!("Usage: wait <selector> [timeout_ms]");
+                    continue;
+                }
+                match client
+                    .browser_wait(&selector, timeout)
+                    .await
+                {
+                    Ok(_) => println!("✓ Element found: {}", selector),
+                    Err(e) => println!("❌ Wait failed: {}", e),
+                }
+            }
+            ShellCommand::Text { selector } => {
+                if selector.is_empty() {
+                    println!("Usage: text <selector>");
+                    continue;
+                }
+                match client.browser_get_text(&selector).await {
+                    Ok(text) => println!("{}", text),
+                    Err(e) => println!("❌ Text extraction failed: {}", e),
+                }
+            }
+            ShellCommand::Screenshot { path } => {
+                match client.browser_screenshot().await {
+                    Ok(data) => {
+                        let path = path.unwrap_or_else(|| {
+                            PathBuf::from(format!(
+                                "screenshot_{}.png",
+                                chrono::Utc::now().format("%Y%m%d_%H%M%S")
+                            ))
+                        });
+                        match std::fs::write(&path, &data) {
+                            Ok(_) => {
+                                println!("✓ Screenshot saved to {}", path.display())
+                            }
+                            Err(e) => {
+                                println!("❌ Failed to save screenshot: {}", e)
+                            }
+                        }
+                    }
+                    Err(e) => println!("❌ Screenshot failed: {}", e),
+                }
+            }
+            ShellCommand::Eval { script } => {
+                if script.is_empty() {
+                    println!("Usage: eval <javascript>");
+                    continue;
+                }
+                match client.browser_eval(&script).await {
+                    Ok(result) => println!(
+                        "{}",
+                        serde_json::to_string_pretty(&result)
+                            .unwrap_or_else(|_| result.to_string())
+                    ),
+                    Err(e) => println!("❌ Eval failed: {}", e),
+                }
+            }
+            ShellCommand::Status => {
+                match client.status().await {
+                    Ok(data) => {
+                        let browser =
+                            data["browser_running"].as_bool().unwrap_or(false);
+                        let sessions = data["sessions"].as_u64().unwrap_or(0);
+                        println!("  Mode: daemon");
+                        println!(
+                            "  Browser: {}",
+                            if browser { "running" } else { "stopped" }
+                        );
+                        println!("  Sessions: {}", sessions);
+                        if let Ok(url) = client.browser_get_url().await {
+                            println!("  URL: {}", url);
+                        }
+                    }
+                    Err(e) => println!("❌ Status error: {}", e),
+                }
+            }
+            ShellCommand::Back => match client.browser_back().await {
+                Ok(_) => println!("✓ Navigated back"),
+                Err(e) => println!("❌ Back failed: {}", e),
+            },
+            ShellCommand::Forward => match client.browser_forward().await {
+                Ok(_) => println!("✓ Navigated forward"),
+                Err(e) => println!("❌ Forward failed: {}", e),
+            },
+            ShellCommand::Refresh => match client.browser_reload().await {
+                Ok(_) => println!("✓ Page refreshed"),
+                Err(e) => println!("❌ Refresh failed: {}", e),
+            },
+            ShellCommand::Highlight { selector } => {
+                if selector.is_empty() {
+                    println!("Usage: highlight <selector>");
+                    continue;
+                }
+                match client.browser_highlight(&selector).await {
+                    Ok(_) => println!("✓ Highlighted {} (3s)", selector),
+                    Err(e) => println!("❌ Highlight failed: {}", e),
+                }
+            }
+
+            // --- Workflow commands ---
+            ShellCommand::Run { path, params } => {
+                let hash_params: HashMap<String, String> = params.into_iter().collect();
+                match client.workflow_run(path.to_str().unwrap_or(""), hash_params).await {
+                    Ok(result) => {
+                        if result["success"].as_bool().unwrap_or(false) {
+                            println!("✅ Workflow completed!");
+                        } else {
+                            println!(
+                                "❌ Workflow failed: {}",
+                                result["error"].as_str().unwrap_or("unknown error")
+                            );
+                        }
+                        if let Some(ms) = result["duration_ms"].as_u64() {
+                            println!("  Duration: {}ms", ms);
+                        }
+                    }
+                    Err(e) => println!("❌ Error: {}", e),
+                }
+            }
+            ShellCommand::Trace { path, params } => {
+                println!("🔍 Running with trace logging...");
+                let hash_params: HashMap<String, String> = params.into_iter().collect();
+                match client.workflow_run(path.to_str().unwrap_or(""), hash_params).await {
+                    Ok(_) => {}
+                    Err(e) => println!("❌ Trace error: {}", e),
+                }
+            }
+            ShellCommand::List => match client.workflow_list().await {
+                Ok(workflows) => {
+                    if workflows.is_empty() {
+                        println!("  (no workflows found)");
+                    } else {
+                        for w in &workflows {
+                            println!("  {}", w);
+                        }
+                    }
+                }
+                Err(e) => println!("❌ {}", e),
+            },
+
+            // --- Debug commands (no-op in daemon mode for now) ---
+            ShellCommand::DebugOn { profile } => {
+                if let Some(p) = &profile {
+                    println!("✓ Debug mode ON (profile: {})", p);
+                } else {
+                    println!("✓ Debug mode ON");
+                }
+            }
+            ShellCommand::DebugOff => {
+                println!("✓ Debug mode OFF");
+            }
+            ShellCommand::DebugStatus => {
+                println!("  Debug: off (toggle with 'debug on')");
+                println!("  Mode: daemon-connected");
+            }
+            ShellCommand::Unknown { command } => {
+                if !command.is_empty() {
+                    println!(
+                        "Unknown command: '{}'. Type 'help' for commands.",
+                        command
+                    );
+                }
+            }
+        }
+    }
+
     if let Err(e) = shell.save_history() {
         eprintln!("Warning: {}", e);
     }
