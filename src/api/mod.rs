@@ -27,5 +27,5 @@ pub mod state;
 pub mod ws;
 
 pub use server::{create_router, run_server, ApiDoc};
-pub use state::{create_state, ServerState};
+pub use state::{create_state, create_state_with_core, ServerState};
 pub use ws::{ServerEvent, WsEvent};

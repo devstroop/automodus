@@ -15,15 +15,12 @@
 //! automodus validate workflows/
 //! ```
 
-use futures_util::stream::StreamExt;
 use futures_util::FutureExt;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use tracing::debug;
 
 use automodus::{
     actions::BrowserHandle,
-    api,
     core::WorkflowEngine,
     daemon::{Daemon, DaemonConfig, DaemonStatus},
     modules::ChromePageAdapter,
@@ -451,7 +448,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ..DaemonConfig::default()
             };
             
-            let daemon = Daemon::new(config.clone());
+            let mut daemon = Daemon::new(config.clone());
             
             // Check if daemon is already running
             if daemon.is_running() {
@@ -467,8 +464,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("   HTTP: http://{}:{}", config.http_host, config.http_port);
             println!("   Press Ctrl+C to stop\n");
             
-            // Run the API server directly (foreground)
-            api::run_server().await?;
+            // Route through daemon architecture (foreground)
+            daemon.start().await.map_err(|e| format!("Failed to start daemon: {}", e))?;
+            daemon.run().await.map_err(|e| format!("Daemon error: {}", e))?;
         }
         Command::Validate { path } => {
             validate_workflows(&path)?;
@@ -769,73 +767,21 @@ async fn run_workflow(
 
     println!("\n🚀 Launching browser...");
 
-    // Build browser config
-    use chromiumoxide::browser::{Browser, BrowserConfig};
+    // Launch browser using shared launch helper
+    use automodus::modules::browser::launch::{launch_browser, get_or_create_page, LaunchOptions};
 
     let headless = workflow.browser.headless;
-
-    // Create temp user data dir to ensure clean profile
-    let temp_profile =
-        std::env::temp_dir().join(format!("automodus-workflow-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&temp_profile);
-
-    let mut browser_config = BrowserConfig::builder();
-
-    if !headless {
-        browser_config = browser_config.with_head();
-    }
-
-    // Add stability args
-    browser_config = browser_config
-        .arg("--no-sandbox")
-        .arg("--disable-setuid-sandbox")
-        .arg("--disable-dev-shm-usage")
-        .arg("--disable-web-security")
-        .arg("--disable-extensions")
-        .arg("--disable-gpu")
-        .arg("--no-first-run")
-        .arg("--disable-session-crashed-bubble")
-        .arg("--disable-infobars")
-        .arg(format!("--user-data-dir={}", temp_profile.display()));
-
-    let config = browser_config
-        .build()
-        .map_err(|e| format!("Failed to build browser config: {}", e))?;
-
-    // Launch browser
-    let (browser, mut handler) = Browser::launch(config)
+    let options = LaunchOptions::for_workflow().headless(headless);
+    let browser = launch_browser(&options)
         .await
         .map_err(|e| format!("Failed to launch browser: {}", e))?;
-
-    // Spawn handler task
-    tokio::spawn(async move {
-        while let Some(h) = handler.next().await {
-            if let Err(e) = h {
-                debug!("Browser handler event: {:?}", e);
-                if e.to_string().contains("connection closed") {
-                    break;
-                }
-            }
-        }
-    });
 
     println!("✓ Browser launched");
 
     // Get a page
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    let pages = browser
-        .pages()
+    let page = get_or_create_page(&browser, None)
         .await
-        .map_err(|e| format!("Failed to get pages: {}", e))?;
-
-    let page = if pages.is_empty() {
-        browser
-            .new_page("about:blank")
-            .await
-            .map_err(|e| format!("Failed to create page: {}", e))?
-    } else {
-        pages.into_iter().next().unwrap()
-    };
+        .map_err(|e| format!("Failed to get page: {}", e))?;
 
     println!("✓ Browser page ready");
 
@@ -916,63 +862,21 @@ async fn run_workflow(
 
 /// Interactive shell mode - keeps browser running for multiple flow executions
 async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
-    use chromiumoxide::browser::{Browser, BrowserConfig};
+    use automodus::modules::browser::launch::{launch_browser, get_or_create_page, LaunchOptions};
     use rustyline::error::ReadlineError;
 
     println!("🚀 Starting interactive shell mode...\n");
     println!("Launching browser (headless: false)...");
 
-    // Create temp user data dir to ensure clean profile
-    let temp_profile = std::env::temp_dir().join(format!("automodus-shell-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&temp_profile);
-
-    // Launch browser with head
-    let browser_config = BrowserConfig::builder()
-        .with_head()
-        .arg("--no-sandbox")
-        .arg("--disable-setuid-sandbox")
-        .arg("--disable-dev-shm-usage")
-        .arg("--disable-web-security")
-        .arg("--disable-extensions")
-        .arg("--disable-gpu")
-        .arg("--no-first-run")
-        .arg("--disable-session-crashed-bubble")
-        .arg("--disable-infobars")
-        .arg(format!("--user-data-dir={}", temp_profile.display()))
-        .build()
-        .map_err(|e| format!("Failed to build browser config: {}", e))?;
-
-    let (browser, mut handler) = Browser::launch(browser_config)
+    let options = LaunchOptions::for_shell();
+    let browser = launch_browser(&options)
         .await
         .map_err(|e| format!("Failed to launch browser: {}", e))?;
 
-    // Spawn handler task
-    tokio::spawn(async move {
-        while let Some(h) = handler.next().await {
-            if let Err(e) = h {
-                debug!("Browser handler event: {:?}", e);
-                if e.to_string().contains("connection closed") {
-                    break;
-                }
-            }
-        }
-    });
-
     // Get initial page
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    let pages = browser
-        .pages()
+    let page = get_or_create_page(&browser, None)
         .await
-        .map_err(|e| format!("Failed to get pages: {}", e))?;
-
-    let page = if pages.is_empty() {
-        browser
-            .new_page("about:blank")
-            .await
-            .map_err(|e| format!("Failed to create page: {}", e))?
-    } else {
-        pages.into_iter().next().unwrap()
-    };
+        .map_err(|e| format!("Failed to get page: {}", e))?;
 
     println!("✓ Browser ready!\n");
 

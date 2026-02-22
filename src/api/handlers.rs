@@ -35,13 +35,12 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 )]
 pub async fn health_handler(State(state): State<Arc<ServerState>>) -> impl IntoResponse {
     let workflows = state.workflows.read().await;
-    let browser = state.browser.lock().await;
 
     Json(HealthResponse {
         status: "ok".to_string(),
         version: VERSION.to_string(),
         workflows_loaded: workflows.len(),
-        browser_running: browser.is_some(),
+        browser_running: state.core.has_browser().await,
     })
 }
 

@@ -193,9 +193,10 @@ impl Daemon {
             let http_host = self.config.http_host.clone();
             let http_port = self.config.http_port;
             let http_shutdown_rx = self.shutdown_tx.subscribe();
+            let http_core = self.core.clone();
 
             tokio::spawn(async move {
-                match start_http_server(http_host, http_port, http_shutdown_rx).await {
+                match start_http_server(http_host, http_port, http_shutdown_rx, http_core).await {
                     Ok(_) => info!("HTTP server stopped"),
                     Err(e) => error!("HTTP server error: {}", e),
                 }
@@ -205,6 +206,26 @@ impl Daemon {
                 "HTTP server running on http://{}:{}",
                 self.config.http_host, self.config.http_port
             );
+        }
+
+        // Spawn periodic session cleanup task
+        {
+            let cleanup_core = self.core.clone();
+            let mut cleanup_shutdown = self.shutdown_tx.subscribe();
+            tokio::spawn(async move {
+                let interval = std::time::Duration::from_secs(60);
+                loop {
+                    tokio::select! {
+                        _ = tokio::time::sleep(interval) => {
+                            let removed = cleanup_core.cleanup_idle_sessions().await;
+                            if !removed.is_empty() {
+                                info!("Cleaned up {} idle session(s)", removed.len());
+                            }
+                        }
+                        _ = cleanup_shutdown.recv() => break,
+                    }
+                }
+            });
         }
 
         loop {
@@ -377,6 +398,7 @@ async fn start_http_server(
     host: String,
     port: u16,
     mut shutdown_rx: broadcast::Receiver<()>,
+    core: Arc<AppCore>,
 ) -> Result<(), DaemonError> {
     use crate::api;
     use crate::config::AppConfig;
@@ -386,8 +408,8 @@ async fn start_http_server(
     config.server.host = host.clone();
     config.server.port = port;
 
-    // Create server state
-    let state = api::create_state(config);
+    // Create server state backed by shared AppCore
+    let state = api::create_state_with_core(config, core);
 
     // Load workflows
     let workflows_dir =

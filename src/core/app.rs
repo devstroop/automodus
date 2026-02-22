@@ -9,13 +9,22 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, Mutex, RwLock};
 use tracing::info;
 
+use crate::actions::BrowserHandle;
+use crate::modules::browser::launch::{launch_browser, get_or_create_page, LaunchOptions};
+use crate::modules::ChromePageAdapter;
 use crate::workflow::schema::{DebugConfig, ResolvedDebugConfig, Workflow};
 
 /// Application core - shared state for all daemon operations
 pub struct AppCore {
+    /// Browser instance (lazily initialized)
+    browser: Mutex<Option<chromiumoxide::browser::Browser>>,
+    /// Current page adapter
+    page_adapter: Mutex<Option<ChromePageAdapter>>,
+    /// Whether to run browser headless
+    headless: bool,
     /// Session manager for browser lifecycle
     sessions: Arc<RwLock<SessionStore>>,
     /// Global debug configuration
@@ -28,6 +37,8 @@ pub struct AppCore {
     debug_dir: PathBuf,
     /// Maximum concurrent sessions
     max_sessions: usize,
+    /// Session idle timeout in seconds (0 = no timeout)
+    session_idle_timeout: u64,
 }
 
 impl AppCore {
@@ -36,12 +47,16 @@ impl AppCore {
         let (event_tx, _) = broadcast::channel(256);
 
         Self {
+            browser: Mutex::new(None),
+            page_adapter: Mutex::new(None),
+            headless: true,
             sessions: Arc::new(RwLock::new(SessionStore::new())),
             debug_config: Arc::new(RwLock::new(ResolvedDebugConfig::default())),
             workflows: Arc::new(RwLock::new(HashMap::new())),
             event_tx,
             debug_dir: config.debug_dir.clone(),
             max_sessions: config.max_sessions,
+            session_idle_timeout: 300, // Default: 5 minutes
         }
     }
 
@@ -63,6 +78,51 @@ impl AppCore {
     /// Get max sessions limit
     pub fn max_sessions(&self) -> usize {
         self.max_sessions
+    }
+
+    /// Set headless mode
+    pub fn set_headless(&mut self, headless: bool) {
+        self.headless = headless;
+    }
+
+    // --- Browser Lifecycle ---
+
+    /// Get or create browser page adapter
+    ///
+    /// Lazily launches the browser on first call. Returns an existing valid
+    /// adapter if available.
+    pub async fn get_page(&self) -> Result<ChromePageAdapter, String> {
+        let mut browser_guard = self.browser.lock().await;
+        let mut page_guard = self.page_adapter.lock().await;
+
+        // Check if we have a valid page
+        if let Some(ref adapter) = *page_guard {
+            if adapter.current_url().await.is_ok() {
+                return Ok(adapter.clone());
+            }
+        }
+
+        // Need to create browser
+        if browser_guard.is_none() {
+            info!("AppCore: launching browser...");
+            let options = LaunchOptions::for_server(self.headless);
+            let browser = launch_browser(&options).await?;
+            *browser_guard = Some(browser);
+        }
+
+        // Get or create page
+        let browser = browser_guard.as_ref().unwrap();
+        let page = get_or_create_page(browser, None).await?;
+
+        let adapter = ChromePageAdapter::new(page);
+        *page_guard = Some(adapter.clone());
+
+        Ok(adapter)
+    }
+
+    /// Check if browser is currently running
+    pub async fn has_browser(&self) -> bool {
+        self.browser.lock().await.is_some()
     }
 
     // --- Debug Configuration ---
@@ -140,7 +200,6 @@ impl AppCore {
             created_at: chrono::Utc::now(),
             last_activity: chrono::Utc::now(),
             keep_alive: true,
-            browser: None,
         };
 
         sessions.insert(session);
@@ -191,6 +250,47 @@ impl AppCore {
             session.last_activity = chrono::Utc::now();
         }
     }
+
+    /// Set session idle timeout in seconds (0 = no timeout)
+    pub fn set_session_idle_timeout(&mut self, seconds: u64) {
+        self.session_idle_timeout = seconds;
+    }
+
+    /// Get session idle timeout in seconds
+    pub fn session_idle_timeout(&self) -> u64 {
+        self.session_idle_timeout
+    }
+
+    /// Clean up sessions that have been idle longer than the timeout.
+    ///
+    /// Sessions with `keep_alive: true` are never cleaned up.
+    /// Returns the IDs of sessions that were removed.
+    pub async fn cleanup_idle_sessions(&self) -> Vec<String> {
+        if self.session_idle_timeout == 0 {
+            return vec![];
+        }
+
+        let now = chrono::Utc::now();
+        let timeout = chrono::Duration::seconds(self.session_idle_timeout as i64);
+        let mut removed = vec![];
+
+        let mut sessions = self.sessions.write().await;
+        let idle_ids: Vec<String> = sessions
+            .list()
+            .into_iter()
+            .filter(|s| !s.keep_alive && (now - s.last_activity) > timeout)
+            .map(|s| s.id)
+            .collect();
+
+        for id in idle_ids {
+            sessions.remove(&id);
+            self.broadcast(CoreEvent::SessionClosed { id: id.clone() });
+            info!("Cleaned up idle session: {}", id);
+            removed.push(id);
+        }
+
+        removed
+    }
 }
 
 /// Events emitted by the application core
@@ -229,14 +329,7 @@ pub struct Session {
     pub last_activity: chrono::DateTime<chrono::Utc>,
     /// Keep browser alive between workflows
     pub keep_alive: bool,
-    /// Browser instance (placeholder for actual browser handle)
-    #[allow(dead_code)]
-    browser: Option<BrowserHandle>,
 }
-
-/// Placeholder for browser handle
-#[derive(Debug, Clone)]
-struct BrowserHandle;
 
 /// Session information for listing
 #[derive(Debug, Clone)]
