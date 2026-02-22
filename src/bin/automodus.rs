@@ -880,7 +880,6 @@ async fn run_workflow(
 /// Interactive shell mode - keeps browser running for multiple flow executions
 async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
     use rustyline::error::ReadlineError;
-    use std::sync::RwLock;
 
     println!("🚀 Starting interactive shell mode...\n");
 
