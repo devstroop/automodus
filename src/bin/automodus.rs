@@ -21,7 +21,7 @@ use std::path::PathBuf;
 
 use automodus::{
     actions::BrowserHandle,
-    core::WorkflowEngine,
+    core::{AppCore, WorkflowEngine},
     daemon::{Daemon, DaemonConfig, DaemonStatus},
     modules::ChromePageAdapter,
     shell::{ShellClient, ShellCommand, ShellConfig},
@@ -864,6 +864,7 @@ async fn run_workflow(
 async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
     use automodus::modules::browser::launch::{launch_browser, get_or_create_page, LaunchOptions};
     use rustyline::error::ReadlineError;
+    use std::sync::{Arc, RwLock};
 
     println!("🚀 Starting interactive shell mode...\n");
     println!("Launching browser (headless: false)...");
@@ -884,15 +885,63 @@ async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
     let adapter = ChromePageAdapter::new(page);
     let engine = WorkflowEngine::new();
 
+    // Create AppCore for session management
+    let daemon_config = DaemonConfig::default();
+    let core = Arc::new(AppCore::new(&daemon_config));
+
+    // Create initial session
+    let initial_session_id = core
+        .create_session(Some("default".to_string()))
+        .await
+        .map_err(|e| format!("Failed to create initial session: {}", e))?;
+    let mut current_session_id = initial_session_id;
+
+    // Shared session names for completer
+    let session_names: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(vec!["default".to_string()]));
+
     // Create ShellClient with rustyline (history, completion, line editing)
     let shell_config = ShellConfig::default();
-    let mut shell = ShellClient::new(shell_config)
+    let mut shell = ShellClient::with_session_names(shell_config, session_names.clone())
         .map_err(|e| format!("Failed to create shell: {}", e))?;
+
+    // Helper: refresh session names for completer
+    let refresh_session_names = |core: &Arc<AppCore>, names: &Arc<RwLock<Vec<String>>>| {
+        let core = core.clone();
+        let names = names.clone();
+        async move {
+            let sessions = core.list_sessions().await;
+            let new_names: Vec<String> = sessions
+                .iter()
+                .filter_map(|s| s.name.clone())
+                .chain(sessions.iter().map(|s| s.id[..8].to_string()))
+                .collect();
+            if let Ok(mut guard) = names.write() {
+                *guard = new_names;
+            }
+        }
+    };
+
+    // Helper: build prompt with session name
+    let build_prompt = |core: &Arc<AppCore>, session_id: &str| {
+        let core = core.clone();
+        let session_id = session_id.to_string();
+        async move {
+            if let Some(session) = core.get_session(&session_id).await {
+                let label = session
+                    .name
+                    .unwrap_or_else(|| session_id[..8].to_string());
+                format!("automodus [{}]> ", label)
+            } else {
+                "automodus> ".to_string()
+            }
+        }
+    };
 
     ShellClient::print_help();
 
     loop {
-        let line = match shell.readline() {
+        let prompt = build_prompt(&core, &current_session_id).await;
+        let line = match shell.readline_with_prompt(&prompt) {
             Ok(line) => line,
             Err(ReadlineError::Interrupted) => {
                 println!("Ctrl+C — type 'quit' to exit");
@@ -910,6 +959,9 @@ async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
 
+        // Touch current session on any command
+        core.touch_session(&current_session_id).await;
+
         match ShellClient::parse_command(line) {
             ShellCommand::Quit => {
                 println!("Closing browser...");
@@ -917,6 +969,154 @@ async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
             }
             ShellCommand::Help => {
                 ShellClient::print_help();
+            }
+            ShellCommand::SessionNew { name, keep_alive } => {
+                match core.create_session(name.clone()).await {
+                    Ok(id) => {
+                        if keep_alive {
+                            let _ = core.set_session_keep_alive(&id, true).await;
+                        }
+                        let label = name.as_deref().unwrap_or(&id[..8]);
+                        println!("✓ Session created: {} ({})", label, &id[..8]);
+                        current_session_id = id;
+                        refresh_session_names(&core, &session_names).await;
+                    }
+                    Err(e) => println!("❌ Failed to create session: {}", e),
+                }
+            }
+            ShellCommand::SessionList => {
+                let sessions = core.list_sessions().await;
+                if sessions.is_empty() {
+                    println!("  (no sessions)");
+                } else {
+                    println!("  {:>8}  {:<16}  {:<10}  {}", "ID", "Name", "Keep-Alive", "Last Activity");
+                    println!("  {}  {}  {}  {}", "─".repeat(8), "─".repeat(16), "─".repeat(10), "─".repeat(20));
+                    for s in &sessions {
+                        let marker = if s.id == current_session_id { "→ " } else { "  " };
+                        let name = s.name.as_deref().unwrap_or("-");
+                        let ka = if s.keep_alive { "yes" } else { "no" };
+                        let age = chrono::Utc::now() - s.last_activity;
+                        let age_str = if age.num_seconds() < 60 {
+                            format!("{}s ago", age.num_seconds())
+                        } else if age.num_minutes() < 60 {
+                            format!("{}m ago", age.num_minutes())
+                        } else {
+                            format!("{}h ago", age.num_hours())
+                        };
+                        println!("{}{:>8}  {:<16}  {:<10}  {}", marker, &s.id[..8], name, ka, age_str);
+                    }
+                }
+            }
+            ShellCommand::SessionSwitch { target } => {
+                match core.find_session(&target).await {
+                    Some(session) => {
+                        current_session_id = session.id.clone();
+                        let label = session.name.as_deref().unwrap_or(&session.id[..8]);
+                        println!("✓ Switched to session: {}", label);
+                    }
+                    None => {
+                        // Try prefix match on ID
+                        let sessions = core.list_sessions().await;
+                        let matches: Vec<_> = sessions.iter().filter(|s| s.id.starts_with(&target)).collect();
+                        match matches.len() {
+                            1 => {
+                                current_session_id = matches[0].id.clone();
+                                let label = matches[0].name.as_deref().unwrap_or(&matches[0].id[..8]);
+                                println!("✓ Switched to session: {}", label);
+                            }
+                            0 => println!("❌ No session found matching '{}'", target),
+                            n => println!("❌ Ambiguous: {} sessions match '{}'. Be more specific.", n, target),
+                        }
+                    }
+                }
+            }
+            ShellCommand::SessionClose { target } => {
+                let close_id = if let Some(ref t) = target {
+                    match core.find_session(t).await {
+                        Some(s) => s.id.clone(),
+                        None => {
+                            // Try prefix match
+                            let sessions = core.list_sessions().await;
+                            let matches: Vec<_> = sessions.iter().filter(|s| s.id.starts_with(t)).collect();
+                            if matches.len() == 1 {
+                                matches[0].id.clone()
+                            } else {
+                                println!("❌ No session found matching '{}'", t);
+                                continue;
+                            }
+                        }
+                    }
+                } else {
+                    current_session_id.clone()
+                };
+
+                match core.close_session(&close_id).await {
+                    Ok(_) => {
+                        println!("✓ Session closed: {}", &close_id[..8]);
+                        if close_id == current_session_id {
+                            // Switch to another session or create new default
+                            let sessions = core.list_sessions().await;
+                            if let Some(next) = sessions.first() {
+                                current_session_id = next.id.clone();
+                            } else {
+                                match core.create_session(Some("default".to_string())).await {
+                                    Ok(id) => current_session_id = id,
+                                    Err(e) => {
+                                        eprintln!("Failed to create fallback session: {}", e);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        refresh_session_names(&core, &session_names).await;
+                    }
+                    Err(e) => println!("❌ Failed to close session: {}", e),
+                }
+            }
+            ShellCommand::SessionInfo => {
+                match core.get_session(&current_session_id).await {
+                    Some(session) => {
+                        let age = chrono::Utc::now() - session.created_at;
+                        let idle = chrono::Utc::now() - session.last_activity;
+                        println!("  Session ID:   {}", session.id);
+                        println!("  Name:         {}", session.name.as_deref().unwrap_or("-"));
+                        println!("  Keep-Alive:   {}", if session.keep_alive { "yes" } else { "no" });
+                        println!("  Created:      {} ({} ago)", session.created_at.format("%H:%M:%S"), format_duration(age));
+                        println!("  Last Active:  {} ({} ago)", session.last_activity.format("%H:%M:%S"), format_duration(idle));
+                    }
+                    None => println!("❌ Current session not found (stale)"),
+                }
+            }
+            ShellCommand::SessionKeepAlive { target, toggle } => {
+                let target_id = if let Some(ref t) = target {
+                    match core.find_session(t).await {
+                        Some(s) => s.id.clone(),
+                        None => {
+                            println!("❌ No session found matching '{}'", t);
+                            continue;
+                        }
+                    }
+                } else {
+                    current_session_id.clone()
+                };
+
+                // If no toggle specified, flip current value
+                let new_val = if let Some(val) = toggle {
+                    val
+                } else {
+                    match core.get_session(&target_id).await {
+                        Some(s) => !s.keep_alive,
+                        None => {
+                            println!("❌ Session not found");
+                            continue;
+                        }
+                    }
+                };
+
+                match core.set_session_keep_alive(&target_id, new_val).await {
+                    Ok(_) => println!("✓ Keep-alive {}: {}", if new_val { "enabled" } else { "disabled" }, &target_id[..8]),
+                    Err(e) => println!("❌ Failed: {}", e),
+                }
             }
             ShellCommand::Goto { url } => {
                 if url.is_empty() {
@@ -1104,6 +1304,18 @@ async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+/// Format a chrono::Duration as human-readable string
+fn format_duration(d: chrono::Duration) -> String {
+    let secs = d.num_seconds();
+    if secs < 60 {
+        format!("{}s", secs)
+    } else if secs < 3600 {
+        format!("{}m {}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+    }
 }
 
 /// Run a workflow using an existing adapter (for shell mode)
