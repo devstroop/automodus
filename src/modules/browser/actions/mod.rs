@@ -50,6 +50,6 @@ pub use capture::ScreenshotAction;
 pub use extract::{EvalAction, ExtractAction};
 pub use interact::{ClickAction, HoverAction, SelectAction, TypeAction};
 pub use navigate::{BackAction, ForwardAction, GotoAction, ReloadAction};
-pub use tabs::{TabCloseAction, TabNewAction, TabSwitchAction};
+pub use tabs::{TabCloseAction, TabListAction, TabNewAction, TabSwitchAction};
 pub use upload::{FileChooserAction, UploadAction, WaitUploadAction};
 pub use wait::{SleepAction, WaitForAction};

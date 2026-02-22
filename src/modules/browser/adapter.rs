@@ -16,7 +16,7 @@ use super::selector::{
     parse_selector, selector_click_js, selector_exists_js, selector_get_attribute_js,
     selector_get_text_js, selector_type_js,
 };
-use crate::actions::{ActionError, BrowserHandle};
+use crate::actions::{ActionError, BrowserHandle, TabInfo};
 
 /// Console log entry captured from the browser
 #[derive(Debug, Clone)]
@@ -630,31 +630,128 @@ impl BrowserHandle for ChromePageAdapter {
         Ok(())
     }
 
-    async fn new_tab(&self, _url: Option<&str>) -> Result<usize, ActionError> {
-        // Note: Multi-tab support requires browser-level API
-        // For now, return error as single-page adapter
-        warn!("new_tab not fully implemented in single-page adapter");
-        Err(ActionError::Internal(
-            "Multi-tab not implemented yet".to_string(),
-        ))
+    async fn new_tab(&self, url: Option<&str>) -> Result<usize, ActionError> {
+        let browser_ref = self.browser.as_ref().ok_or_else(|| {
+            ActionError::Internal("Multi-tab requires browser reference. Use with_browser() constructor.".into())
+        })?;
+        let browser_guard = browser_ref.lock().await;
+        let browser = browser_guard.as_ref().ok_or_else(|| {
+            ActionError::Internal("Browser not running".into())
+        })?;
+
+        let target_url = url.unwrap_or("about:blank");
+        let new_page = browser.new_page(target_url).await.map_err(|e| {
+            ActionError::BrowserError(format!("Failed to create new tab: {}", e))
+        })?;
+        drop(browser_guard);
+
+        let new_index = {
+            let mut tabs = self.tabs.lock().await;
+            tabs.push(new_page.clone());
+            tabs.len() - 1
+        };
+
+        *self.current_tab.lock().await = new_index;
+        *self.page.lock().await = new_page;
+
+        info!("Opened new tab {} at {}", new_index, target_url);
+        Ok(new_index)
     }
 
-    async fn switch_tab(&self, _index: usize) -> Result<(), ActionError> {
-        warn!("switch_tab not fully implemented in single-page adapter");
-        Err(ActionError::Internal(
-            "Multi-tab not implemented yet".to_string(),
-        ))
+    async fn switch_tab(&self, index: usize) -> Result<(), ActionError> {
+        let page = {
+            let tabs = self.tabs.lock().await;
+            tabs.get(index).cloned().ok_or_else(|| {
+                ActionError::InvalidParameter(format!(
+                    "Tab index {} out of range (have {} tabs)",
+                    index,
+                    tabs.len()
+                ))
+            })?
+        };
+
+        *self.current_tab.lock().await = index;
+        *self.page.lock().await = page;
+
+        info!("Switched to tab {}", index);
+        Ok(())
     }
 
-    async fn close_tab(&self, _index: usize) -> Result<(), ActionError> {
-        warn!("close_tab not fully implemented in single-page adapter");
-        Err(ActionError::Internal(
-            "Multi-tab not implemented yet".to_string(),
-        ))
+    async fn close_tab(&self, index: usize) -> Result<(), ActionError> {
+        let current = *self.current_tab.lock().await;
+
+        let (new_page, new_index) = {
+            let mut tabs = self.tabs.lock().await;
+            if tabs.len() <= 1 {
+                return Err(ActionError::Internal("Cannot close the last tab".into()));
+            }
+            if index >= tabs.len() {
+                return Err(ActionError::InvalidParameter(format!(
+                    "Tab index {} out of range (have {} tabs)",
+                    index,
+                    tabs.len()
+                )));
+            }
+            tabs.remove(index);
+            let new_index = if current >= tabs.len() {
+                tabs.len() - 1
+            } else if current > index {
+                current - 1
+            } else {
+                current
+            };
+            (tabs[new_index].clone(), new_index)
+        };
+
+        *self.current_tab.lock().await = new_index;
+        *self.page.lock().await = new_page;
+
+        info!("Closed tab {}, now on tab {}", index, new_index);
+        Ok(())
     }
 
     async fn tab_count(&self) -> Result<usize, ActionError> {
-        Ok(1) // Single page adapter
+        Ok(self.tabs.lock().await.len())
+    }
+
+    async fn list_tabs(&self) -> Result<Vec<TabInfo>, ActionError> {
+        let current = *self.current_tab.lock().await;
+        let tabs = self.tabs.lock().await;
+        let mut result = Vec::with_capacity(tabs.len());
+        for (i, tab_page) in tabs.iter().enumerate() {
+            let url = tab_page
+                .url()
+                .await
+                .map_err(|e| ActionError::BrowserError(format!("Failed to get tab URL: {}", e)))?
+                .map(|u| u.to_string())
+                .unwrap_or_else(|| "about:blank".to_string());
+            result.push(TabInfo {
+                index: i,
+                url,
+                active: i == current,
+            });
+        }
+        Ok(result)
+    }
+
+    async fn pdf(&self) -> Result<Vec<u8>, ActionError> {
+        debug!("Generating PDF");
+        let page = self.page.lock().await;
+
+        let params = chromiumoxide::cdp::browser_protocol::page::PrintToPdfParams::default();
+
+        let pdf_result = page
+            .execute(params)
+            .await
+            .map_err(|e| ActionError::BrowserError(format!("PDF generation failed: {}", e)))?;
+
+        let data = pdf_result.result.data;
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        let bytes = STANDARD
+            .decode(&data)
+            .map_err(|e| ActionError::Internal(format!("Failed to decode PDF data: {}", e)))?;
+
+        Ok(bytes)
     }
 
     async fn set_file_input_files(

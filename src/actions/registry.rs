@@ -157,6 +157,17 @@ impl ActionContext {
     }
 }
 
+/// Information about a browser tab
+#[derive(Debug, Clone)]
+pub struct TabInfo {
+    /// Tab index
+    pub index: usize,
+    /// Current URL of the tab
+    pub url: String,
+    /// Whether this tab is the active tab
+    pub active: bool,
+}
+
 /// Browser handle passed to actions
 #[async_trait]
 pub trait BrowserHandle: Send + Sync {
@@ -217,6 +228,12 @@ pub trait BrowserHandle: Send + Sync {
 
     /// Get tab count
     async fn tab_count(&self) -> Result<usize, ActionError>;
+
+    /// List all open tabs
+    async fn list_tabs(&self) -> Result<Vec<TabInfo>, ActionError>;
+
+    /// Print page to PDF and return the bytes
+    async fn pdf(&self) -> Result<Vec<u8>, ActionError>;
 
     /// Set file(s) on a file input element via CDP
     /// This is the only way to programmatically set files on file inputs
@@ -311,6 +328,7 @@ impl ActionRegistry {
         self.register(Arc::new(capture::ScreenshotAction));
 
         // Tabs
+        self.register(Arc::new(tabs::TabListAction));
         self.register(Arc::new(tabs::TabNewAction));
         self.register(Arc::new(tabs::TabSwitchAction));
         self.register(Arc::new(tabs::TabCloseAction));

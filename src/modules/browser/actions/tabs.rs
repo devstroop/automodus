@@ -1,10 +1,44 @@
-//! Tab management actions: tab.new, tab.switch, tab.close
+//! Tab management actions: tab.list, tab.new, tab.switch, tab.close
 
 use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashMap;
 
 use crate::actions::registry::{Action, ActionContext, ActionError, ActionOutput, BrowserHandle};
+
+/// List open tabs
+pub struct TabListAction;
+
+#[async_trait]
+impl Action for TabListAction {
+    fn name(&self) -> &'static str {
+        "tab.list"
+    }
+
+    async fn execute(
+        &self,
+        _params: &HashMap<String, serde_yaml::Value>,
+        _ctx: &ActionContext,
+        browser: &dyn BrowserHandle,
+    ) -> Result<ActionOutput, ActionError> {
+        let tabs = browser.list_tabs().await?;
+        let tab_data: Vec<serde_json::Value> = tabs
+            .iter()
+            .map(|t| {
+                json!({
+                    "index": t.index,
+                    "url": t.url,
+                    "active": t.active,
+                })
+            })
+            .collect();
+
+        Ok(ActionOutput::with_data(json!({
+            "tabs": tab_data,
+            "count": tabs.len(),
+        })))
+    }
+}
 
 /// Open new tab
 pub struct TabNewAction;
