@@ -639,3 +639,122 @@ pub async fn delete_session_handler(
         ),
     }
 }
+
+// ============================================================================
+// Executions
+// ============================================================================
+
+/// List recent executions
+#[utoipa::path(
+    get,
+    path = "/api/executions",
+    tag = "executions",
+    params(
+        ("limit" = Option<usize>, Query, description = "Maximum number of executions to return")
+    ),
+    responses(
+        (status = 200, description = "List of executions", body = ExecutionListResponse)
+    )
+)]
+pub async fn list_executions_handler(
+    State(state): State<Arc<ServerState>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let limit = params
+        .get("limit")
+        .and_then(|l| l.parse::<usize>().ok());
+
+    let executions = state.list_executions(limit).await;
+
+    let execution_list: Vec<ExecutionInfo> = executions
+        .into_iter()
+        .map(|e| ExecutionInfo {
+            id: e.id,
+            workflow: e.workflow,
+            status: e.status,
+            started_at: e.started_at.to_rfc3339(),
+            completed_at: e.completed_at.map(|t| t.to_rfc3339()),
+            duration_ms: e.duration_ms,
+            steps_executed: e.steps_executed,
+            total_steps: e.total_steps,
+            error: e.error,
+        })
+        .collect();
+
+    Json(ExecutionListResponse {
+        executions: execution_list,
+    })
+}
+
+/// Get execution details
+#[utoipa::path(
+    get,
+    path = "/api/executions/{id}",
+    tag = "executions",
+    params(
+        ("id" = String, Path, description = "Execution ID")
+    ),
+    responses(
+        (status = 200, description = "Execution details", body = ExecutionDetail),
+        (status = 404, description = "Execution not found")
+    )
+)]
+pub async fn get_execution_handler(
+    State(state): State<Arc<ServerState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.get_execution(&id).await {
+        Some(e) => (
+            StatusCode::OK,
+            Json(serde_json::json!(ExecutionDetail {
+                info: ExecutionInfo {
+                    id: e.id,
+                    workflow: e.workflow,
+                    status: e.status,
+                    started_at: e.started_at.to_rfc3339(),
+                    completed_at: e.completed_at.map(|t| t.to_rfc3339()),
+                    duration_ms: e.duration_ms,
+                    steps_executed: e.steps_executed,
+                    total_steps: e.total_steps,
+                    error: e.error,
+                },
+                output: e.output,
+                params: e.params,
+            })),
+        ),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": format!("Execution '{}' not found", id)})),
+        ),
+    }
+}
+
+/// Cancel an execution
+#[utoipa::path(
+    delete,
+    path = "/api/executions/{id}",
+    tag = "executions",
+    params(
+        ("id" = String, Path, description = "Execution ID")
+    ),
+    responses(
+        (status = 200, description = "Execution cancelled"),
+        (status = 404, description = "Execution not found"),
+        (status = 400, description = "Cannot cancel execution")
+    )
+)]
+pub async fn cancel_execution_handler(
+    State(state): State<Arc<ServerState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.cancel_execution(&id).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"success": true})),
+        ),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e})),
+        ),
+    }
+}

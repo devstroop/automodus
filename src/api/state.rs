@@ -12,6 +12,10 @@ use crate::config::AppConfig;
 use crate::core::WorkflowEngine;
 use crate::modules::ChromePageAdapter;
 use crate::workflow::{Workflow, WorkflowParser};
+use crate::api::schemas::ExecutionStatus;
+
+/// Maximum executions to keep in history
+const MAX_EXECUTION_HISTORY: usize = 100;
 
 /// Browser session managed by the server
 #[derive(Debug, Clone)]
@@ -63,6 +67,35 @@ pub struct ServerState {
     pub sessions: RwLock<HashMap<String, ServerSession>>,
     /// Maximum concurrent sessions
     pub max_sessions: usize,
+    /// Execution history (id -> Execution)
+    pub executions: RwLock<HashMap<String, ServerExecution>>,
+}
+
+/// Workflow execution record
+#[derive(Debug, Clone)]
+pub struct ServerExecution {
+    /// Unique execution ID
+    pub id: String,
+    /// Workflow name
+    pub workflow: String,
+    /// Status
+    pub status: ExecutionStatus,
+    /// Started timestamp
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    /// Completed timestamp
+    pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Duration in ms
+    pub duration_ms: Option<i64>,
+    /// Steps executed
+    pub steps_executed: usize,
+    /// Total steps in workflow
+    pub total_steps: usize,
+    /// Parameters used
+    pub params: HashMap<String, serde_json::Value>,
+    /// Output data
+    pub output: serde_json::Value,
+    /// Error message if failed
+    pub error: Option<String>,
 }
 
 impl ServerState {
@@ -76,6 +109,7 @@ impl ServerState {
             config,
             sessions: RwLock::new(HashMap::new()),
             max_sessions: 10, // Default max sessions
+            executions: RwLock::new(HashMap::new()),
         }
     }
 
@@ -248,6 +282,113 @@ impl ServerState {
         if let Some(session) = self.sessions.write().await.get_mut(id) {
             session.touch();
         }
+    }
+
+    // --- Execution Tracking ---
+
+    /// Start tracking a new execution
+    pub async fn start_execution(
+        &self,
+        workflow: &str,
+        total_steps: usize,
+        params: HashMap<String, serde_json::Value>,
+    ) -> String {
+        let id = uuid::Uuid::new_v4().to_string();
+        let execution = ServerExecution {
+            id: id.clone(),
+            workflow: workflow.to_string(),
+            status: ExecutionStatus::Running,
+            started_at: chrono::Utc::now(),
+            completed_at: None,
+            duration_ms: None,
+            steps_executed: 0,
+            total_steps,
+            params,
+            output: serde_json::Value::Null,
+            error: None,
+        };
+
+        let mut executions = self.executions.write().await;
+        executions.insert(id.clone(), execution);
+
+        // Trim old executions if needed
+        if executions.len() > MAX_EXECUTION_HISTORY {
+            // Remove oldest completed executions
+            let mut completed: Vec<_> = executions
+                .iter()
+                .filter(|(_, e)| e.status != ExecutionStatus::Running)
+                .map(|(id, e)| (id.clone(), e.started_at))
+                .collect();
+            completed.sort_by_key(|(_, t)| *t);
+
+            for (old_id, _) in completed.iter().take(executions.len() - MAX_EXECUTION_HISTORY) {
+                executions.remove(old_id);
+            }
+        }
+
+        info!("Started execution: {} for workflow: {}", id, workflow);
+        id
+    }
+
+    /// Update execution progress
+    pub async fn update_execution_progress(&self, id: &str, steps_executed: usize) {
+        if let Some(execution) = self.executions.write().await.get_mut(id) {
+            execution.steps_executed = steps_executed;
+        }
+    }
+
+    /// Complete an execution
+    pub async fn complete_execution(
+        &self,
+        id: &str,
+        success: bool,
+        output: serde_json::Value,
+        error: Option<String>,
+    ) {
+        if let Some(execution) = self.executions.write().await.get_mut(id) {
+            let now = chrono::Utc::now();
+            execution.completed_at = Some(now);
+            execution.duration_ms = Some((now - execution.started_at).num_milliseconds());
+            execution.status = if success {
+                ExecutionStatus::Completed
+            } else {
+                ExecutionStatus::Failed
+            };
+            execution.output = output;
+            execution.error = error;
+            info!("Completed execution: {} success={}", id, success);
+        }
+    }
+
+    /// Get execution by ID
+    pub async fn get_execution(&self, id: &str) -> Option<ServerExecution> {
+        self.executions.read().await.get(id).cloned()
+    }
+
+    /// List all executions (most recent first)
+    pub async fn list_executions(&self, limit: Option<usize>) -> Vec<ServerExecution> {
+        let executions = self.executions.read().await;
+        let mut list: Vec<_> = executions.values().cloned().collect();
+        list.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        if let Some(limit) = limit {
+            list.truncate(limit);
+        }
+        list
+    }
+
+    /// Cancel an execution
+    pub async fn cancel_execution(&self, id: &str) -> Result<(), String> {
+        if let Some(execution) = self.executions.write().await.get_mut(id) {
+            if execution.status == ExecutionStatus::Running {
+                execution.status = ExecutionStatus::Cancelled;
+                execution.completed_at = Some(chrono::Utc::now());
+                execution.error = Some("Cancelled by user".to_string());
+                info!("Cancelled execution: {}", id);
+                return Ok(());
+            }
+            return Err("Execution is not running".to_string());
+        }
+        Err(format!("Execution '{}' not found", id))
     }
 }
 
