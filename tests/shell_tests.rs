@@ -74,6 +74,226 @@ mod command_flow_tests {
 // ============================================================================
 
 #[cfg(test)]
+mod session_command_tests {
+    use automodus::shell::ShellCommand;
+    use automodus::shell::ShellClient;
+
+    #[test]
+    fn test_parse_session_new() {
+        match ShellClient::parse_command("session new") {
+            ShellCommand::SessionNew { name, keep_alive } => {
+                assert!(name.is_none());
+                assert!(!keep_alive);
+            }
+            other => panic!("Expected SessionNew, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_session_new_with_name() {
+        match ShellClient::parse_command("session new mytest") {
+            ShellCommand::SessionNew { name, keep_alive } => {
+                assert_eq!(name, Some("mytest".to_string()));
+                assert!(!keep_alive);
+            }
+            other => panic!("Expected SessionNew, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_session_new_with_flags() {
+        match ShellClient::parse_command("session new --name=prod --keep-alive") {
+            ShellCommand::SessionNew { name, keep_alive } => {
+                assert_eq!(name, Some("prod".to_string()));
+                assert!(keep_alive);
+            }
+            other => panic!("Expected SessionNew, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_session_list() {
+        assert!(matches!(
+            ShellClient::parse_command("session list"),
+            ShellCommand::SessionList
+        ));
+        // ls alias
+        assert!(matches!(
+            ShellClient::parse_command("session ls"),
+            ShellCommand::SessionList
+        ));
+    }
+
+    #[test]
+    fn test_parse_session_switch() {
+        match ShellClient::parse_command("session switch abc123") {
+            ShellCommand::SessionSwitch { target } => assert_eq!(target, "abc123"),
+            other => panic!("Expected SessionSwitch, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_session_switch_missing_target() {
+        assert!(matches!(
+            ShellClient::parse_command("session switch"),
+            ShellCommand::Unknown { .. }
+        ));
+    }
+
+    #[test]
+    fn test_parse_session_close() {
+        match ShellClient::parse_command("session close abc123") {
+            ShellCommand::SessionClose { target } => assert_eq!(target, Some("abc123".to_string())),
+            other => panic!("Expected SessionClose, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_session_close_current() {
+        match ShellClient::parse_command("session close") {
+            ShellCommand::SessionClose { target } => assert!(target.is_none()),
+            other => panic!("Expected SessionClose, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_session_info() {
+        assert!(matches!(
+            ShellClient::parse_command("session info"),
+            ShellCommand::SessionInfo
+        ));
+        // Bare "session" also shows info
+        assert!(matches!(
+            ShellClient::parse_command("session"),
+            ShellCommand::SessionInfo
+        ));
+    }
+
+    #[test]
+    fn test_parse_session_keep_alive() {
+        match ShellClient::parse_command("session keep-alive abc123 on") {
+            ShellCommand::SessionKeepAlive { target, toggle } => {
+                assert_eq!(target, Some("abc123".to_string()));
+                assert_eq!(toggle, Some(true));
+            }
+            other => panic!("Expected SessionKeepAlive, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_session_keep_alive_off() {
+        match ShellClient::parse_command("session keep-alive abc123 off") {
+            ShellCommand::SessionKeepAlive { target, toggle } => {
+                assert_eq!(target, Some("abc123".to_string()));
+                assert_eq!(toggle, Some(false));
+            }
+            other => panic!("Expected SessionKeepAlive, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_session_keep_alive_toggle() {
+        // No on/off = toggle (None)
+        match ShellClient::parse_command("session keep-alive abc123") {
+            ShellCommand::SessionKeepAlive { target, toggle } => {
+                assert_eq!(target, Some("abc123".to_string()));
+                assert!(toggle.is_none());
+            }
+            other => panic!("Expected SessionKeepAlive, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_session_shortcut() {
+        // "sess" is a shortcut for "session"
+        assert!(matches!(
+            ShellClient::parse_command("sess list"),
+            ShellCommand::SessionList
+        ));
+    }
+
+    #[test]
+    fn test_parse_session_ka_shortcut() {
+        match ShellClient::parse_command("session ka abc on") {
+            ShellCommand::SessionKeepAlive { target, toggle } => {
+                assert_eq!(target, Some("abc".to_string()));
+                assert_eq!(toggle, Some(true));
+            }
+            other => panic!("Expected SessionKeepAlive, got {:?}", other),
+        }
+    }
+}
+
+// ============================================================================
+// Session AppCore Integration Tests
+// ============================================================================
+
+#[cfg(test)]
+mod session_appcore_tests {
+    use automodus::core::AppCore;
+    use automodus::daemon::DaemonConfig;
+
+    #[tokio::test]
+    async fn test_find_session_by_name() {
+        let config = DaemonConfig::default();
+        let core = AppCore::new(&config);
+        let id = core.create_session(Some("test-session".to_string())).await.unwrap();
+
+        let found = core.find_session_by_name("test-session").await;
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().id, id);
+    }
+
+    #[tokio::test]
+    async fn test_find_session_by_id_or_name() {
+        let config = DaemonConfig::default();
+        let core = AppCore::new(&config);
+        let id = core.create_session(Some("myname".to_string())).await.unwrap();
+
+        // Find by name
+        let by_name = core.find_session("myname").await;
+        assert!(by_name.is_some());
+
+        // Find by id
+        let by_id = core.find_session(&id).await;
+        assert!(by_id.is_some());
+
+        // Not found
+        let missing = core.find_session("nonexistent").await;
+        assert!(missing.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_set_session_keep_alive() {
+        let config = DaemonConfig::default();
+        let core = AppCore::new(&config);
+        let id = core.create_session(Some("ka-test".to_string())).await.unwrap();
+
+        // Default is keep_alive = true (from create_session)
+        let session = core.get_session(&id).await.unwrap();
+        assert!(session.keep_alive);
+
+        // Toggle off
+        core.set_session_keep_alive(&id, false).await.unwrap();
+        let session = core.get_session(&id).await.unwrap();
+        assert!(!session.keep_alive);
+
+        // Toggle back on
+        core.set_session_keep_alive(&id, true).await.unwrap();
+        let session = core.get_session(&id).await.unwrap();
+        assert!(session.keep_alive);
+    }
+
+    #[tokio::test]
+    async fn test_set_keep_alive_not_found() {
+        let config = DaemonConfig::default();
+        let core = AppCore::new(&config);
+        let result = core.set_session_keep_alive("nonexistent", true).await;
+        assert!(result.is_err());
+    }
+}
+
+#[cfg(test)]
 mod daemon_integration_tests {
     use super::*;
 
