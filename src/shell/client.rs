@@ -113,6 +113,8 @@ pub enum ShellCommand {
     TabClose { index: Option<usize> },
     /// Export page to PDF
     Pdf { path: Option<PathBuf> },
+    /// Find elements matching a selector
+    Find { selector: String },
     /// Unknown command
     Unknown { command: String },
 }
@@ -150,6 +152,7 @@ impl ShellCompleter {
                 "tabs".to_string(),
                 "tab".to_string(),
                 "pdf".to_string(),
+                "find".to_string(),
                 "help".to_string(),
                 "quit".to_string(),
                 "exit".to_string(),
@@ -456,6 +459,9 @@ impl ShellClient {
             "text" => ShellCommand::Text {
                 selector: args.to_string(),
             },
+            "find" | "f" => ShellCommand::Find {
+                selector: args.to_string(),
+            },
             "eval" | "js" => ShellCommand::Eval {
                 script: args.to_string(),
             },
@@ -731,6 +737,7 @@ Shell Commands:
 
   Inspection:
     text <selector>      Get element text
+    find <selector>      Find elements matching selector
     screenshot [path]    Take screenshot
     pdf [path]           Export page to PDF
     eval <js>            Execute JavaScript
@@ -767,7 +774,7 @@ Shell Commands:
     help                 Show this help
     quit                 Exit shell
 
-Shortcuts: r=run, g=goto, c=click, t=type, w=wait, s=status, ls=list, hl=highlight, q=quit
+Shortcuts: r=run, g=goto, c=click, t=type, w=wait, f=find, s=status, ls=list, hl=highlight, q=quit
             sess=session, sw=switch, ka=keep-alive, ss=screenshot
 "#
         );
@@ -839,6 +846,10 @@ mod tests {
             ShellCommand::Click { .. }
         ));
         assert!(matches!(
+            ShellClient::parse_command("f .my-class"),
+            ShellCommand::Find { .. }
+        ));
+        assert!(matches!(
             ShellClient::parse_command("q"),
             ShellCommand::Quit
         ));
@@ -885,6 +896,14 @@ mod tests {
         match ShellClient::parse_command("highlight #element") {
             ShellCommand::Highlight { selector } => assert_eq!(selector, "#element"),
             _ => panic!("Expected Highlight"),
+        }
+    }
+
+    #[test]
+    fn test_parse_find() {
+        match ShellClient::parse_command("find .my-class") {
+            ShellCommand::Find { selector } => assert_eq!(selector, ".my-class"),
+            _ => panic!("Expected Find"),
         }
     }
 
