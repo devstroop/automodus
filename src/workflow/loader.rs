@@ -239,6 +239,7 @@ steps:
             output: None,
             on_complete: None,
             on_error: None,
+            debug: super::super::schema::DebugConfig::default(),
         };
 
         loader.add(workflow).await.unwrap();
