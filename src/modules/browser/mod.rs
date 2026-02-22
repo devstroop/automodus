@@ -8,6 +8,7 @@
 //! - Browser-specific automation actions
 //! - Launch utilities for browser configuration
 //! - Extended selector support (text:, role:, xpath:, etc.)
+//! - Console and network log capture
 
 pub mod actions;
 mod adapter;
@@ -15,7 +16,7 @@ mod driver;
 pub mod launch;
 pub mod selector;
 
-pub use adapter::ChromePageAdapter;
+pub use adapter::{ChromePageAdapter, ConsoleEntry, NetworkEntry};
 pub use driver::{BrowserService, BrowserServiceConfig};
 pub use launch::{build_browser_config, launch_browser, LaunchOptions};
 pub use selector::{parse_selector, SelectorType};

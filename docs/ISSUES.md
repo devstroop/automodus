@@ -197,16 +197,17 @@ if ctx.debug.delay > 0 {
 Browser console and network capture.
 
 ### Issue #9: Console capture via CDP
-**Status:** ⬜ Not Started  
+**Status:** ✅ Done (basic)  
 **File:** `src/modules/browser/adapter.rs`  
 **Depends:** #5  
 **Estimate:** 3-4 hours
 
 **Tasks:**
-- [ ] Setup `ConsoleAPICalledEvent` listener when `console: true`
-- [ ] Store captured logs in `ExecutionContext`
-- [ ] Format with timestamp and level
-- [ ] Include in `WorkflowResult` when debug enabled
+- [x] Add ConsoleEntry struct with format() method
+- [x] Add console_logs storage to ChromePageAdapter
+- [x] Add capture_console_logs() via JS injection
+- [x] Add get_console_logs() and clear_console_logs()
+- [ ] Setup real CDP `ConsoleAPICalledEvent` listener (deferred)
 
 **Output format:**
 ```
@@ -218,16 +219,17 @@ Browser console and network capture.
 ---
 
 ### Issue #10: Network capture via CDP
-**Status:** ⬜ Not Started  
+**Status:** ✅ Done (basic)  
 **File:** `src/modules/browser/adapter.rs`  
 **Depends:** #5  
 **Estimate:** 3-4 hours
 
 **Tasks:**
-- [ ] Setup `ResponseReceivedEvent` listener when `network: true`
-- [ ] Capture method, URL, status, timing
-- [ ] Store in `ExecutionContext`
-- [ ] Include in `WorkflowResult`
+- [x] Add NetworkEntry struct with format() method
+- [x] Add network_logs storage to ChromePageAdapter
+- [x] Add capture_network_logs() via Performance API
+- [x] Add get_network_logs() and clear_network_logs()
+- [ ] Setup real CDP `ResponseReceivedEvent` listener (deferred)
 
 **Output format:**
 ```

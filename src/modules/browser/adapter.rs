@@ -18,6 +18,48 @@ use super::selector::{
 };
 use crate::actions::{ActionError, BrowserHandle};
 
+/// Console log entry captured from the browser
+#[derive(Debug, Clone)]
+pub struct ConsoleEntry {
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub level: String,
+    pub message: String,
+}
+
+impl ConsoleEntry {
+    /// Format as log line: [CONSOLE] 14:32:01.123 LOG: message
+    pub fn format(&self) -> String {
+        format!(
+            "[CONSOLE] {} {}: {}",
+            self.timestamp.format("%H:%M:%S%.3f"),
+            self.level.to_uppercase(),
+            self.message
+        )
+    }
+}
+
+/// Network request entry captured from the browser
+#[derive(Debug, Clone)]
+pub struct NetworkEntry {
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub method: String,
+    pub url: String,
+    pub status: Option<u32>,
+    pub duration_ms: Option<u64>,
+}
+
+impl NetworkEntry {
+    /// Format as log line: [NETWORK] GET https://... → 200 (45ms)
+    pub fn format(&self) -> String {
+        let status = self.status.map(|s| s.to_string()).unwrap_or_else(|| "?".to_string());
+        let timing = self.duration_ms.map(|d| format!(" ({}ms)", d)).unwrap_or_default();
+        format!(
+            "[NETWORK] {} {} → {}{}",
+            self.method, self.url, status, timing
+        )
+    }
+}
+
 /// Adapter that implements BrowserHandle for chromiumoxide Page
 #[derive(Clone)]
 pub struct ChromePageAdapter {
@@ -28,6 +70,10 @@ pub struct ChromePageAdapter {
     /// Current tab index (for future multi-tab support)
     #[allow(dead_code)]
     _current_tab: Arc<Mutex<usize>>,
+    /// Captured console logs (when console capture is enabled)
+    console_logs: Arc<Mutex<Vec<ConsoleEntry>>>,
+    /// Captured network requests (when network capture is enabled)
+    network_logs: Arc<Mutex<Vec<NetworkEntry>>>,
 }
 
 impl ChromePageAdapter {
@@ -37,12 +83,147 @@ impl ChromePageAdapter {
             page: Arc::new(Mutex::new(page)),
             _tabs: Arc::new(Mutex::new(Vec::new())),
             _current_tab: Arc::new(Mutex::new(0)),
+            console_logs: Arc::new(Mutex::new(Vec::new())),
+            network_logs: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     /// Get the underlying page (for direct access if needed)
     pub async fn page(&self) -> tokio::sync::MutexGuard<'_, Page> {
         self.page.lock().await
+    }
+
+    /// Get captured console logs
+    pub async fn get_console_logs(&self) -> Vec<ConsoleEntry> {
+        self.console_logs.lock().await.clone()
+    }
+
+    /// Get captured network logs
+    pub async fn get_network_logs(&self) -> Vec<NetworkEntry> {
+        self.network_logs.lock().await.clone()
+    }
+
+    /// Clear captured console logs
+    pub async fn clear_console_logs(&self) {
+        self.console_logs.lock().await.clear();
+    }
+
+    /// Clear captured network logs
+    pub async fn clear_network_logs(&self) {
+        self.network_logs.lock().await.clear();
+    }
+
+    /// Capture current console logs from the browser via CDP
+    /// This does a one-time capture by evaluating JS to get stored logs
+    pub async fn capture_console_logs(&self) -> Result<Vec<ConsoleEntry>, ActionError> {
+        let page = self.page.lock().await;
+        
+        // Inject log capture script if not already present
+        let js = r#"
+        (function() {
+            if (!window.__automodusConsoleLogs) {
+                window.__automodusConsoleLogs = [];
+                const orig = {
+                    log: console.log,
+                    warn: console.warn,
+                    error: console.error,
+                    info: console.info,
+                    debug: console.debug
+                };
+                ['log', 'warn', 'error', 'info', 'debug'].forEach(level => {
+                    console[level] = function(...args) {
+                        window.__automodusConsoleLogs.push({
+                            timestamp: Date.now(),
+                            level: level,
+                            message: args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')
+                        });
+                        orig[level].apply(console, args);
+                    };
+                });
+            }
+            const logs = window.__automodusConsoleLogs;
+            window.__automodusConsoleLogs = [];
+            return logs;
+        })()
+        "#;
+
+        let result = page.evaluate(js).await.map_err(|e| {
+            ActionError::BrowserError(format!("Failed to capture console logs: {}", e))
+        })?;
+
+        let entries: Vec<ConsoleEntry> = if let Some(arr) = result.value().and_then(|v| v.as_array()) {
+            arr.iter()
+                .filter_map(|item| {
+                    let timestamp_ms = item.get("timestamp")?.as_i64()?;
+                    let level = item.get("level")?.as_str()?.to_string();
+                    let message = item.get("message")?.as_str()?.to_string();
+                    Some(ConsoleEntry {
+                        timestamp: chrono::DateTime::from_timestamp_millis(timestamp_ms)
+                            .unwrap_or_else(chrono::Utc::now),
+                        level,
+                        message,
+                    })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        // Store in adapter
+        let mut logs = self.console_logs.lock().await;
+        logs.extend(entries.clone());
+
+        Ok(entries)
+    }
+
+    /// Capture network requests via Performance API
+    pub async fn capture_network_logs(&self) -> Result<Vec<NetworkEntry>, ActionError> {
+        let page = self.page.lock().await;
+
+        let js = r#"
+        (function() {
+            const entries = performance.getEntriesByType('resource');
+            return entries.map(e => ({
+                timestamp: performance.timeOrigin + e.startTime,
+                method: 'GET',  // Performance API doesn't expose method
+                url: e.name,
+                status: null,   // Not available via Performance API
+                duration_ms: Math.round(e.duration)
+            }));
+        })()
+        "#;
+
+        let result = page.evaluate(js).await.map_err(|e| {
+            ActionError::BrowserError(format!("Failed to capture network logs: {}", e))
+        })?;
+
+        let entries: Vec<NetworkEntry> = if let Some(arr) = result.value().and_then(|v| v.as_array()) {
+            arr.iter()
+                .filter_map(|item| {
+                    let timestamp_ms = item.get("timestamp")?.as_f64()? as i64;
+                    let method = item.get("method")?.as_str()?.to_string();
+                    let url = item.get("url")?.as_str()?.to_string();
+                    let status = item.get("status").and_then(|v| v.as_u64()).map(|s| s as u32);
+                    let duration_ms = item.get("duration_ms").and_then(|v| v.as_u64());
+                    Some(NetworkEntry {
+                        timestamp: chrono::DateTime::from_timestamp_millis(timestamp_ms)
+                            .unwrap_or_else(chrono::Utc::now),
+                        method,
+                        url,
+                        status,
+                        duration_ms,
+                    })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        // Store in adapter
+        let mut logs = self.network_logs.lock().await;
+        logs.extend(entries.clone());
+
+        Ok(entries)
     }
 }
 
