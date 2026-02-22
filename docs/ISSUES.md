@@ -278,12 +278,16 @@ Foundation for persistent sessions. Largest effort.
 ---
 
 ### Issue #13: Create SessionManager
-**Status:** ✅ Done (basic)  
+**Status:** 🟡 In Progress (basic session CRUD done, browser lifecycle not unified)  
 **File:** `src/core/app.rs` (integrated into AppCore)  
 **Depends:** #12  
 **Estimate:** 1.5-2 days
 
 > **Note:** Browser lifecycle has edge cases (crash recovery, zombie processes).
+> **Audit (2026-02-22):** Session CRUD (create/get/close/list) works in AppCore, but
+> browser launch is still duplicated in `api/state.rs::get_page()` and `bin/automodus.rs::run_shell()`.
+> AppCore `Session.browser` is a placeholder `Option<BrowserHandle>` (stub, not real browser).
+> No idle timeout cleanup exists.
 
 **Tasks:**
 - [x] Session management integrated into `src/core/app.rs`
@@ -295,8 +299,8 @@ Foundation for persistent sessions. Largest effort.
 - [ ] Handle browser crash/disconnect gracefully
 
 **Removes duplication from:**
-- `src/api/state.rs` (ServerState browser management)
-- `src/bin/automodus.rs` (shell browser launch)
+- `src/api/state.rs` (ServerState browser management) — **still duplicated**
+- `src/bin/automodus.rs` (shell browser launch) — **still duplicated**
 
 ---
 
@@ -340,10 +344,14 @@ automodus daemon stop
 ---
 
 ### Issue #15: Merge HTTP server into daemon
-**Status:** ✅ Done  
+**Status:** 🟡 In Progress  
 **File:** `src/daemon/mod.rs`, `src/api/server.rs`  
 **Depends:** #11, #12  
 **Estimate:** 4-6 hours
+
+> **Audit (2026-02-22):** HTTP server CAN start inside `Daemon::run()`, but `serve` command
+> still calls `api::run_server()` directly (not daemon). `ServerState` in `api/state.rs`
+> manages its own browser independently of `AppCore` — two separate state systems coexist.
 
 **Tasks:**
 - [x] Add `enable_http` config option to DaemonConfig
@@ -374,14 +382,18 @@ automodus daemon stop
 ---
 
 ### Issue #15b: Backward compatibility for serve command
-**Status:** ✅ Done  
+**Status:** 🟡 In Progress  
 **File:** `src/bin/automodus.rs`  
 **Depends:** #14, #15  
 **Estimate:** 1 hour
 
+> **Audit (2026-02-22):** `serve` prints deprecation warning but does NOT internally call
+> `daemon start`. It calls `api::run_server()` directly in foreground mode.
+> The command works but doesn't route through the daemon architecture.
+
 **Tasks:**
 - [x] Keep `automodus serve` command working
-- [x] Internally call `daemon start` with HTTP enabled
+- [ ] Internally call `daemon start` with HTTP enabled
 - [x] Print deprecation warning
 - [x] Document in help text
 
@@ -392,12 +404,17 @@ automodus daemon stop
 Stateless shell connecting to daemon.
 
 ### Issue #16: Create ShellClient
-**Status:** ✅ Done  
+**Status:** 🟡 In Progress (ShellClient built but not wired into main binary)  
 **File:** `src/shell/client.rs` (new)  
 **Depends:** #11, cargo deps (rustyline, dirs)  
 **Estimate:** 1 day
 
 > **User pain point:** Current shell uses `std::io::BufRead` - no arrow key history, no line editing.
+>
+> **Audit (2026-02-22):** `ShellClient` with rustyline is fully built in `src/shell/client.rs`,
+> but `run_shell()` in `bin/automodus.rs` still uses the OLD `std::io::BufRead` loop.
+> The new ShellClient is never instantiated anywhere in the running application.
+> Until `run_shell()` is updated to use `ShellClient`, users don't get readline support.
 
 **Tasks:**
 - [x] Create `src/shell/mod.rs` and `src/shell/client.rs`
@@ -407,6 +424,7 @@ Stateless shell connecting to daemon.
 - [x] **Ctrl+R for reverse history search**
 - [x] Implement history save/load (`~/.local/share/automodus/history.txt`)
 - [x] Add command completion for commands and workflow paths
+- [ ] **Wire ShellClient into `bin/automodus.rs::run_shell()`** (BLOCKING)
 - [ ] Implement daemon connection via Unix socket (deferred)
 - [ ] Replace inline browser launch with daemon commands (deferred)
 
@@ -441,15 +459,18 @@ automodus> [UP ARROW]  # Shows: goto https://example.com
 ---
 
 ### Issue #18: Shell autocomplete
-**Status:** ⬜ Not Started  
+**Status:** 🟡 In Progress (basic completion done, session/file completion missing)  
 **File:** `src/shell/client.rs`  
 **Depends:** #16  
 **Estimate:** 3-4 hours
 
+> **Audit (2026-02-22):** `ShellCompleter` implements `Completer` trait with command name
+> and workflow path completion. Missing: session name and file path completion.
+
 **Tasks:**
-- [ ] Implement `Completer` trait for rustyline
-- [ ] Command name completion
-- [ ] Workflow name completion for `run`
+- [x] Implement `Completer` trait for rustyline
+- [x] Command name completion
+- [x] Workflow name completion for `run`
 - [ ] Session name completion for session commands
 - [ ] File path completion for `screenshot`
 
@@ -696,6 +717,7 @@ Final debug features.
 | Date | Changes |
 |------|---------|
 | 2026-02-22 | Initial issue list from SHELL.md and DEBUG.md review |
+| 2026-02-22 | Codebase audit: corrected #13 → 🟡, #15 → 🟡, #15b → 🟡, #16 → 🟡 (not wired), #18 → 🟡 (basic done) |
 
 ---
 
