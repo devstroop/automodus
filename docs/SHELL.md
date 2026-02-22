@@ -6,15 +6,19 @@ This document outlines the unified design for the interactive shell (CLI) and RE
 
 | Component | Status | Location |
 |-----------|--------|----------|
-| Shell REPL | ⚠️ Basic | `bin/automodus.rs::run_shell()` |
-| API Server | ⚠️ Basic | `api/server.rs`, `api/handlers.rs` |
-| Browser management (shell) | ⚠️ Inline | `bin/automodus.rs` (duplicated) |
-| Browser management (API) | ⚠️ Inline | `api/state.rs::ServerState` |
-| Daemon | ❌ Not implemented | Proposed: merge serve + browser lifecycle |
-| `AppCore` | ❌ Not implemented | Proposed: `core/app.rs` |
-| `SessionManager` | ❌ Not implemented | Proposed: `core/session.rs` |
-| Readline/history | ❌ Not implemented | Requires `rustyline` crate |
-| WebSocket | ❌ Not implemented | Requires `tokio-tungstenite` |
+| Shell REPL | ✅ Full | `bin/automodus.rs::run_shell()`, `shell/client.rs` |
+| API Server | ✅ Full | `api/server.rs`, `api/handlers.rs` (OpenAPI + Swagger) |
+| Browser management (shell) | ✅ Via AppCore | `core/app.rs`, `bin/automodus.rs` |
+| Browser management (API) | ✅ Via AppCore | `api/state.rs::ServerState` |
+| Daemon | ✅ Implemented | `daemon/mod.rs` (socket, PID, config) |
+| `AppCore` | ✅ Implemented | `core/app.rs` |
+| `SessionManager` | ✅ Implemented | `core/app.rs` (integrated) |
+| Readline/history | ✅ Implemented | `shell/client.rs` (`rustyline`) |
+| WebSocket | ✅ Implemented | `api/ws.rs` |
+
+> **Note:** The daemon architecture described below is now implemented. The
+> "Current Problem" section below is kept for historical context — the
+> daemon/client split has resolved these issues.
 
 ### Current Problem
 
