@@ -331,6 +331,7 @@ impl ShellClient {
                 selector: args.to_string(),
             },
             "trace" => Self::parse_trace_command(args),
+            "session" | "sess" => Self::parse_session_command(args),
             "help" | "h" | "?" => ShellCommand::Help,
             "quit" | "exit" | "q" => ShellCommand::Quit,
             _ => ShellCommand::Unknown {
@@ -431,6 +432,60 @@ impl ShellClient {
             ShellCommand::Run { path, params } => ShellCommand::Trace { path, params },
             _ => ShellCommand::Unknown {
                 command: "trace".to_string(),
+            },
+        }
+    }
+
+    fn parse_session_command(args: &str) -> ShellCommand {
+        let parts: Vec<&str> = args.split_whitespace().collect();
+
+        if parts.is_empty() {
+            return ShellCommand::SessionInfo;
+        }
+
+        match parts[0] {
+            "new" => {
+                let mut name = None;
+                let mut keep_alive = false;
+                for p in &parts[1..] {
+                    if let Some(n) = p.strip_prefix("--name=") {
+                        name = Some(n.trim_matches('"').trim_matches('\'').to_string());
+                    } else if *p == "--keep-alive" || *p == "-k" {
+                        keep_alive = true;
+                    } else if name.is_none() && !p.starts_with('-') {
+                        // Positional name argument
+                        name = Some(p.to_string());
+                    }
+                }
+                ShellCommand::SessionNew { name, keep_alive }
+            }
+            "list" | "ls" => ShellCommand::SessionList,
+            "switch" | "sw" => {
+                if parts.len() < 2 {
+                    return ShellCommand::Unknown {
+                        command: "session switch".to_string(),
+                    };
+                }
+                ShellCommand::SessionSwitch {
+                    target: parts[1].to_string(),
+                }
+            }
+            "close" => {
+                let target = parts.get(1).map(|s| s.to_string());
+                ShellCommand::SessionClose { target }
+            }
+            "info" => ShellCommand::SessionInfo,
+            "keep-alive" | "ka" => {
+                let target = parts.get(1).map(|s| s.to_string());
+                let toggle = parts.get(2).and_then(|s| match *s {
+                    "on" | "true" | "1" => Some(true),
+                    "off" | "false" | "0" => Some(false),
+                    _ => None,
+                });
+                ShellCommand::SessionKeepAlive { target, toggle }
+            }
+            _ => ShellCommand::Unknown {
+                command: format!("session {}", args),
             },
         }
     }
