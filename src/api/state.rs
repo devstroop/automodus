@@ -130,6 +130,11 @@ impl ServerState {
         self.core.get_page().await
     }
 
+    /// Get the debug output directory
+    pub fn debug_dir(&self) -> std::path::PathBuf {
+        self.core.debug_dir().clone()
+    }
+
     // --- Session Management (delegated to AppCore) ---
 
     /// Create a new session
