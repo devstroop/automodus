@@ -126,4 +126,4 @@ pub use modules::{BrowserService, ChromePageAdapter};
 pub use config::AppConfig;
 
 // Errors
-pub use error::{AutomodusError, Result};
+pub use error::{AppError, AutomodusError, ErrorCode, Result};
