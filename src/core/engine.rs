@@ -11,6 +11,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::actions::{ActionError, ActionOutput, ActionRegistry, BrowserHandle};
 use crate::utils::yaml_to_json;
+use crate::workflow::schema::{CaptureMode, DebugConfig, ResolvedDebugConfig};
 use crate::workflow::{CompleteHandler, ErrorHandler, Step, Workflow};
 
 use super::context::ExecutionContext;
@@ -73,6 +74,9 @@ pub struct WorkflowResult {
 
     /// Number of steps executed
     pub steps_executed: usize,
+
+    /// Debug screenshots captured during execution
+    pub debug_screenshots: Vec<String>,
 }
 
 /// Workflow execution engine
@@ -109,16 +113,33 @@ impl WorkflowEngine {
         browser: &dyn BrowserHandle,
         params: HashMap<String, Value>,
     ) -> Result<WorkflowResult, WorkflowError> {
+        // Use default debug config, caller can use execute_with_debug for custom config
+        self.execute_with_debug(workflow, browser, params, ResolvedDebugConfig::default())
+            .await
+    }
+
+    /// Execute a workflow with debug configuration
+    pub async fn execute_with_debug(
+        &self,
+        workflow: &Workflow,
+        browser: &dyn BrowserHandle,
+        params: HashMap<String, Value>,
+        debug_config: ResolvedDebugConfig,
+    ) -> Result<WorkflowResult, WorkflowError> {
         let instance_id = uuid::Uuid::new_v4().to_string();
 
         info!(
             workflow = %workflow.name,
             instance_id = %instance_id,
+            debug_enabled = debug_config.enabled,
             "Starting workflow execution"
         );
 
-        // Create execution context
-        let mut ctx = ExecutionContext::new(&workflow.name, &instance_id);
+        // Create execution context with debug config
+        let mut ctx = ExecutionContext::new(&workflow.name, &instance_id).with_debug(debug_config);
+
+        // Track debug screenshots
+        let mut debug_screenshots: Vec<String> = Vec::new();
 
         // Set initial variables from workflow definition
         if let Some(vars) = &workflow.vars {
@@ -131,7 +152,9 @@ impl WorkflowEngine {
         ctx.params = params;
 
         // Execute steps
-        let result = self.execute_steps(workflow, browser, &mut ctx).await;
+        let result = self
+            .execute_steps(workflow, browser, &mut ctx, &mut debug_screenshots)
+            .await;
 
         // Build result
         let duration_ms = ctx.duration().num_milliseconds();
@@ -154,6 +177,7 @@ impl WorkflowEngine {
                     error: None,
                     duration_ms,
                     steps_executed: ctx.step_index,
+                    debug_screenshots,
                 })
             }
             Err(e) => {
@@ -166,7 +190,8 @@ impl WorkflowEngine {
 
                 // Handle error callback if defined
                 if let Some(on_error) = &workflow.on_error {
-                    self.handle_error(on_error, &e, browser, &mut ctx).await;
+                    self.handle_error(on_error, &e, browser, &mut ctx, &mut debug_screenshots)
+                        .await;
                 }
 
                 Ok(WorkflowResult {
@@ -178,6 +203,7 @@ impl WorkflowEngine {
                     error: Some(e.to_string()),
                     duration_ms,
                     steps_executed: ctx.step_index,
+                    debug_screenshots,
                 })
             }
         }
@@ -189,9 +215,34 @@ impl WorkflowEngine {
         workflow: &Workflow,
         browser: &dyn BrowserHandle,
         ctx: &mut ExecutionContext,
+        debug_screenshots: &mut Vec<String>,
     ) -> Result<Value, WorkflowError> {
         while ctx.step_index < workflow.steps.len() {
             let step = &workflow.steps[ctx.step_index];
+
+            // Merge step-level debug config with workflow-level
+            let step_debug = self.resolve_step_debug(ctx, step);
+
+            // Apply step delay if configured
+            if step_debug.delay > 0 {
+                debug!(
+                    workflow = %workflow.name,
+                    step = ctx.step_index,
+                    delay_ms = step_debug.delay,
+                    "Applying debug delay before step"
+                );
+                tokio::time::sleep(tokio::time::Duration::from_millis(step_debug.delay)).await;
+            }
+
+            // Capture screenshot before step if configured
+            if matches!(step_debug.capture, CaptureMode::Before | CaptureMode::All) {
+                if let Some(path) = self
+                    .capture_debug_screenshot(browser, ctx, "before")
+                    .await
+                {
+                    debug_screenshots.push(path);
+                }
+            }
 
             // Handle `condition` action specially (with then/else blocks)
             // Must check BEFORE step-level condition because `if:` gets captured into step.condition
@@ -215,7 +266,40 @@ impl WorkflowEngine {
             }
 
             // Execute step with retries
-            let output = self.execute_step_with_retry(step, browser, ctx).await?;
+            let result = self
+                .execute_step_with_retry(step, browser, ctx, &step_debug, debug_screenshots)
+                .await;
+
+            // Handle execution result
+            let output = match result {
+                Ok(output) => {
+                    // Capture screenshot after step if configured
+                    if matches!(step_debug.capture, CaptureMode::After | CaptureMode::All) {
+                        if let Some(path) = self
+                            .capture_debug_screenshot(browser, ctx, "after")
+                            .await
+                        {
+                            debug_screenshots.push(path);
+                        }
+                    }
+                    output
+                }
+                Err(e) => {
+                    // Capture screenshot on failure if configured
+                    if matches!(
+                        step_debug.capture,
+                        CaptureMode::Failure | CaptureMode::All
+                    ) {
+                        if let Some(path) = self
+                            .capture_debug_screenshot(browser, ctx, "failure")
+                            .await
+                        {
+                            debug_screenshots.push(path);
+                        }
+                    }
+                    return Err(e);
+                }
+            };
 
             // Store output
             if let Some(data) = &output.data {
@@ -287,6 +371,8 @@ impl WorkflowEngine {
         step: &Step,
         browser: &dyn BrowserHandle,
         ctx: &mut ExecutionContext,
+        step_debug: &ResolvedDebugConfig,
+        debug_screenshots: &mut Vec<String>,
     ) -> Result<ActionOutput, WorkflowError> {
         let max_retries = step.retry.as_ref().map(|r| r.max.unwrap_or(3)).unwrap_or(0);
 
@@ -309,9 +395,19 @@ impl WorkflowEngine {
                 tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay)).await;
             }
 
-            match self.execute_step(step, browser, ctx).await {
+            match self.execute_step(step, browser, ctx, step_debug).await {
                 Ok(output) => return Ok(output),
                 Err(e) => {
+                    // Capture screenshot on failure during retries
+                    if matches!(step_debug.capture, CaptureMode::Failure | CaptureMode::All) {
+                        if let Some(path) = self
+                            .capture_debug_screenshot(browser, ctx, &format!("retry{}_failure", attempt))
+                            .await
+                        {
+                            debug_screenshots.push(path);
+                        }
+                    }
+
                     if attempt < max_retries {
                         warn!(
                             workflow = %ctx.workflow_name,
@@ -382,7 +478,8 @@ impl WorkflowEngine {
                 // Use Box::pin for recursive async call
                 Box::pin(self.execute_condition_action(nested_step, browser, ctx)).await?;
             } else {
-                let output = self.execute_step(nested_step, browser, ctx).await?;
+                let step_debug = self.resolve_step_debug(ctx, nested_step);
+                let output = self.execute_step(nested_step, browser, ctx, &step_debug).await?;
 
                 // Store output
                 if let Some(data) = &output.data {
@@ -412,6 +509,7 @@ impl WorkflowEngine {
         step: &Step,
         browser: &dyn BrowserHandle,
         ctx: &ExecutionContext,
+        step_debug: &ResolvedDebugConfig,
     ) -> Result<ActionOutput, WorkflowError> {
         // Get action from registry
         let action = self
@@ -426,8 +524,16 @@ impl WorkflowEngine {
             workflow = %ctx.workflow_name,
             step = ctx.step_index,
             action = %step.action,
+            highlight = step_debug.highlight,
             "Executing action"
         );
+
+        // Highlight element before interaction if configured
+        if step_debug.highlight {
+            if let Some(selector) = rendered_params.get("selector").and_then(|v| v.as_str()) {
+                self.highlight_element(browser, selector).await;
+            }
+        }
 
         // Create action context
         let action_ctx = ctx.to_action_context(step.id.as_deref());
@@ -492,6 +598,7 @@ impl WorkflowEngine {
         error: &WorkflowError,
         browser: &dyn BrowserHandle,
         ctx: &mut ExecutionContext,
+        debug_screenshots: &mut Vec<String>,
     ) {
         // Store error info
         ctx.store_value(
@@ -514,8 +621,15 @@ impl WorkflowEngine {
             );
         }
 
-        // Take screenshot if requested
+        // Take screenshot if requested (also save to debug directory)
         if handler.screenshot.unwrap_or(false) {
+            if let Some(path) = self
+                .capture_debug_screenshot(browser, ctx, "error_handler")
+                .await
+            {
+                debug_screenshots.push(path);
+            }
+            // Also store base64 in context for backwards compatibility
             if let Ok(bytes) = browser.screenshot(false).await {
                 use base64::{engine::general_purpose::STANDARD, Engine};
                 ctx.store_value("_error_screenshot", Value::String(STANDARD.encode(&bytes)));
@@ -523,9 +637,10 @@ impl WorkflowEngine {
         }
 
         // Execute error steps if defined
+        let step_debug = ResolvedDebugConfig::default();
         if let Some(steps) = &handler.steps {
             for step in steps {
-                if let Err(e) = self.execute_step(step, browser, ctx).await {
+                if let Err(e) = self.execute_step(step, browser, ctx, &step_debug).await {
                     error!(
                         workflow = %ctx.workflow_name,
                         error = %e,
@@ -556,9 +671,10 @@ impl WorkflowEngine {
         }
 
         // Execute completion steps if defined
+        let step_debug = ResolvedDebugConfig::default();
         if let Some(steps) = &handler.steps {
             for step in steps {
-                if let Err(e) = self.execute_step(step, browser, ctx).await {
+                if let Err(e) = self.execute_step(step, browser, ctx, &step_debug).await {
                     error!(
                         workflow = %ctx.workflow_name,
                         error = %e,
@@ -567,6 +683,98 @@ impl WorkflowEngine {
                 }
             }
         }
+    }
+
+    /// Resolve step-level debug config by merging with workflow-level config
+    fn resolve_step_debug(&self, ctx: &ExecutionContext, step: &Step) -> ResolvedDebugConfig {
+        if let Some(step_debug) = &step.debug {
+            // Convert workflow's resolved config back to DebugConfig for merge
+            let workflow_debug = DebugConfig {
+                enabled: Some(ctx.debug.enabled),
+                level: Some(ctx.debug.level.clone()),
+                capture: Some(ctx.debug.capture.clone()),
+                highlight: Some(ctx.debug.highlight),
+                delay: Some(ctx.debug.delay),
+                pause: Some(ctx.debug.pause),
+                console: Some(ctx.debug.console),
+                network: Some(ctx.debug.network),
+                profile: None, // Profile already applied
+            };
+            workflow_debug.merge(step_debug).resolve()
+        } else {
+            ctx.debug.clone()
+        }
+    }
+
+    /// Capture a debug screenshot and save to disk
+    async fn capture_debug_screenshot(
+        &self,
+        browser: &dyn BrowserHandle,
+        ctx: &ExecutionContext,
+        phase: &str,
+    ) -> Option<String> {
+        let debug_dir = std::path::Path::new("data/debug");
+        if let Err(e) = std::fs::create_dir_all(debug_dir) {
+            warn!("Failed to create debug directory: {}", e);
+            return None;
+        }
+
+        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+        let workflow_name = ctx
+            .workflow_name
+            .replace(|c: char| !c.is_alphanumeric(), "_");
+        let filename = format!(
+            "{}_{}_step{}_{}.png",
+            timestamp, workflow_name, ctx.step_index, phase
+        );
+        let path = debug_dir.join(&filename);
+
+        match browser.screenshot(false).await {
+            Ok(bytes) => {
+                if let Err(e) = std::fs::write(&path, &bytes) {
+                    warn!("Failed to write debug screenshot: {}", e);
+                    return None;
+                }
+                info!(path = %path.display(), "Captured debug screenshot");
+                Some(path.to_string_lossy().to_string())
+            }
+            Err(e) => {
+                warn!("Failed to capture debug screenshot: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Highlight an element before interaction
+    async fn highlight_element(&self, browser: &dyn BrowserHandle, selector: &str) {
+        let js = format!(
+            r#"
+            (function() {{
+                try {{
+                    const el = document.querySelector('{}');
+                    if (el) {{
+                        const orig = el.style.outline;
+                        const origOffset = el.style.outlineOffset;
+                        el.style.outline = '3px solid red';
+                        el.style.outlineOffset = '2px';
+                        el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+                        setTimeout(() => {{
+                            el.style.outline = orig;
+                            el.style.outlineOffset = origOffset;
+                        }}, 300);
+                    }}
+                }} catch (e) {{}}
+            }})();
+            "#,
+            selector.replace('\'', "\\'")
+        );
+
+        if let Err(e) = browser.eval(&js).await {
+            debug!("Element highlight failed: {}", e);
+        }
+
+        // Brief pause to let the highlight be visible
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
     }
 }
 

@@ -5,6 +5,8 @@
 use serde_json::Value;
 use std::collections::HashMap;
 
+use crate::workflow::schema::ResolvedDebugConfig;
+
 /// Execution context for a workflow run
 #[derive(Debug, Clone)]
 pub struct ExecutionContext {
@@ -19,6 +21,9 @@ pub struct ExecutionContext {
 
     /// Current tab index
     pub tab_index: usize,
+
+    /// Debug configuration (resolved from workflow + CLI + env)
+    pub debug: ResolvedDebugConfig,
 
     /// Workflow variables (from workflow definition)
     pub vars: HashMap<String, Value>,
@@ -53,6 +58,7 @@ impl ExecutionContext {
             workflow_id: uuid::Uuid::new_v4().to_string(),
             instance_id: instance_id.into(),
             tab_index: 0,
+            debug: ResolvedDebugConfig::default(),
             vars: HashMap::new(),
             params: HashMap::new(),
             store: HashMap::new(),
@@ -62,6 +68,12 @@ impl ExecutionContext {
             started_at: chrono::Utc::now(),
             env: std::env::vars().collect(),
         }
+    }
+
+    /// Set debug configuration
+    pub fn with_debug(mut self, debug: ResolvedDebugConfig) -> Self {
+        self.debug = debug;
+        self
     }
 
     /// Set workflow variables

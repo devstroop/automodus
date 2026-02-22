@@ -554,7 +554,7 @@ async fn run_workflow(
         println!("  Params: {:?}", params.keys().collect::<Vec<_>>());
     }
     let result = engine
-        .execute(&workflow, &adapter, params)
+        .execute_with_debug(&workflow, &adapter, params, resolved_debug)
         .await
         .map_err(|e| format!("Workflow execution failed: {}", e))?;
 
@@ -568,6 +568,14 @@ async fn run_workflow(
 
     println!("  Duration: {}ms", result.duration_ms);
     println!("  Steps executed: {}", result.steps_executed);
+
+    // Show debug screenshots if any were captured
+    if !result.debug_screenshots.is_empty() {
+        println!("  Debug screenshots: {}", result.debug_screenshots.len());
+        for path in &result.debug_screenshots {
+            println!("    - {}", path);
+        }
+    }
 
     if !result.output.is_null()
         && result
