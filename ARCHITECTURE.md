@@ -333,7 +333,7 @@ Debug features wired into the engine:
 - **Highlight**: JS injection to flash red outline on target element
 - **Pause**: `PauseHandler` trait — `DefaultPauseHandler` auto-continues
 - **Capture**: Screenshots at configurable points (before, after, failure, all)
-- **Console/Network**: JS-based capture via `ChromePageAdapter`
+- **Console/Network**: CDP event listeners (`start_console_listener`, `start_network_listener`) via `ChromePageAdapter`
 - **Trace**: JSONL output to `data/debug/trace.jsonl` via `TraceLogger`
 
 Debug profiles (`--profile=<name>`):
