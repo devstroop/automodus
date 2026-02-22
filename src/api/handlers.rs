@@ -528,9 +528,9 @@ pub async fn create_session_handler(
     Json(request): Json<CreateSessionRequest>,
 ) -> impl IntoResponse {
     match state.create_session(request.name, request.keep_alive).await {
-        Ok(session) => Json(CreateSessionResponse {
+        Ok(id) => Json(CreateSessionResponse {
             success: true,
-            id: Some(session.id),
+            id: Some(id),
             error: None,
         }),
         Err(e) => Json(CreateSessionResponse {
