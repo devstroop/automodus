@@ -455,36 +455,44 @@ automodus> [UP ARROW]  # Shows: goto https://example.com
 ---
 
 ### Issue #18: Shell autocomplete
-**Status:** 🟡 In Progress (basic completion done, session/file completion missing)  
+**Status:** ✅ Done  
 **File:** `src/shell/client.rs`  
 **Depends:** #16  
 **Estimate:** 3-4 hours
 
 > **Audit (2026-02-22):** `ShellCompleter` implements `Completer` trait with command name
 > and workflow path completion. Missing: session name and file path completion.
+> **Fix (2026-02-22):** Added `complete_session_subcommand()`, `complete_session_name()`,
+> and `complete_file_path()`. Session names dynamically updated via `Arc<RwLock<Vec<String>>>`.
+> File path completion supports directory traversal for `screenshot` command.
 
 **Tasks:**
 - [x] Implement `Completer` trait for rustyline
 - [x] Command name completion
 - [x] Workflow name completion for `run`
-- [ ] Session name completion for session commands
-- [ ] File path completion for `screenshot`
+- [x] Session name completion for session commands
+- [x] File path completion for `screenshot`
 
 ---
 
 ### Issue #19: Session shell commands
-**Status:** ⬜ Not Started  
-**File:** `src/shell/client.rs`  
+**Status:** ✅ Done  
+**File:** `src/shell/client.rs`, `src/bin/automodus.rs`, `src/core/app.rs`  
 **Depends:** #13, #16  
 **Estimate:** 2-3 hours
 
+> **Fix (2026-02-22):** All 6 session commands implemented with full execution wiring.
+> Shell creates AppCore for session management. Prompt shows active session name.
+> Added `find_session()` (by ID or name), `set_session_keep_alive()` to AppCore.
+> Shortcuts: `sess=session`, `sw=switch`, `ka=keep-alive`, `ls=list`.
+
 **Tasks:**
-- [ ] Add `session new [--name=NAME] [--keep-alive]`
-- [ ] Add `session list`
-- [ ] Add `session switch <id|name>`
-- [ ] Add `session close [id]`
-- [ ] Add `session info`
-- [ ] Add `session keep-alive [id] [on|off]`
+- [x] Add `session new [--name=NAME] [--keep-alive]`
+- [x] Add `session list`
+- [x] Add `session switch <id|name>`
+- [x] Add `session close [id]`
+- [x] Add `session info`
+- [x] Add `session keep-alive [id] [on|off]`
 
 ---
 
@@ -717,6 +725,8 @@ Final debug features.
 | 2026-02-22 | #13 ✅: Unified browser lifecycle (AppCore owns browser, deduped launch), idle session cleanup |
 | 2026-02-22 | #15 ✅: ServerState delegates to AppCore, daemon passes shared core to HTTP server |
 | 2026-02-22 | #15b ✅: `serve` routes through daemon.start()+run() instead of api::run_server() |
+| 2026-02-22 | #19 ✅: Session shell commands (6 commands + parsing + execution wiring + AppCore lookup methods) |
+| 2026-02-22 | #18 ✅: Shell autocomplete (session name + file path + session subcommand completion) |
 
 ---
 
