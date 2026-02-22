@@ -599,17 +599,19 @@ Final debug features.
 ---
 
 ### Issue #27: Trace-level JSONL output
-**Status:** ⬜ Not Started  
-**File:** `src/utils/debug.rs`  
+**Status:** ✅ Done  
+**File:** `src/utils/trace.rs` (new)  
 **Depends:** #5  
 **Estimate:** 2-3 hours
 
 **Tasks:**
-- [ ] Create `data/debug/trace.jsonl` when `level: trace`
-- [ ] Log selector resolution details
-- [ ] Log element info (tag, role, text, attributes)
-- [ ] Log injected JS
-- [ ] Append line per event
+- [x] Create `data/debug/trace.jsonl` when `level: trace`
+- [x] Log selector resolution details
+- [x] Log element info (tag, role, text, attributes)
+- [x] Log injected JS
+- [x] Append line per event
+- [x] TraceLogger struct with log methods
+- [x] ElementInfo struct for element details
 
 ---
 
