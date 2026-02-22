@@ -6,10 +6,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::config::AppConfig;
 use crate::core::{AppCore, CoreEvent, Session, SessionInfo as CoreSessionInfo, WorkflowEngine};
+use crate::core::engine::PauseResponse;
 use crate::modules::ChromePageAdapter;
 use crate::workflow::{Workflow, WorkflowParser};
 use crate::api::schemas::ExecutionStatus;
@@ -32,6 +34,10 @@ pub struct ServerState {
     pub executions: RwLock<HashMap<String, ServerExecution>>,
     /// Event broadcaster for WebSocket clients
     event_tx: tokio::sync::broadcast::Sender<ServerEvent>,
+    /// Cancellation tokens for running executions (exec_id -> token)
+    cancel_tokens: RwLock<HashMap<String, CancellationToken>>,
+    /// Pending pause signals waiting for WS/API response (exec_id -> sender)
+    pending_pauses: tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<PauseResponse>>>,
 }
 
 /// Workflow execution record
@@ -100,6 +106,8 @@ impl ServerState {
             config,
             executions: RwLock::new(HashMap::new()),
             event_tx,
+            cancel_tokens: RwLock::new(HashMap::new()),
+            pending_pauses: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -202,14 +210,15 @@ impl ServerState {
 
     // --- Execution Tracking ---
 
-    /// Start tracking a new execution
+    /// Start tracking a new execution, returns (exec_id, CancellationToken)
     pub async fn start_execution(
         &self,
         workflow: &str,
         total_steps: usize,
         params: HashMap<String, serde_json::Value>,
-    ) -> String {
+    ) -> (String, CancellationToken) {
         let id = uuid::Uuid::new_v4().to_string();
+        let token = CancellationToken::new();
         let execution = ServerExecution {
             id: id.clone(),
             workflow: workflow.to_string(),
@@ -248,8 +257,11 @@ impl ServerState {
             workflow: workflow.to_string(),
         });
 
+        // Store cancellation token
+        self.cancel_tokens.write().await.insert(id.clone(), token.clone());
+
         info!("Started execution: {} for workflow: {}", id, workflow);
-        id
+        (id, token)
     }
 
     /// Update execution progress
@@ -274,6 +286,11 @@ impl ServerState {
         output: serde_json::Value,
         error: Option<String>,
     ) {
+        // Clean up cancellation token
+        self.cancel_tokens.write().await.remove(id);
+        // Clean up any pending pause
+        self.pending_pauses.lock().await.remove(id);
+
         if let Some(execution) = self.executions.write().await.get_mut(id) {
             let now = chrono::Utc::now();
             execution.completed_at = Some(now);
@@ -321,6 +338,11 @@ impl ServerState {
 
     /// Cancel an execution
     pub async fn cancel_execution(&self, id: &str) -> Result<(), String> {
+        // Cancel the token to signal the engine to stop
+        if let Some(token) = self.cancel_tokens.write().await.remove(id) {
+            token.cancel();
+        }
+
         if let Some(execution) = self.executions.write().await.get_mut(id) {
             if execution.status == ExecutionStatus::Running {
                 execution.status = ExecutionStatus::Cancelled;
@@ -333,6 +355,24 @@ impl ServerState {
         }
         Err(format!("Execution '{}' not found", id))
     }
+
+    // --- Pause Signaling ---
+
+    /// Register a pending pause for an execution. Returns a receiver to await the response.
+    pub async fn register_pause(&self, id: &str) -> tokio::sync::oneshot::Receiver<PauseResponse> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.pending_pauses.lock().await.insert(id.to_string(), tx);
+        rx
+    }
+
+    /// Resolve a pending pause by sending a response. Returns Err if no pause is pending.
+    pub async fn resolve_pause(&self, id: &str, response: PauseResponse) -> Result<(), String> {
+        if let Some(tx) = self.pending_pauses.lock().await.remove(id) {
+            tx.send(response).map_err(|_| "Pause receiver dropped".to_string())
+        } else {
+            Err(format!("No pending pause for execution '{}'", id))
+        }
+    }
 }
 
 /// Create a shared server state wrapped in Arc
@@ -343,6 +383,56 @@ pub fn create_state(config: AppConfig) -> Arc<ServerState> {
 /// Create a shared server state backed by a shared AppCore
 pub fn create_state_with_core(config: AppConfig, core: Arc<AppCore>) -> Arc<ServerState> {
     Arc::new(ServerState::with_core(config, core))
+}
+
+// ============================================================================
+// WebSocketPauseHandler
+// ============================================================================
+
+use crate::core::engine::PauseHandler;
+
+/// Pause handler that broadcasts pause events to WebSocket clients and waits for a response.
+pub struct WebSocketPauseHandler {
+    exec_id: String,
+    state: Arc<ServerState>,
+}
+
+impl WebSocketPauseHandler {
+    /// Create a new handler for a given execution.
+    pub fn new(exec_id: String, state: Arc<ServerState>) -> Self {
+        Self { exec_id, state }
+    }
+}
+
+#[async_trait::async_trait]
+impl PauseHandler for WebSocketPauseHandler {
+    async fn on_pause(
+        &self,
+        _workflow: &str,
+        step: usize,
+        _action: &str,
+        _selector: Option<&str>,
+    ) -> PauseResponse {
+        // Register a oneshot channel for the response
+        let rx = self.state.register_pause(&self.exec_id).await;
+
+        // Broadcast the paused event so WS clients know we're waiting
+        self.state.broadcast_event(ServerEvent::ExecutionPaused {
+            id: self.exec_id.clone(),
+            step,
+        });
+
+        info!(exec_id = %self.exec_id, step, "Execution paused, waiting for WS signal");
+
+        // Wait for continue/skip/abort from a WS client (or channel drop = continue)
+        match rx.await {
+            Ok(response) => response,
+            Err(_) => {
+                // Sender dropped (e.g. execution cancelled) — default to continue
+                PauseResponse::Continue
+            }
+        }
+    }
 }
 
 /// Convert a CoreEvent to a ServerEvent, returning None for events without a WS equivalent.
