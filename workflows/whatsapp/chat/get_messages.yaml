@@ -34,25 +34,19 @@ vars:
   whatsapp_url: "https://web.whatsapp.com"
 
 steps:
-  # 1. Navigate to WhatsApp
-  - id: navigate
-    action: goto
-    url: "{{vars.whatsapp_url}}"
-
-  # 2. Check authorization
-  - id: check_auth
-    action: eval
-    script: "document.querySelector('#pane-side') !== null"
-    store_as: is_authenticated
+  # 1. Ensure WhatsApp Web is ready
+  - action: call
+    workflow: _common/ensure_ready
+    store_as: ready
 
   - action: condition
-    if: "{{store.is_authenticated}} == false"
+    if: "{{store.ready.authorized}} == false"
     then:
       - action: eval
         script: "({ messages: [], error: 'Not authenticated' })"
         store_as: result
     else:
-      # 3. Determine navigation method
+      # 2. Determine navigation method
       - id: parse_chat_id
         action: eval
         script: |

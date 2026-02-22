@@ -21,25 +21,19 @@ vars:
   whatsapp_url: "https://web.whatsapp.com"
 
 steps:
-  # 1. Ensure on WhatsApp Web
-  - id: navigate
-    action: goto
-    url: "{{vars.whatsapp_url}}"
-
-  # 2. Check authorization
-  - id: check_auth
-    action: eval
-    script: "document.querySelector('#pane-side') !== null"
-    store_as: is_authenticated
+  # 1. Ensure WhatsApp Web is ready
+  - action: call
+    workflow: _common/ensure_ready
+    store_as: ready
 
   - action: condition
-    if: "{{store.is_authenticated}} == false"
+    if: "{{store.ready.authorized}} == false"
     then:
       - action: eval
         script: "({ messages: [], status: 'not_authenticated' })"
         store_as: result
     else:
-      # 3. Inject message listener if not already active
+      # 2. Inject message listener if not already active
       - id: inject_listener
         action: eval
         script: |

@@ -36,19 +36,13 @@ vars:
   invalid_phone_dialog: "#app div[data-animate-modal-popup='true'] div[data-animate-modal-body='true']"
 
 steps:
-  # 1. Ensure we're on WhatsApp Web
-  - id: navigate
-    action: goto
-    url: "{{vars.whatsapp_url}}"
-
-  # 2. Check authorization
-  - id: check_auth
-    action: eval
-    script: "document.querySelector('#pane-side') !== null"
-    store_as: is_authenticated
+  # 1. Ensure WhatsApp Web is ready
+  - action: call
+    workflow: _common/ensure_ready
+    store_as: ready
 
   - action: condition
-    if: "{{store.is_authenticated}} == false"
+    if: "{{store.ready.authorized}} == false"
     then:
       - action: log
         message: "Not authenticated to WhatsApp"
@@ -56,62 +50,21 @@ steps:
         script: "({ status: 'not_authenticated', success: false, error: 'Please authenticate first' })"
         store_as: result
     else:
-      # 3. Navigate to chat using WhatsApp API deep link
-      - id: navigate_to_chat
-        action: eval
-        script: |
-          (function() {
-            var phone = '{{params.phone}}'.replace(/[^\d+]/g, '').replace(/^\+/, '');
-            
-            // Create hidden link and click it
-            var loader = document.querySelector('#phoneLoaderParent');
-            if (!loader) {
-              document.querySelector('#pane-side').innerHTML += '<div id="phoneLoaderParent"></div>';
-            }
-            document.querySelector('#phoneLoaderParent').innerHTML = 
-              '<a id="phoneLoader" href="https://api.whatsapp.com/send?phone=' + phone + '" style="display:none"></a>';
-            document.querySelector('#phoneLoader').click();
-            document.querySelector('#phoneLoaderParent').remove();
-            return true;
-          })();
-
-      - action: sleep
-        duration: "2s"
-
-      # 4. Check for invalid phone number error
-      - id: check_invalid_phone
-        action: eval
-        script: |
-          (function() {
-            var dialog = document.querySelector('#app div[data-animate-modal-popup="true"] div[data-animate-modal-body="true"] div');
-            if (dialog && dialog.innerHTML.trim() === 'Phone number shared via url is invalid.') {
-              // Dismiss the dialog
-              var btns = document.querySelectorAll('#app div[data-animate-modal-popup="true"] button');
-              if (btns.length > 0) btns[btns.length - 1].click();
-              return true;
-            }
-            return false;
-          })();
-        store_as: is_invalid_phone
+      # 2. Open chat by phone number
+      - action: call
+        workflow: _common/open_chat
+        params:
+          phone: "{{params.phone}}"
+        store_as: chat
 
       - action: condition
-        if: "{{store.is_invalid_phone}} == true"
+        if: "{{store.chat.success}} == false"
         then:
           - action: eval
-            script: "({ status: 'invalid_phone', success: false, error: 'Invalid phone number' })"
+            script: "({ status: '{{store.chat.error}}' === 'Invalid phone number' ? 'invalid_phone' : 'chat_not_found', success: false, error: '{{store.chat.error}}' })"
             store_as: result
         else:
-          # 5. Wait for message input to appear
-          - id: wait_for_input
-            action: wait_for
-            selector: "{{vars.message_input_selector}}"
-            timeout: "10s"
-            on_failure:
-              - action: eval
-                script: "({ status: 'chat_not_found', success: false, error: 'Could not open chat' })"
-                store_as: result
-
-          # 6. Type the message (handling multiline)
+          # 3. Type the message (handling multiline)
           - id: type_message
             action: eval
             script: |

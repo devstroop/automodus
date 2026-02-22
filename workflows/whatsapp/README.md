@@ -6,122 +6,121 @@ This directory contains reusable YAML workflows for WhatsApp Web automation, ext
 
 ```
 workflows/whatsapp/
+├── whatsapp.yaml          # Single entry point — dispatches to sub-workflows
 ├── README.md              # This file
-├── auth/                  # Authentication workflows
-│   ├── qr_login.yaml     # QR code authentication
-│   ├── phone_login.yaml  # Phone number authentication
-│   ├── check_status.yaml # Check authentication status
-│   └── logout.yaml       # Logout from WhatsApp Web
-├── messaging/             # Message sending workflows
-│   ├── send.yaml         # Universal send (text, media, or document)
-│   ├── send_text.yaml    # Send text message only
-│   ├── send_media.yaml   # Send image/video with optional caption
-│   └── send_document.yaml # Send document file
-└── chat/                  # Chat management workflows
-    ├── get_chats.yaml    # Get list of chats from sidebar
-    ├── get_messages.yaml # Get messages from a specific chat
-    ├── watch_messages.yaml # Watch for new incoming messages
-    └── navigate.yaml     # Navigate to a specific chat
+├── locators.toml          # CSS selectors (update when WhatsApp UI changes)
+├── _common/               # Shared helper sub-workflows
+│   ├── ensure_ready.yaml  #   Navigate to WhatsApp Web + check auth
+│   └── open_chat.yaml     #   Open chat by phone number (deep link)
+├── auth/                  # Authentication sub-workflows
+│   ├── qr_login.yaml     #   QR code authentication
+│   ├── phone_login.yaml  #   Phone number authentication
+│   ├── check_status.yaml #   Check authentication status
+│   └── logout.yaml       #   Logout from WhatsApp Web
+├── messaging/             # Message sending sub-workflows
+│   ├── send.yaml         #   Universal send (text, media, or document)
+│   ├── send_text.yaml    #   Send text message only
+│   ├── send_media.yaml   #   Send image/video with optional caption
+│   └── send_document.yaml#   Send document file
+└── chat/                  # Chat management sub-workflows
+    ├── get_chats.yaml    #   Get list of chats from sidebar
+    ├── get_messages.yaml #   Get messages from a specific chat
+    ├── watch_messages.yaml#  Watch for new incoming messages
+    └── navigate.yaml     #   Navigate to a specific chat
 ```
+
+## Architecture
+
+All workflows are composed using the `call` action:
+
+```
+whatsapp.yaml (entry point)
+    │
+    ├── action=check_status  → call auth/check_status
+    │                              └── call _common/ensure_ready
+    ├── action=qr_login      → call auth/qr_login
+    │                              └── call _common/ensure_ready
+    ├── action=send_text     → call messaging/send_text
+    │                              ├── call _common/ensure_ready
+    │                              └── call _common/open_chat
+    ├── action=get_chats     → call chat/get_chats
+    │                              └── call _common/ensure_ready
+    └── ...
+```
+
+**Shared helpers** (`_common/`) eliminate boilerplate:
+- `_ensure_ready` — navigates to WhatsApp Web and returns `{ authorized, status }`
+- `_open_chat` — opens a chat by phone number via deep link, returns `{ success, error }`
+
+Each sub-workflow calls the helpers instead of duplicating the navigate + auth-check logic.
 
 ## Quick Start
 
-### 1. Authentication
+### Single Entry Point (CLI)
 
-Before sending messages, you must authenticate with WhatsApp Web.
+Use `whatsapp.yaml` as the main entry point — pass `action=` to select the operation:
 
-**QR Code Login:**
 ```bash
-# Get QR code for scanning
-curl http://localhost:3000/whatsapp/auth/qr
+# Check auth status
+automodus run workflows/whatsapp/whatsapp.yaml action=check_status
 
-# Response includes base64 QR code image
+# Login via QR code
+automodus run workflows/whatsapp/whatsapp.yaml action=qr_login
+
+# Login via phone number
+automodus run workflows/whatsapp/whatsapp.yaml action=phone_login phone_number=+919876543210
+
+# Send a text message
+automodus run workflows/whatsapp/whatsapp.yaml action=send_text phone=+919876543210 message="Hello!"
+
+# Send media with caption
+automodus run workflows/whatsapp/whatsapp.yaml action=send_media phone=+919876543210 file_path=/path/to/image.jpg caption="Check this out"
+
+# Send document
+automodus run workflows/whatsapp/whatsapp.yaml action=send_document phone=+919876543210 file_path=/path/to/doc.pdf
+
+# Get chat list
+automodus run workflows/whatsapp/whatsapp.yaml action=get_chats limit=20
+
+# Get messages from a chat
+automodus run workflows/whatsapp/whatsapp.yaml action=get_messages chat_id=919876543210 limit=50
+
+# Watch for new messages
+automodus run workflows/whatsapp/whatsapp.yaml action=watch
+
+# Navigate to a chat
+automodus run workflows/whatsapp/whatsapp.yaml action=navigate phone=+919876543210
 ```
 
-**Phone Number Login:**
-```bash
-curl -X POST http://localhost:3000/whatsapp/auth/phone \
-  -H "Content-Type: application/json" \
-  -d '{"phone_number": "+919876543210"}'
+### Running Sub-Workflows Directly
 
-# Response includes verification code to enter on phone
+Each sub-workflow can also be run standalone:
+
+```bash
+automodus run workflows/whatsapp/auth/check_status.yaml
+automodus run workflows/whatsapp/messaging/send_text.yaml phone=+919876543210 message="Hello!"
+automodus run workflows/whatsapp/chat/get_chats.yaml limit=20
 ```
 
-**Check Status:**
+### API Usage
+
 ```bash
+# Check auth
 curl http://localhost:3000/whatsapp/auth/status
 
-# Returns: authorized, status, sender_id
-```
-
-### 2. Sending Messages
-
-**Send Text Message:**
-```bash
+# Send text
 curl -X POST http://localhost:3000/whatsapp/send/text \
   -H "Content-Type: application/json" \
-  -d '{
-    "phone": "+919876543210",
-    "message": "Hello from Automodus!"
-  }'
-```
+  -d '{"phone": "+919876543210", "message": "Hello from Automodus!"}'
 
-**Send Image/Video:**
-```bash
-curl -X POST http://localhost:3000/whatsapp/send/media \
-  -H "Content-Type: application/json" \
-  -d '{
-    "phone": "+919876543210",
-    "file_path": "/path/to/image.jpg",
-    "caption": "Check out this image!"
-  }'
-```
-
-**Send Document:**
-```bash
-curl -X POST http://localhost:3000/whatsapp/send/document \
-  -H "Content-Type: application/json" \
-  -d '{
-    "phone": "+919876543210",
-    "file_path": "/path/to/document.pdf",
-    "caption": "Here is the report"
-  }'
-```
-
-**Universal Send (auto-detects type):**
-```bash
-curl -X POST http://localhost:3000/whatsapp/send \
-  -H "Content-Type: application/json" \
-  -d '{
-    "phone": "+919876543210",
-    "message": "Optional text or caption",
-    "file": "/path/to/file.pdf"
-  }'
-```
-
-### 3. Reading Messages
-
-**Get Chat List:**
-```bash
+# Get chats
 curl "http://localhost:3000/whatsapp/chats?limit=20"
 
-# Returns list of chats with names, last messages, unread counts
-```
-
-**Get Messages from Chat:**
-```bash
+# Get messages
 curl "http://localhost:3000/whatsapp/messages?chat_id=919876543210&limit=50"
 
-# Or by contact name:
-curl "http://localhost:3000/whatsapp/messages?chat_id=name:John%20Doe&limit=50"
-```
-
-**Watch for New Messages:**
-```bash
-# Call periodically to drain the message queue
+# Watch for new messages
 curl http://localhost:3000/whatsapp/watch
-
-# Returns any new messages since last call
 ```
 
 ## Workflow Parameters
@@ -210,7 +209,7 @@ Example error response:
 
 ## Composition Example
 
-You can compose these workflows together:
+Build higher-level workflows by calling `whatsapp.yaml` or the sub-workflows directly:
 
 ```yaml
 # bulk_message.yaml - Send to multiple recipients
@@ -224,8 +223,11 @@ params:
     required: true
 
 steps:
+  # Ensure we're authenticated first
   - action: call
-    workflow: whatsapp/auth/check_status
+    workflow: whatsapp/whatsapp
+    params:
+      action: check_status
     store_as: auth
 
   - action: condition
@@ -234,18 +236,38 @@ steps:
       - action: abort
         error: "Not authenticated"
 
+  # Send to each recipient
   - action: loop
     items: "{{params.recipients}}"
     as: phone
     steps:
       - action: call
-        workflow: whatsapp/messaging/send_text
+        workflow: whatsapp/whatsapp
         params:
+          action: send_text
           phone: "{{phone}}"
           message: "{{params.message}}"
       
       - action: sleep
         duration: "2s"  # Rate limiting
+```
+
+Or call sub-workflows directly for finer control:
+
+```yaml
+steps:
+  - action: call
+    workflow: whatsapp/_common/ensure_ready
+    store_as: ready
+
+  - action: condition
+    if: "{{store.ready.authorized}} == true"
+    then:
+      - action: call
+        workflow: whatsapp/messaging/send_text
+        params:
+          phone: "+919876543210"
+          message: "Hello!"
 ```
 
 ## Extracted From

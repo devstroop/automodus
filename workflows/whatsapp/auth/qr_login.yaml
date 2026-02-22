@@ -31,28 +31,14 @@ vars:
   qr_reload_selector: "[data-icon='refresh-large']"
 
 steps:
-  # 1. Navigate to WhatsApp Web
-  - id: navigate
-    action: goto
-    url: "{{vars.whatsapp_url}}"
+  # 1. Ensure WhatsApp Web is loaded
+  - action: call
+    workflow: _common/ensure_ready
+    store_as: ready
 
-  # 2. Wait for page to stabilize
-  - id: wait_initial
-    action: sleep
-    duration: "2s"
-
-  # 3. Check if already authenticated
-  - id: check_already_auth
-    action: eval
-    script: |
-      (function() {
-        return document.querySelector('#pane-side') !== null;
-      })();
-    store_as: is_authenticated
-
-  # 4. If already authenticated, return early
+  # 2. If already authenticated, return early
   - action: condition
-    if: "{{store.is_authenticated}} == true"
+    if: "{{store.ready.authorized}} == true"
     then:
       - action: log
         message: "Already authenticated to WhatsApp Web"
@@ -116,7 +102,7 @@ steps:
 output:
   status: "{{store.result.status}}"
   qr_code: "{{store.result.qr_code}}"
-  is_authenticated: "{{store.is_authenticated}}"
+  is_authenticated: "{{store.ready.authorized}}"
 
 on_error:
   screenshot: true

@@ -26,25 +26,19 @@ vars:
   whatsapp_url: "https://web.whatsapp.com"
 
 steps:
-  # 1. Ensure on WhatsApp Web
-  - id: navigate
-    action: goto
-    url: "{{vars.whatsapp_url}}"
-
-  # 2. Check authorization
-  - id: check_auth
-    action: eval
-    script: "document.querySelector('#pane-side') !== null"
-    store_as: is_authenticated
+  # 1. Ensure WhatsApp Web is ready
+  - action: call
+    workflow: _common/ensure_ready
+    store_as: ready
 
   - action: condition
-    if: "{{store.is_authenticated}} == false"
+    if: "{{store.ready.authorized}} == false"
     then:
       - action: eval
         script: "({ chats: [], error: 'Not authenticated' })"
         store_as: result
     else:
-      # 3. Extract chat list from sidebar
+      # 2. Extract chat list from sidebar
       - id: extract_chats
         action: eval
         script: |
@@ -148,7 +142,7 @@ steps:
 output:
   chats: "{{store.result.chats}}"
   count: "{{store.result.count}}"
-  authenticated: "{{store.is_authenticated}}"
+  authenticated: "{{store.ready.authorized}}"
 
 on_error:
   emit:
