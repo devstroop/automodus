@@ -445,12 +445,12 @@ API errors return:
 
 ## Known Architectural Debt
 
-1. **Shell runs standalone** — `run_shell()` launches its own browser via `LaunchOptions::for_shell()` rather than connecting to a running daemon through the Unix socket. The socket protocol (`handle_socket_connection`, `DaemonClient::send_command`) is stubbed.
+1. **Pause handlers are partial** — `PauseHandler` trait exists with `DefaultPauseHandler` (auto-continue), but `ShellPauseHandler` (interactive stdin) and `WebSocketPauseHandler` (client command wait) are not implemented.
 
-2. **Dual session stores** — `ServerState` maintains its own `HashMap<ServerSession>` alongside `AppCore`'s `SessionStore`. API sessions and shell sessions are separate namespaces. Unifying them requires the shell to use the daemon's API.
+### Resolved Debt
 
-3. **Console/network capture uses JS injection** — `capture_console_logs()` and `capture_network_logs()` use injected JavaScript (console monkey-patch, Performance API) instead of real CDP event listeners (`Runtime.consoleAPICalled`, `Network.responseReceived`). This misses early logs and streaming requests.
-
-4. **Pause handlers are partial** — `PauseHandler` trait exists with `DefaultPauseHandler` (auto-continue), but `ShellPauseHandler` (interactive stdin) and `WebSocketPauseHandler` (client command wait) are not implemented.
+- ~~Shell runs standalone~~ — Shell now auto-detects running daemon and routes commands via Unix socket protocol (`handle_socket_connection`, `dispatch_request`, `DaemonClient`).
+- ~~Dual session stores~~ — `ServerSession` removed. `ServerState` delegates to `AppCore`'s `SessionStore` as single source of truth.
+- ~~Console/network capture uses JS injection~~ — Replaced with native CDP event listeners (`EventConsoleApiCalled`, `EventRequestWillBeSent`/`EventResponseReceived`) via `start_console_listener()` and `start_network_listener()`.
 
 See [docs/ISSUES.md](docs/ISSUES.md) for the full issue tracker.
