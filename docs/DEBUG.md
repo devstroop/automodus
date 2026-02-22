@@ -620,30 +620,30 @@ Captures all API calls made during the workflow, helping debug:
 
 > **Recommended:** Start with Phase 1 (Schema) - it's low-risk and provides immediate value while the daemon architecture is planned.
 
-### Phase 1: Schema (Priority - Do First, ~1-2 days)
-1. Add `DebugConfig` struct to `workflow/schema.rs`
-2. Add `debug` field to `Workflow` and `Step`
-3. Add CLI argument parsing for `--debug`, `--delay`, `--capture`, `--profile`
-4. Verify YAML parsing works (backwards compatible - field is optional)
+### Phase 1: Schema ✅
+1. ~~Add `DebugConfig` struct to `workflow/schema.rs`~~
+2. ~~Add `debug` field to `Workflow` and `Step`~~
+3. ~~Add CLI argument parsing for `--debug`, `--delay`, `--capture`, `--profile`~~
+4. ~~Verify YAML parsing works (backwards compatible - field is optional)~~
 
-### Phase 2: Engine Integration
-1. Add `debug: DebugConfig` to `ExecutionContext`
-2. Merge workflow + step + CLI debug configs with precedence
-3. Add delay between steps when `delay > 0`
-4. Add screenshot capture on step failure when `capture != none`
-5. Wire `highlight` to browser adapter (JS injection)
+### Phase 2: Engine Integration ✅
+1. ~~Add `debug: DebugConfig` to `ExecutionContext`~~
+2. ~~Merge workflow + step + CLI debug configs with precedence~~
+3. ~~Add delay between steps when `delay > 0`~~
+4. ~~Add screenshot capture on step failure when `capture != none`~~
+5. ~~Wire `highlight` to browser adapter (JS injection)~~
 
-### Phase 3: CDP Listeners
-1. Add console listener to browser adapter
-2. Add network request listener to browser adapter
-3. Store captured data in `ExecutionContext`
-4. Include in `WorkflowResult` when debug enabled
+### Phase 3: CDP Listeners ✅
+1. ~~Add console listener to browser adapter~~ — `start_console_listener()` via `EventConsoleApiCalled`
+2. ~~Add network request listener to browser adapter~~ — `start_network_listener()` via `EventRequestWillBeSent`/`EventResponseReceived`
+3. ~~Store captured data in `ExecutionContext`~~
+4. ~~Include in `WorkflowResult` when debug enabled~~
 
-### Phase 4: Pause & Trace
-1. Implement pause for shell (stdin prompt)
-2. Implement pause for API (WebSocket command)
-3. Add trace-level JSONL output
-4. Add debug directory cleanup
+### Phase 4: Pause & Trace ✅
+1. ~~Implement pause for shell (stdin prompt)~~ — `ShellPauseHandler` wired into CLI + standalone shell
+2. ~~Implement pause for API (WebSocket command)~~ — `WebSocketPauseHandler` in `state.rs`, wired in `handlers.rs`
+3. ~~Add trace-level JSONL output~~ — `TraceLogger` in `utils/trace.rs`
+4. ~~Add debug directory cleanup~~
 
 ## Related
 
