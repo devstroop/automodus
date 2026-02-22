@@ -244,6 +244,74 @@ pub struct PageInfoResponse {
 }
 
 // ============================================================================
+// Tabs
+// ============================================================================
+
+/// Tab information
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TabInfoResponse {
+    /// Tab index
+    pub index: usize,
+    /// Current URL
+    pub url: String,
+    /// Whether this is the active tab
+    pub active: bool,
+}
+
+/// Response for listing tabs
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TabListResponse {
+    /// Open tabs
+    pub tabs: Vec<TabInfoResponse>,
+}
+
+/// Request to open a new tab
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct TabNewRequest {
+    /// URL to open (defaults to about:blank)
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+/// Response for opening a new tab
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TabNewResponse {
+    /// Whether the tab was opened
+    pub success: bool,
+    /// Index of the new tab
+    pub index: Option<usize>,
+    /// Error message if failed
+    pub error: Option<String>,
+}
+
+/// Request to switch tab
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct TabSwitchRequest {
+    /// Tab index to switch to
+    pub index: usize,
+}
+
+// ============================================================================
+// Debug
+// ============================================================================
+
+/// Debug cleanup response
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DebugCleanupResponse {
+    /// Whether the cleanup succeeded
+    pub success: bool,
+    /// Number of files removed
+    pub files_removed: usize,
+    /// Bytes freed
+    pub bytes_freed: u64,
+    /// Files remaining after cleanup
+    pub files_remaining: usize,
+    /// Error message if cleanup failed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+// ============================================================================
 // Executions
 // ============================================================================
 

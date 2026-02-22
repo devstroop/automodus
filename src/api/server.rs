@@ -42,6 +42,12 @@ use super::ws::ws_handler;
         wait_handler,
         eval_handler,
         page_info_handler,
+        tab_list_handler,
+        tab_new_handler,
+        tab_switch_handler,
+        tab_close_handler,
+        pdf_handler,
+        debug_cleanup_handler,
         create_session_handler,
         list_sessions_handler,
         get_session_handler,
@@ -65,6 +71,12 @@ use super::ws::ws_handler;
         EvalRequest,
         BrowserActionResponse,
         PageInfoResponse,
+        TabInfoResponse,
+        TabListResponse,
+        TabNewRequest,
+        TabNewResponse,
+        TabSwitchRequest,
+        DebugCleanupResponse,
         CreateSessionRequest,
         CreateSessionResponse,
         SessionInfo,
@@ -79,6 +91,7 @@ use super::ws::ws_handler;
         (name = "health", description = "Health check endpoints"),
         (name = "workflows", description = "Workflow management and execution"),
         (name = "browser", description = "Browser control endpoints"),
+        (name = "debug", description = "Debug and diagnostics endpoints"),
         (name = "sessions", description = "Session management endpoints"),
         (name = "executions", description = "Execution tracking endpoints")
     )
@@ -109,6 +122,13 @@ pub fn create_router(state: Arc<ServerState>) -> Router {
         .route("/api/browser/wait", post(wait_handler))
         .route("/api/browser/eval", post(eval_handler))
         .route("/api/browser/page", get(page_info_handler))
+        .route("/api/browser/tabs", get(tab_list_handler))
+        .route("/api/browser/tabs", post(tab_new_handler))
+        .route("/api/browser/tabs/switch", post(tab_switch_handler))
+        .route("/api/browser/tabs/:index", delete(tab_close_handler))
+        .route("/api/browser/pdf", get(pdf_handler))
+        // Debug endpoints
+        .route("/api/debug/cleanup", post(debug_cleanup_handler))
         // Session endpoints
         .route("/api/sessions", post(create_session_handler))
         .route("/api/sessions", get(list_sessions_handler))

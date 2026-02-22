@@ -85,6 +85,24 @@ pub enum SocketRequest {
     /// Highlight an element
     BrowserHighlight { selector: String },
 
+    // --- Tab Management ---
+    /// List open tabs
+    BrowserTabList,
+    /// Open a new tab
+    BrowserTabNew { url: Option<String> },
+    /// Switch to a tab
+    BrowserTabSwitch { index: usize },
+    /// Close a tab
+    BrowserTabClose { index: usize },
+
+    // --- PDF ---
+    /// Export page to PDF
+    BrowserPdf,
+
+    // --- Debug ---
+    /// Clean debug output directory
+    DebugClean,
+
     // --- Workflows ---
     /// Run a workflow by file path
     WorkflowRun {
