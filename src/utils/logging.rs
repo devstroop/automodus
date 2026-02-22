@@ -20,8 +20,9 @@ impl LoggingConfig {
     pub fn new() -> Self {
         // Default filter suppresses noisy chromiumoxide WebSocket errors
         // These are harmless messages when Chrome sends protocol messages
-        // that chromiumoxide doesn't have types for
-        let default_filter = "info,chromiumoxide::conn=warn,chromiumoxide::handler=warn";
+        // that chromiumoxide doesn't have types for.
+        // Setting to 'off' completely silences them.
+        let default_filter = "info,chromiumoxide::conn=off,chromiumoxide::handler=off";
 
         Self {
             filter: std::env::var("RUST_LOG").unwrap_or_else(|_| default_filter.to_string()),
