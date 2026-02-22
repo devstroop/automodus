@@ -336,11 +336,22 @@ pub struct ShellClient {
     editor: Editor<ShellCompleter, DefaultHistory>,
     /// Shell configuration
     config: ShellConfig,
+    /// Shared session names for dynamic completion
+    session_names: Arc<RwLock<Vec<String>>>,
 }
 
 impl ShellClient {
     /// Create a new shell client
     pub fn new(config: ShellConfig) -> Result<Self, String> {
+        let session_names = Arc::new(RwLock::new(Vec::new()));
+        Self::with_session_names(config, session_names)
+    }
+
+    /// Create a new shell client with shared session names for completion
+    pub fn with_session_names(
+        config: ShellConfig,
+        session_names: Arc<RwLock<Vec<String>>>,
+    ) -> Result<Self, String> {
         // Create history directory
         if let Some(parent) = config.history_file.parent() {
             std::fs::create_dir_all(parent).ok();
@@ -356,7 +367,7 @@ impl ShellClient {
             .auto_add_history(true)
             .build();
 
-        let completer = ShellCompleter::new(config.workflow_dirs.clone());
+        let completer = ShellCompleter::new(config.workflow_dirs.clone(), session_names.clone());
 
         let mut editor = Editor::with_config(rl_config)
             .map_err(|e| format!("Failed to create editor: {}", e))?;
@@ -370,12 +381,24 @@ impl ShellClient {
             }
         }
 
-        Ok(Self { editor, config })
+        Ok(Self { editor, config, session_names })
     }
 
-    /// Read a line with prompt
+    /// Read a line with the default prompt
     pub fn readline(&mut self) -> Result<String, ReadlineError> {
         self.editor.readline(&self.config.prompt)
+    }
+
+    /// Read a line with a custom prompt
+    pub fn readline_with_prompt(&mut self, prompt: &str) -> Result<String, ReadlineError> {
+        self.editor.readline(prompt)
+    }
+
+    /// Update session names for completion
+    pub fn update_session_names(&self, names: Vec<String>) {
+        if let Ok(mut guard) = self.session_names.write() {
+            *guard = names;
+        }
     }
 
     /// Save history
