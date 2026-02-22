@@ -648,46 +648,46 @@ Final debug features.
 > **Note:** Run these after each phase to catch regressions.
 
 ### Issue #31: Daemon integration tests
-**Status:** ⬜ Not Started  
+**Status:** ✅ Done  
 **File:** `tests/daemon_tests.rs` (new)  
 **Depends:** #11, #14  
 **Estimate:** 3-4 hours
 
 **Tasks:**
-- [ ] Test daemon start/stop lifecycle
-- [ ] Test PID file creation and cleanup
-- [ ] Test stale PID detection
-- [ ] Test socket communication
-- [ ] Test graceful shutdown
+- [x] Test daemon start/stop lifecycle
+- [x] Test PID file creation and cleanup
+- [x] Test stale PID detection
+- [x] Test socket communication
+- [x] Test graceful shutdown
 
 ---
 
 ### Issue #32: Shell-daemon integration tests  
-**Status:** ⬜ Not Started  
+**Status:** ✅ Done  
 **File:** `tests/shell_tests.rs` (new)  
 **Depends:** #16, #31  
 **Estimate:** 3-4 hours
 
 **Tasks:**
-- [ ] Test shell connects to running daemon
-- [ ] Test shell fails gracefully when daemon not running
-- [ ] Test commands route through daemon
-- [ ] Test browser survives shell exit
-- [ ] Test multiple shells can connect
+- [x] Test shell connects to running daemon
+- [x] Test shell fails gracefully when daemon not running
+- [x] Test commands route through daemon
+- [x] Test browser survives shell exit
+- [x] Test multiple shells can connect
 
 ---
 
 ### Issue #33: Session persistence tests
-**Status:** ⬜ Not Started  
+**Status:** ✅ Done  
 **File:** `tests/session_tests.rs` (new)  
 **Depends:** #13, #31  
 **Estimate:** 2-3 hours
 
 **Tasks:**
-- [ ] Test session survives shell disconnect
-- [ ] Test session idle timeout
-- [ ] Test `keep_alive` prevents timeout
-- [ ] Test auth state (cookies) persists
+- [x] Test session survives shell disconnect
+- [x] Test session idle timeout
+- [x] Test `keep_alive` prevents timeout
+- [x] Test auth state (cookies) persists
 
 ---
 
