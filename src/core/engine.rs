@@ -127,6 +127,9 @@ pub struct WorkflowEngine {
 
     /// Event handlers (event name -> list of workflows to trigger)
     event_handlers: Arc<RwLock<HashMap<String, Vec<String>>>>,
+
+    /// Debug output directory
+    debug_dir: std::path::PathBuf,
 }
 
 impl WorkflowEngine {
@@ -135,7 +138,13 @@ impl WorkflowEngine {
         Self {
             registry: ActionRegistry::new(),
             event_handlers: Arc::new(RwLock::new(HashMap::new())),
+            debug_dir: std::path::PathBuf::from("data/debug"),
         }
+    }
+
+    /// Set the debug output directory
+    pub fn set_debug_dir(&mut self, dir: std::path::PathBuf) {
+        self.debug_dir = dir;
     }
 
     /// Register an event handler
@@ -805,7 +814,7 @@ impl WorkflowEngine {
         ctx: &ExecutionContext,
         phase: &str,
     ) -> Option<String> {
-        let debug_dir = std::path::Path::new("data/debug");
+        let debug_dir = &self.debug_dir;
         if let Err(e) = std::fs::create_dir_all(debug_dir) {
             warn!("Failed to create debug directory: {}", e);
             return None;

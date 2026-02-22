@@ -85,6 +85,8 @@ pub enum ShellCommand {
     DebugOff,
     /// Debug status
     DebugStatus,
+    /// Clean debug output directory
+    DebugClean,
     /// Highlight an element
     Highlight { selector: String },
     /// Trace workflow (run with --debug=trace)
@@ -565,6 +567,7 @@ impl ShellClient {
             }
             "off" => ShellCommand::DebugOff,
             "status" => ShellCommand::DebugStatus,
+            "clean" | "cleanup" => ShellCommand::DebugClean,
             _ => ShellCommand::Unknown {
                 command: format!("debug {}", args),
             },
@@ -862,6 +865,18 @@ mod tests {
         assert!(matches!(
             ShellClient::parse_command("debug off"),
             ShellCommand::DebugOff
+        ));
+    }
+
+    #[test]
+    fn test_parse_debug_clean() {
+        assert!(matches!(
+            ShellClient::parse_command("debug clean"),
+            ShellCommand::DebugClean
+        ));
+        assert!(matches!(
+            ShellClient::parse_command("debug cleanup"),
+            ShellCommand::DebugClean
         ));
     }
 
