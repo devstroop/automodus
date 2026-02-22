@@ -5,8 +5,11 @@
 
 use async_trait::async_trait;
 use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
+use chromiumoxide::cdp::js_protocol::runtime::EventConsoleApiCalled;
 use chromiumoxide::page::Page;
+use futures::StreamExt;
 use serde_json::Value;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -70,10 +73,12 @@ pub struct ChromePageAdapter {
     current_tab: Arc<Mutex<usize>>,
     /// Browser reference for multi-tab operations (optional)
     browser: Option<Arc<Mutex<Option<chromiumoxide::browser::Browser>>>>,
-    /// Captured console logs (when console capture is enabled)
+    /// Captured console logs (populated by CDP listener)
     console_logs: Arc<Mutex<Vec<ConsoleEntry>>>,
     /// Captured network requests (when network capture is enabled)
     network_logs: Arc<Mutex<Vec<NetworkEntry>>>,
+    /// Whether the CDP console listener is already running
+    console_listener_active: Arc<AtomicBool>,
 }
 
 impl ChromePageAdapter {
@@ -86,6 +91,7 @@ impl ChromePageAdapter {
             browser: None,
             console_logs: Arc::new(Mutex::new(Vec::new())),
             network_logs: Arc::new(Mutex::new(Vec::new())),
+            console_listener_active: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -101,6 +107,7 @@ impl ChromePageAdapter {
             browser: Some(browser),
             console_logs: Arc::new(Mutex::new(Vec::new())),
             network_logs: Arc::new(Mutex::new(Vec::new())),
+            console_listener_active: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -129,66 +136,78 @@ impl ChromePageAdapter {
         self.network_logs.lock().await.clear();
     }
 
-    /// Capture current console logs from the browser via CDP
-    /// This does a one-time capture by evaluating JS to get stored logs
-    pub async fn capture_console_logs(&self) -> Result<Vec<ConsoleEntry>, ActionError> {
-        let page = self.page.lock().await;
-        
-        // Inject log capture script if not already present
-        let js = r#"
-        (function() {
-            if (!window.__automodusConsoleLogs) {
-                window.__automodusConsoleLogs = [];
-                const orig = {
-                    log: console.log,
-                    warn: console.warn,
-                    error: console.error,
-                    info: console.info,
-                    debug: console.debug
-                };
-                ['log', 'warn', 'error', 'info', 'debug'].forEach(level => {
-                    console[level] = function(...args) {
-                        window.__automodusConsoleLogs.push({
-                            timestamp: Date.now(),
-                            level: level,
-                            message: args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')
-                        });
-                        orig[level].apply(console, args);
-                    };
-                });
-            }
-            const logs = window.__automodusConsoleLogs;
-            window.__automodusConsoleLogs = [];
-            return logs;
-        })()
-        "#;
+    /// Start the native CDP console listener.
+    ///
+    /// Enables `Runtime.enable` and subscribes to `EventConsoleApiCalled`.
+    /// Incoming console events are pushed into `console_logs` in the background.
+    /// Safe to call multiple times — only the first call starts the listener.
+    pub async fn start_console_listener(&self) -> Result<(), ActionError> {
+        if self.console_listener_active.swap(true, Ordering::SeqCst) {
+            return Ok(()); // already running
+        }
 
-        let result = page.evaluate(js).await.map_err(|e| {
-            ActionError::BrowserError(format!("Failed to capture console logs: {}", e))
+        let page = self.page.lock().await;
+
+        // Enable the Runtime domain so Chrome emits consoleAPICalled events
+        use chromiumoxide::cdp::js_protocol::runtime::EnableParams;
+        page.execute(EnableParams {}).await.map_err(|e| {
+            ActionError::BrowserError(format!("Failed to enable Runtime domain: {}", e))
         })?;
 
-        let entries: Vec<ConsoleEntry> = if let Some(arr) = result.value().and_then(|v| v.as_array()) {
-            arr.iter()
-                .filter_map(|item| {
-                    let timestamp_ms = item.get("timestamp")?.as_i64()?;
-                    let level = item.get("level")?.as_str()?.to_string();
-                    let message = item.get("message")?.as_str()?.to_string();
-                    Some(ConsoleEntry {
-                        timestamp: chrono::DateTime::from_timestamp_millis(timestamp_ms)
-                            .unwrap_or_else(chrono::Utc::now),
-                        level,
-                        message,
+        // Subscribe to console events
+        let mut event_stream = page.event_listener::<EventConsoleApiCalled>().await.map_err(|e| {
+            ActionError::BrowserError(format!("Failed to subscribe to console events: {}", e))
+        })?;
+        drop(page); // release lock before spawning
+
+        let logs = Arc::clone(&self.console_logs);
+        let active = Arc::clone(&self.console_listener_active);
+
+        tokio::spawn(async move {
+            while let Some(event) = event_stream.next().await {
+                let level = event.r#type.as_ref().to_string();
+                let message = event
+                    .args
+                    .iter()
+                    .map(|arg| {
+                        // Prefer the JSON value, fall back to description
+                        if let Some(val) = &arg.value {
+                            match val {
+                                serde_json::Value::String(s) => s.clone(),
+                                other => other.to_string(),
+                            }
+                        } else if let Some(desc) = &arg.description {
+                            desc.clone()
+                        } else {
+                            String::from("undefined")
+                        }
                     })
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+                    .collect::<Vec<_>>()
+                    .join(" ");
 
-        // Store in adapter
+                let entry = ConsoleEntry {
+                    timestamp: chrono::Utc::now(),
+                    level,
+                    message,
+                };
+                debug!("{}", entry.format());
+                logs.lock().await.push(entry);
+            }
+            // Stream ended (page closed, etc.)
+            active.store(false, Ordering::SeqCst);
+        });
+
+        info!("CDP console listener started");
+        Ok(())
+    }
+
+    /// Drain captured console logs collected by the CDP listener.
+    ///
+    /// Returns all entries accumulated since the last drain and clears the buffer.
+    /// If the listener hasn't been started yet, returns an empty vec.
+    pub async fn capture_console_logs(&self) -> Result<Vec<ConsoleEntry>, ActionError> {
         let mut logs = self.console_logs.lock().await;
-        logs.extend(entries.clone());
-
+        let entries: Vec<ConsoleEntry> = logs.drain(..).collect();
         Ok(entries)
     }
 
