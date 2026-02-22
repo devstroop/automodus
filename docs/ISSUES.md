@@ -303,7 +303,7 @@ Foundation for persistent sessions. Largest effort.
 - [x] Implement session create/get/close/list in AppCore
 - [x] Implement `cleanup_idle_sessions()` for idle timeout
 - [x] Single source of truth for browser lifecycle (AppCore)
-- [x] Handle browser crash/disconnect gracefully (deferred)
+- [x] Handle browser crash/disconnect gracefully (`start_crash_listener()`, `EventTargetCrashed`, `check_browser_health()`)
 
 **Unified browser launch:**
 - `src/modules/browser/launch.rs` — single launch helper used everywhere
@@ -438,9 +438,8 @@ Stateless shell connecting to daemon.
 - [x] Shell auto-detects running daemon; falls back to standalone mode
 - [x] Unified session store: `ServerState` delegates to `AppCore` (removed `ServerSession` + dual HashMap)
 
-> **⚠ Merge note (2026-02-22):** `feature/sub-workflows` branch reverts all #16 socket-protocol work
-> (deletes `protocol.rs`, stubs daemon handler, re-adds `ServerSession` dual store, removes shell-daemon wiring).
-> The sub-workflow `call` action itself is fine — the branch just needs rebasing onto current `main`.
+> **✅ Merge note (2026-02-23):** `feature/sub-workflows` was rebased onto main and merged via PR #1.
+> All socket-protocol work preserved. Sub-workflow `call` action integrated with `cancel_token` threading.
 
 **Acceptance:**
 ```
