@@ -26,10 +26,97 @@ use automodus::{
     core::WorkflowEngine,
     modules::ChromePageAdapter,
     utils::{logging, yaml_to_json},
-    workflow::{WorkflowLoader, WorkflowParser},
+    workflow::{
+        schema::{CaptureMode, DebugConfig, DebugProfile, LogLevel},
+        WorkflowLoader, WorkflowParser,
+    },
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Read debug configuration from environment variables.
+///
+/// Supported variables:
+/// - `AUTOMODUS_DEBUG` - Enable debug mode (1, true, yes, on)
+/// - `AUTOMODUS_DEBUG_LEVEL` - Set log level (info, debug, trace)
+/// - `AUTOMODUS_DEBUG_PROFILE` - Use a preset (minimal, verbose, ci, demo)
+/// - `AUTOMODUS_DEBUG_DELAY` - Step delay in milliseconds
+/// - `AUTOMODUS_DEBUG_CAPTURE` - Screenshot mode (none, failure, before, after, all)
+fn debug_config_from_env() -> DebugConfig {
+    let mut config = DebugConfig::default();
+
+    // Check for profile first (base config)
+    if let Ok(profile) = std::env::var("AUTOMODUS_DEBUG_PROFILE") {
+        let profile_config = match profile.to_lowercase().as_str() {
+            "minimal" => DebugProfile::Minimal.to_config(),
+            "verbose" => DebugProfile::Verbose.to_config(),
+            "ci" => DebugProfile::Ci.to_config(),
+            "demo" => DebugProfile::Demo.to_config(),
+            _ => {
+                eprintln!(
+                    "Warning: Invalid AUTOMODUS_DEBUG_PROFILE '{}', ignoring",
+                    profile
+                );
+                DebugConfig::default()
+            }
+        };
+        config = profile_config;
+    }
+
+    // Enable/disable (overrides profile)
+    if let Ok(val) = std::env::var("AUTOMODUS_DEBUG") {
+        let enabled = matches!(val.to_lowercase().as_str(), "1" | "true" | "yes" | "on");
+        config.enabled = Some(enabled);
+    }
+
+    // Log level (overrides profile)
+    if let Ok(level) = std::env::var("AUTOMODUS_DEBUG_LEVEL") {
+        config.level = Some(match level.to_lowercase().as_str() {
+            "info" => LogLevel::Info,
+            "debug" => LogLevel::Debug,
+            "trace" => LogLevel::Trace,
+            _ => {
+                eprintln!(
+                    "Warning: Invalid AUTOMODUS_DEBUG_LEVEL '{}', using info",
+                    level
+                );
+                LogLevel::Info
+            }
+        });
+    }
+
+    // Step delay (overrides profile)
+    if let Ok(delay) = std::env::var("AUTOMODUS_DEBUG_DELAY") {
+        if let Ok(ms) = delay.parse::<u64>() {
+            config.delay = Some(ms);
+        } else {
+            eprintln!(
+                "Warning: Invalid AUTOMODUS_DEBUG_DELAY '{}', ignoring",
+                delay
+            );
+        }
+    }
+
+    // Capture mode (overrides profile)
+    if let Ok(mode) = std::env::var("AUTOMODUS_DEBUG_CAPTURE") {
+        config.capture = Some(match mode.to_lowercase().as_str() {
+            "none" => CaptureMode::None,
+            "failure" => CaptureMode::Failure,
+            "before" => CaptureMode::Before,
+            "after" => CaptureMode::After,
+            "all" => CaptureMode::All,
+            _ => {
+                eprintln!(
+                    "Warning: Invalid AUTOMODUS_DEBUG_CAPTURE '{}', using none",
+                    mode
+                );
+                CaptureMode::None
+            }
+        });
+    }
+
+    config
+}
 
 fn print_banner() {
     println!(
@@ -48,7 +135,12 @@ fn print_banner() {
 #[derive(Debug)]
 enum Command {
     /// Run a specific workflow file
-    Run { path: PathBuf, keep_open: bool },
+    Run {
+        path: PathBuf,
+        keep_open: bool,
+        /// CLI debug configuration (overrides workflow config)
+        debug: DebugConfig,
+    },
     /// Start the API server
     Serve,
     /// Validate workflow files
@@ -71,13 +163,90 @@ fn parse_args() -> Command {
     match args[1].as_str() {
         "run" => {
             if args.len() < 3 {
-                eprintln!("Usage: automodus run <workflow.yaml> [--keep-open]");
+                eprintln!("Usage: automodus run <workflow.yaml> [OPTIONS]");
+                eprintln!("Try 'automodus help' for more information.");
                 std::process::exit(1);
             }
             let keep_open = args.iter().any(|a| a == "--keep-open" || a == "-k");
+
+            // Parse debug flags
+            let mut debug = DebugConfig::default();
+
+            for arg in &args[3..] {
+                if arg == "--debug" || arg == "-d" {
+                    debug.enabled = Some(true);
+                } else if let Some(level) = arg.strip_prefix("--debug=") {
+                    debug.enabled = Some(true);
+                    debug.level = Some(match level.to_lowercase().as_str() {
+                        "info" => LogLevel::Info,
+                        "debug" => LogLevel::Debug,
+                        "trace" => LogLevel::Trace,
+                        _ => {
+                            eprintln!("Invalid debug level: {}. Use: info, debug, trace", level);
+                            std::process::exit(1);
+                        }
+                    });
+                } else if let Some(delay) = arg.strip_prefix("--delay=") {
+                    debug.enabled = Some(true);
+                    match delay.parse::<u64>() {
+                        Ok(ms) => debug.delay = Some(ms),
+                        Err(_) => {
+                            eprintln!("Invalid delay value: {}. Expected milliseconds.", delay);
+                            std::process::exit(1);
+                        }
+                    }
+                } else if let Some(mode) = arg.strip_prefix("--capture=") {
+                    debug.enabled = Some(true);
+                    debug.capture = Some(match mode.to_lowercase().as_str() {
+                        "none" => CaptureMode::None,
+                        "failure" => CaptureMode::Failure,
+                        "before" => CaptureMode::Before,
+                        "after" => CaptureMode::After,
+                        "all" => CaptureMode::All,
+                        _ => {
+                            eprintln!(
+                                "Invalid capture mode: {}. Use: none, failure, before, after, all",
+                                mode
+                            );
+                            std::process::exit(1);
+                        }
+                    });
+                } else if let Some(profile) = arg.strip_prefix("--profile=") {
+                    debug.enabled = Some(true);
+                    let profile_config = match profile.to_lowercase().as_str() {
+                        "minimal" => DebugProfile::Minimal.to_config(),
+                        "verbose" => DebugProfile::Verbose.to_config(),
+                        "ci" => DebugProfile::Ci.to_config(),
+                        "demo" => DebugProfile::Demo.to_config(),
+                        _ => {
+                            eprintln!(
+                                "Invalid profile: {}. Use: minimal, verbose, ci, demo",
+                                profile
+                            );
+                            std::process::exit(1);
+                        }
+                    };
+                    // Profile is applied as base, then other CLI flags override
+                    debug = profile_config.merge(&debug);
+                } else if arg == "--highlight" {
+                    debug.enabled = Some(true);
+                    debug.highlight = Some(true);
+                } else if arg == "--pause" {
+                    debug.enabled = Some(true);
+                    debug.pause = Some(true);
+                } else if arg == "--console" {
+                    debug.enabled = Some(true);
+                    debug.console = Some(true);
+                } else if arg == "--network" {
+                    debug.enabled = Some(true);
+                    debug.network = Some(true);
+                }
+            }
+
             Command::Run {
                 path: PathBuf::from(&args[2]),
                 keep_open,
+                debug,
             }
         }
         "shell" => Command::Shell,
@@ -109,16 +278,41 @@ USAGE:
 
 COMMANDS:
     run <workflow.yaml>     Run a specific workflow file
-        -k, --keep-open Keep browser open after workflow completes
+        -k, --keep-open     Keep browser open after workflow completes
+        -d, --debug         Enable debug mode
+        --debug=<level>     Set debug level (info, debug, trace)
+        --delay=<ms>        Add delay between steps (milliseconds)
+        --capture=<mode>    Screenshot capture (none, failure, before, after, all)
+        --profile=<name>    Use debug preset (minimal, verbose, ci, demo)
+        --highlight         Highlight elements before interaction
+        --pause             Pause before each step (requires confirmation)
+        --console           Log browser console messages
+        --network           Log network requests
+
     shell               Interactive shell mode (keeps browser running)
     serve               Start the API server
     validate [path]     Validate workflow files (default: workflows/)
     list                List all loaded workflows
     help                Show this help message
 
+DEBUG PROFILES:
+    minimal     Basic logging, no delays or captures
+    verbose     Full logging with highlights and networking
+    ci          Capture on failure for CI pipelines
+    demo        Slow execution with delays and highlights
+
 EXAMPLES:
     # Run a specific workflow
     automodus run workflows/example.yaml
+
+    # Run workflow with debug mode
+    automodus run workflows/login.yaml --debug
+
+    # Run with verbose profile and custom delay
+    automodus run workflows/test.yaml --profile=verbose --delay=1000
+
+    # Run with screenshots on failure (for CI)
+    automodus run workflows/test.yaml --capture=failure
 
     # Run workflow and keep browser open
     automodus run workflows/login.yaml --keep-open
@@ -130,9 +324,16 @@ EXAMPLES:
     automodus validate workflows/
 
 ENVIRONMENT:
-    AUTOMODUS_CONFIG    Path to config file (default: config/app.toml)
-    AUTOMODUS_WORKFLOWS Path to workflows directory (default: workflows/)
-    RUST_LOG            Logging level (default: info)
+    AUTOMODUS_CONFIG          Path to config file (default: config/app.toml)
+    AUTOMODUS_WORKFLOWS       Path to workflows directory (default: workflows/)
+    RUST_LOG                  Logging level (default: info)
+
+    Debug environment variables (lowest precedence):
+    AUTOMODUS_DEBUG           Enable debug mode (1, true, yes, on)
+    AUTOMODUS_DEBUG_LEVEL     Log level (info, debug, trace)
+    AUTOMODUS_DEBUG_PROFILE   Use preset (minimal, verbose, ci, demo)
+    AUTOMODUS_DEBUG_DELAY     Step delay in milliseconds
+    AUTOMODUS_DEBUG_CAPTURE   Screenshot mode (none, failure, before, after, all)
 
 For more information, visit: https://github.com/devstroop/automodus
 "#
@@ -192,9 +393,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             print_banner();
             print_help();
         }
-        Command::Run { path, keep_open } => {
+        Command::Run {
+            path,
+            keep_open,
+            debug,
+        } => {
             print_banner();
-            run_workflow(&path, keep_open).await?;
+            run_workflow(&path, keep_open, debug).await?;
         }
         Command::Shell => {
             print_banner();
@@ -218,12 +423,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn run_workflow(
     path: &std::path::Path,
     keep_open: bool,
+    cli_debug: DebugConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Loading workflow from: {}", path.display());
 
     // Parse workflow
     let content = std::fs::read_to_string(path)?;
     let workflow = WorkflowParser::parse(&content)?;
+
+    // Merge debug configs: env (lowest) → workflow → CLI (highest)
+    let env_debug = debug_config_from_env();
+    let resolved_debug = env_debug
+        .merge(&workflow.debug)
+        .merge(&cli_debug)
+        .resolve();
+
+    if resolved_debug.enabled {
+        println!("🔍 Debug mode enabled (level: {:?})", resolved_debug.level);
+        if resolved_debug.delay > 0 {
+            println!("   Step delay: {}ms", resolved_debug.delay);
+        }
+        if resolved_debug.highlight {
+            println!("   Element highlighting: on");
+        }
+        if resolved_debug.capture != CaptureMode::None {
+            println!("   Screenshot capture: {:?}", resolved_debug.capture);
+        }
+    }
 
     println!("✓ Workflow '{}' loaded successfully", workflow.name);
     println!(

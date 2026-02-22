@@ -25,18 +25,18 @@ Track implementation progress for automodus. Update status as work progresses.
 Low-risk, immediate value. Do first before daemon architecture.
 
 ### Issue #1: Add DebugConfig to workflow schema
-**Status:** ⬜ Not Started  
+**Status:** ✅ Done  
 **File:** `src/workflow/schema.rs`  
 **Estimate:** 2-4 hours
 
 **Tasks:**
-- [ ] Add `DebugConfig` struct with `Option<T>` fields
-- [ ] Add `LogLevel` enum (Info, Debug, Trace)
-- [ ] Add `CaptureMode` enum (None, Failure, Before, After, All)
-- [ ] Add `DebugProfile` enum (Minimal, Verbose, Ci, Demo)
-- [ ] Add `ResolvedDebugConfig` struct (concrete values)
-- [ ] Implement `DebugConfig::merge()` and `DebugConfig::resolve()`
-- [ ] Implement `DebugConfig::with_profile()`
+- [x] Add `DebugConfig` struct with `Option<T>` fields
+- [x] Add `LogLevel` enum (Info, Debug, Trace)
+- [x] Add `CaptureMode` enum (None, Failure, Before, After, All)
+- [x] Add `DebugProfile` enum (Minimal, Verbose, Ci, Demo)
+- [x] Add `ResolvedDebugConfig` struct (concrete values)
+- [x] Implement `DebugConfig::merge()` and `DebugConfig::resolve()`
+- [x] Implement `DebugConfig::with_profile()`
 
 **Acceptance:**
 ```rust
@@ -48,16 +48,16 @@ assert_eq!(resolved.capture, CaptureMode::All); // explicit overrides profile
 ---
 
 ### Issue #2: Add debug field to Workflow and Step
-**Status:** ⬜ Not Started  
+**Status:** ✅ Done  
 **File:** `src/workflow/schema.rs`  
 **Depends:** #1  
 **Estimate:** 1 hour
 
 **Tasks:**
-- [ ] Add `#[serde(default)] pub debug: DebugConfig` to `Workflow`
-- [ ] Add `#[serde(default)] pub debug: Option<DebugConfig>` to `Step`
-- [ ] Add unit test for YAML parsing with debug section
-- [ ] Verify backwards compatibility (existing workflows still parse)
+- [x] Add `#[serde(default)] pub debug: DebugConfig` to `Workflow`
+- [x] Add `#[serde(default)] pub debug: Option<DebugConfig>` to `Step`
+- [x] Add unit test for YAML parsing with debug section
+- [x] Verify backwards compatibility (existing workflows still parse)
 
 **Acceptance:**
 ```yaml
@@ -74,19 +74,20 @@ steps:
 ---
 
 ### Issue #3: CLI debug flags
-**Status:** ⬜ Not Started  
+**Status:** ✅ Done  
 **File:** `src/bin/automodus.rs`  
 **Depends:** #1  
 **Estimate:** 2-3 hours
 
 **Tasks:**
-- [ ] Add `--debug` flag to `run` command
-- [ ] Add `--debug=<level>` variant (info/debug/trace)
-- [ ] Add `--delay=<ms>` flag
-- [ ] Add `--capture=<mode>` flag
-- [ ] Add `--profile=<name>` flag
-- [ ] Parse flags into `DebugConfig`
-- [ ] Merge CLI config with workflow config
+- [x] Add `--debug` flag to `run` command
+- [x] Add `--debug=<level>` variant (info/debug/trace)
+- [x] Add `--delay=<ms>` flag
+- [x] Add `--capture=<mode>` flag
+- [x] Add `--profile=<name>` flag
+- [x] Parse flags into `DebugConfig`
+- [x] Merge CLI config with workflow config
+- [x] Add `--highlight`, `--pause`, `--console`, `--network` flags
 
 **Acceptance:**
 ```bash
@@ -97,16 +98,18 @@ automodus run workflow.yaml --debug=trace --profile=ci
 ---
 
 ### Issue #4: Environment variable debug config
-**Status:** ⬜ Not Started  
+**Status:** ✅ Done  
 **File:** `src/bin/automodus.rs`  
 **Depends:** #1  
 **Estimate:** 1 hour
 
 **Tasks:**
-- [ ] Read `AUTOMODUS_DEBUG` (bool)
-- [ ] Read `AUTOMODUS_DEBUG_LEVEL` (info/debug/trace)
-- [ ] Read `AUTOMODUS_DEBUG_PROFILE` (profile name)
-- [ ] Merge with CLI/workflow config (lowest precedence)
+- [x] Read `AUTOMODUS_DEBUG` (bool)
+- [x] Read `AUTOMODUS_DEBUG_LEVEL` (info/debug/trace)
+- [x] Read `AUTOMODUS_DEBUG_PROFILE` (profile name)
+- [x] Read `AUTOMODUS_DEBUG_DELAY` (ms)
+- [x] Read `AUTOMODUS_DEBUG_CAPTURE` (mode)
+- [x] Merge with CLI/workflow config (lowest precedence)
 
 **Acceptance:**
 ```bash

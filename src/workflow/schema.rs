@@ -5,6 +5,215 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+// =============================================================================
+// Debug Configuration Types
+// =============================================================================
+
+/// Debug configuration for workflow execution.
+///
+/// Uses `Option<T>` for fields to distinguish "not set" from "set to default".
+/// This enables proper merge semantics where only explicitly-set fields override.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DebugConfig {
+    /// Master switch for debug mode (None = inherit from parent)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+
+    /// Log verbosity level (None = inherit from parent)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<LogLevel>,
+
+    /// Screenshot capture mode (None = inherit from parent)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture: Option<CaptureMode>,
+
+    /// Flash element with red border before interaction (None = inherit)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub highlight: Option<bool>,
+
+    /// Milliseconds to pause between actions (None = inherit)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delay: Option<u64>,
+
+    /// Wait for user input before continuing (None = inherit)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause: Option<bool>,
+
+    /// Capture browser console output (None = inherit)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub console: Option<bool>,
+
+    /// Capture network requests (None = inherit)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<bool>,
+
+    /// Preset configuration profile
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<DebugProfile>,
+}
+
+impl DebugConfig {
+    /// Create a new DebugConfig with debug enabled
+    pub fn enabled() -> Self {
+        Self {
+            enabled: Some(true),
+            ..Default::default()
+        }
+    }
+
+    /// Resolve final values (apply defaults for None fields)
+    pub fn resolve(&self) -> ResolvedDebugConfig {
+        ResolvedDebugConfig {
+            enabled: self.enabled.unwrap_or(false),
+            level: self.level.unwrap_or_default(),
+            capture: self.capture.unwrap_or_default(),
+            highlight: self.highlight.unwrap_or(false),
+            delay: self.delay.unwrap_or(0),
+            pause: self.pause.unwrap_or(false),
+            console: self.console.unwrap_or(false),
+            network: self.network.unwrap_or(false),
+        }
+    }
+
+    /// Apply profile defaults, then merge explicit options
+    pub fn with_profile(self) -> Self {
+        if let Some(profile) = self.profile {
+            let defaults = profile.to_config();
+            // Profile sets defaults, explicit fields override
+            defaults.merge(&self)
+        } else {
+            self
+        }
+    }
+
+    /// Merge with another config (other's Some values take precedence)
+    pub fn merge(&self, other: &DebugConfig) -> Self {
+        Self {
+            enabled: other.enabled.or(self.enabled),
+            level: other.level.or(self.level),
+            capture: other.capture.or(self.capture),
+            highlight: other.highlight.or(self.highlight),
+            delay: other.delay.or(self.delay),
+            pause: other.pause.or(self.pause),
+            console: other.console.or(self.console),
+            network: other.network.or(self.network),
+            profile: other.profile.or(self.profile),
+        }
+    }
+}
+
+/// Resolved debug config with concrete values (no Options).
+/// Used during execution after all merging is complete.
+#[derive(Debug, Clone)]
+pub struct ResolvedDebugConfig {
+    pub enabled: bool,
+    pub level: LogLevel,
+    pub capture: CaptureMode,
+    pub highlight: bool,
+    pub delay: u64,
+    pub pause: bool,
+    pub console: bool,
+    pub network: bool,
+}
+
+impl Default for ResolvedDebugConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            level: LogLevel::Info,
+            capture: CaptureMode::Failure,
+            highlight: false,
+            delay: 0,
+            pause: false,
+            console: false,
+            network: false,
+        }
+    }
+}
+
+/// Log verbosity level for debug output
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    /// Step start/complete, errors
+    #[default]
+    Info,
+    /// + Action parameters, timing, variable state
+    Debug,
+    /// + Selector resolution, element details, injected JS
+    Trace,
+}
+
+/// Screenshot capture mode
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CaptureMode {
+    /// No screenshots captured
+    None,
+    /// Capture only when a step fails (default)
+    #[default]
+    Failure,
+    /// Capture before each action
+    Before,
+    /// Capture after each action
+    After,
+    /// Capture before and after each action
+    All,
+}
+
+/// Debug profile presets
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DebugProfile {
+    /// `capture: failure` only
+    Minimal,
+    /// `level: trace`, `capture: all`, `console: true`, `network: true`
+    Verbose,
+    /// `capture: failure`, `console: true`, `network: true`
+    Ci,
+    /// `highlight: true`, `delay: 1000`
+    Demo,
+}
+
+impl DebugProfile {
+    /// Convert profile to its default DebugConfig
+    pub fn to_config(self) -> DebugConfig {
+        match self {
+            DebugProfile::Minimal => DebugConfig {
+                enabled: Some(true),
+                capture: Some(CaptureMode::Failure),
+                ..Default::default()
+            },
+            DebugProfile::Verbose => DebugConfig {
+                enabled: Some(true),
+                level: Some(LogLevel::Trace),
+                capture: Some(CaptureMode::All),
+                console: Some(true),
+                network: Some(true),
+                ..Default::default()
+            },
+            DebugProfile::Ci => DebugConfig {
+                enabled: Some(true),
+                capture: Some(CaptureMode::Failure),
+                console: Some(true),
+                network: Some(true),
+                ..Default::default()
+            },
+            DebugProfile::Demo => DebugConfig {
+                enabled: Some(true),
+                highlight: Some(true),
+                delay: Some(1000),
+                ..Default::default()
+            },
+        }
+    }
+}
+
+// =============================================================================
+// Workflow Types
+// =============================================================================
+
 /// A complete workflow definition parsed from YAML
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workflow {
@@ -49,6 +258,10 @@ pub struct Workflow {
     /// Actions on error
     #[serde(default)]
     pub on_error: Option<ErrorHandler>,
+
+    /// Debug configuration for this workflow
+    #[serde(default)]
+    pub debug: DebugConfig,
 }
 
 fn default_version() -> String {
@@ -235,6 +448,10 @@ pub struct Step {
     /// Failure handler
     #[serde(default)]
     pub on_failure: Option<StepHandler>,
+
+    /// Step-level debug overrides
+    #[serde(default)]
+    pub debug: Option<DebugConfig>,
 }
 
 /// Retry configuration for a step
@@ -557,5 +774,160 @@ steps:
         let workflow: Workflow = serde_yaml::from_str(yaml).unwrap();
         assert!(workflow.params.contains_key("url"));
         assert!(workflow.params.get("url").unwrap().required);
+    }
+
+    // =========================================================================
+    // Debug Config Tests
+    // =========================================================================
+
+    #[test]
+    fn test_debug_config_default() {
+        let cfg = DebugConfig::default();
+        assert!(cfg.enabled.is_none());
+        assert!(cfg.level.is_none());
+        assert!(cfg.capture.is_none());
+        
+        let resolved = cfg.resolve();
+        assert!(!resolved.enabled);
+        assert_eq!(resolved.level, LogLevel::Info);
+        assert_eq!(resolved.capture, CaptureMode::Failure);
+    }
+
+    #[test]
+    fn test_debug_config_merge() {
+        let base = DebugConfig {
+            enabled: Some(true),
+            level: Some(LogLevel::Debug),
+            capture: Some(CaptureMode::All),
+            ..Default::default()
+        };
+        
+        let override_cfg = DebugConfig {
+            level: Some(LogLevel::Trace),
+            delay: Some(500),
+            ..Default::default()
+        };
+        
+        let merged = base.merge(&override_cfg);
+        assert_eq!(merged.enabled, Some(true));  // from base
+        assert_eq!(merged.level, Some(LogLevel::Trace));  // overridden
+        assert_eq!(merged.capture, Some(CaptureMode::All));  // from base
+        assert_eq!(merged.delay, Some(500));  // from override
+    }
+
+    #[test]
+    fn test_debug_config_with_profile() {
+        // Profile sets defaults
+        let cfg = DebugConfig {
+            profile: Some(DebugProfile::Ci),
+            ..Default::default()
+        };
+        let resolved = cfg.with_profile().resolve();
+        assert!(resolved.enabled);
+        assert_eq!(resolved.capture, CaptureMode::Failure);
+        assert!(resolved.console);
+        assert!(resolved.network);
+    }
+
+    #[test]
+    fn test_debug_config_profile_override() {
+        // Explicit capture overrides profile default
+        let cfg = DebugConfig {
+            profile: Some(DebugProfile::Ci),
+            capture: Some(CaptureMode::All),
+            ..Default::default()
+        };
+        let resolved = cfg.with_profile().resolve();
+        assert_eq!(resolved.capture, CaptureMode::All);  // explicit wins
+        assert!(resolved.console);  // from profile
+    }
+
+    #[test]
+    fn test_debug_profile_verbose() {
+        let cfg = DebugProfile::Verbose.to_config();
+        let resolved = cfg.resolve();
+        assert!(resolved.enabled);
+        assert_eq!(resolved.level, LogLevel::Trace);
+        assert_eq!(resolved.capture, CaptureMode::All);
+        assert!(resolved.console);
+        assert!(resolved.network);
+    }
+
+    #[test]
+    fn test_debug_profile_demo() {
+        let cfg = DebugProfile::Demo.to_config();
+        let resolved = cfg.resolve();
+        assert!(resolved.enabled);
+        assert!(resolved.highlight);
+        assert_eq!(resolved.delay, 1000);
+    }
+
+    #[test]
+    fn test_parse_workflow_with_debug() {
+        let yaml = r##"
+name: debug-test
+debug:
+  enabled: true
+  level: trace
+  capture: all
+  highlight: true
+steps:
+  - action: click
+    selector: "#btn"
+"##;
+        let workflow: Workflow = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(workflow.debug.enabled, Some(true));
+        assert_eq!(workflow.debug.level, Some(LogLevel::Trace));
+        assert_eq!(workflow.debug.capture, Some(CaptureMode::All));
+        assert_eq!(workflow.debug.highlight, Some(true));
+    }
+
+    #[test]
+    fn test_parse_workflow_with_debug_profile() {
+        let yaml = r##"
+name: profile-test
+debug:
+  profile: verbose
+steps:
+  - action: click
+    selector: "#btn"
+"##;
+        let workflow: Workflow = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(workflow.debug.profile, Some(DebugProfile::Verbose));
+        
+        let resolved = workflow.debug.with_profile().resolve();
+        assert_eq!(resolved.level, LogLevel::Trace);
+        assert_eq!(resolved.capture, CaptureMode::All);
+    }
+
+    #[test]
+    fn test_parse_step_with_debug() {
+        let yaml = r##"
+name: step-debug-test
+steps:
+  - action: click
+    selector: "#btn"
+    debug:
+      pause: true
+      capture: before
+"##;
+        let workflow: Workflow = serde_yaml::from_str(yaml).unwrap();
+        let step_debug = workflow.steps[0].debug.as_ref().unwrap();
+        assert_eq!(step_debug.pause, Some(true));
+        assert_eq!(step_debug.capture, Some(CaptureMode::Before));
+    }
+
+    #[test]
+    fn test_workflow_backward_compatibility() {
+        // Existing workflows without debug section should still parse
+        let yaml = r##"
+name: old-workflow
+steps:
+  - action: goto
+    url: "https://example.com"
+"##;
+        let workflow: Workflow = serde_yaml::from_str(yaml).unwrap();
+        assert!(workflow.debug.enabled.is_none());  // Default
+        assert!(workflow.steps[0].debug.is_none());  // Not set
     }
 }
