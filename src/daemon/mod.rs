@@ -627,6 +627,71 @@ async fn dispatch_request(core: &Arc<AppCore>, request: SocketRequest) -> Socket
             Err(e) => SocketResponse::err(format!("Browser error: {}", e)),
         },
 
+        // --- Tab Management ---
+        SocketRequest::BrowserTabList => match core.get_page().await {
+            Ok(adapter) => match adapter.list_tabs().await {
+                Ok(tabs) => {
+                    let tab_data: Vec<serde_json::Value> = tabs
+                        .iter()
+                        .map(|t| serde_json::json!({"index": t.index, "url": t.url, "active": t.active}))
+                        .collect();
+                    SocketResponse::ok_data(serde_json::json!({"tabs": tab_data}))
+                }
+                Err(e) => SocketResponse::err(e.to_string()),
+            },
+            Err(e) => SocketResponse::err(format!("Browser error: {}", e)),
+        },
+
+        SocketRequest::BrowserTabNew { url } => match core.get_page().await {
+            Ok(adapter) => match adapter.new_tab(url.as_deref()).await {
+                Ok(index) => SocketResponse::ok_data(serde_json::json!({"index": index})),
+                Err(e) => SocketResponse::err(e.to_string()),
+            },
+            Err(e) => SocketResponse::err(format!("Browser error: {}", e)),
+        },
+
+        SocketRequest::BrowserTabSwitch { index } => match core.get_page().await {
+            Ok(adapter) => match adapter.switch_tab(index).await {
+                Ok(()) => SocketResponse::ok(),
+                Err(e) => SocketResponse::err(e.to_string()),
+            },
+            Err(e) => SocketResponse::err(format!("Browser error: {}", e)),
+        },
+
+        SocketRequest::BrowserTabClose { index } => match core.get_page().await {
+            Ok(adapter) => match adapter.close_tab(index).await {
+                Ok(()) => SocketResponse::ok(),
+                Err(e) => SocketResponse::err(e.to_string()),
+            },
+            Err(e) => SocketResponse::err(format!("Browser error: {}", e)),
+        },
+
+        // --- PDF ---
+        SocketRequest::BrowserPdf => match core.get_page().await {
+            Ok(adapter) => match adapter.pdf().await {
+                Ok(bytes) => {
+                    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+                    SocketResponse::ok_data(serde_json::json!({"pdf_base64": b64, "size": bytes.len()}))
+                }
+                Err(e) => SocketResponse::err(e.to_string()),
+            },
+            Err(e) => SocketResponse::err(format!("Browser error: {}", e)),
+        },
+
+        // --- Debug ---
+        SocketRequest::DebugClean => {
+            let debug_dir = core.debug_dir();
+            let policy = crate::utils::CleanupPolicy::default();
+            match crate::utils::cleanup_debug_dir(debug_dir, &policy) {
+                Ok(stats) => SocketResponse::ok_data(serde_json::json!({
+                    "files_removed": stats.files_removed,
+                    "bytes_freed": stats.bytes_freed,
+                    "files_remaining": stats.files_remaining,
+                })),
+                Err(e) => SocketResponse::err(format!("Cleanup failed: {}", e)),
+            }
+        }
+
         // --- Workflow Commands ---
         SocketRequest::WorkflowRun { path, params } => {
             let file_path = std::path::Path::new(&path);
@@ -962,6 +1027,57 @@ impl DaemonClient {
             })
             .await?;
         Self::unwrap_response(resp).map(|_| ()).map_err(DaemonError::CommandFailed)
+    }
+
+    // --- Tabs ---
+
+    pub async fn browser_tab_list(&mut self) -> Result<Vec<serde_json::Value>, DaemonError> {
+        let resp = self.request(SocketRequest::BrowserTabList).await?;
+        let data = Self::unwrap_response(resp).map_err(DaemonError::CommandFailed)?;
+        Ok(data["tabs"].as_array().cloned().unwrap_or_default())
+    }
+
+    pub async fn browser_tab_new(&mut self, url: Option<&str>) -> Result<usize, DaemonError> {
+        let resp = self
+            .request(SocketRequest::BrowserTabNew {
+                url: url.map(String::from),
+            })
+            .await?;
+        let data = Self::unwrap_response(resp).map_err(DaemonError::CommandFailed)?;
+        Ok(data["index"].as_u64().unwrap_or(0) as usize)
+    }
+
+    pub async fn browser_tab_switch(&mut self, index: usize) -> Result<(), DaemonError> {
+        let resp = self
+            .request(SocketRequest::BrowserTabSwitch { index })
+            .await?;
+        Self::unwrap_response(resp).map(|_| ()).map_err(DaemonError::CommandFailed)
+    }
+
+    pub async fn browser_tab_close(&mut self, index: usize) -> Result<(), DaemonError> {
+        let resp = self
+            .request(SocketRequest::BrowserTabClose { index })
+            .await?;
+        Self::unwrap_response(resp).map(|_| ()).map_err(DaemonError::CommandFailed)
+    }
+
+    // --- PDF ---
+
+    pub async fn browser_pdf(&mut self) -> Result<Vec<u8>, DaemonError> {
+        use base64::Engine;
+        let resp = self.request(SocketRequest::BrowserPdf).await?;
+        let data = Self::unwrap_response(resp).map_err(DaemonError::CommandFailed)?;
+        let b64 = data["pdf_base64"].as_str().unwrap_or("");
+        base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .map_err(|e| DaemonError::CommandFailed(format!("Invalid PDF data: {}", e)))
+    }
+
+    // --- Debug ---
+
+    pub async fn debug_clean(&mut self) -> Result<serde_json::Value, DaemonError> {
+        let resp = self.request(SocketRequest::DebugClean).await?;
+        Self::unwrap_response(resp).map_err(DaemonError::CommandFailed)
     }
 
     // --- Workflows ---

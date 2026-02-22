@@ -1307,6 +1307,73 @@ async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
             ShellCommand::DebugStatus => {
                 println!("  Debug: off (toggle with 'debug on')");
             }
+            ShellCommand::DebugClean => {
+                let debug_dir = std::path::Path::new("data/debug");
+                let policy = automodus::utils::CleanupPolicy::default();
+                match automodus::utils::cleanup_debug_dir(debug_dir, &policy) {
+                    Ok(stats) => println!("✓ {}", stats),
+                    Err(e) => println!("❌ Cleanup failed: {}", e),
+                }
+            }
+            ShellCommand::Tabs => {
+                match adapter.list_tabs().await {
+                    Ok(tabs) => {
+                        println!("Open tabs ({}):", tabs.len());
+                        for tab in &tabs {
+                            let marker = if tab.active { " *" } else { "  " };
+                            println!("{} [{}] {}", marker, tab.index, tab.url);
+                        }
+                    }
+                    Err(e) => println!("❌ Failed to list tabs: {}", e),
+                }
+            }
+            ShellCommand::TabNew { url } => {
+                match adapter.new_tab(url.as_deref()).await {
+                    Ok(index) => println!("✓ Opened new tab {}", index),
+                    Err(e) => println!("❌ Failed to open tab: {}", e),
+                }
+            }
+            ShellCommand::TabSwitch { index } => {
+                match adapter.switch_tab(index).await {
+                    Ok(()) => println!("✓ Switched to tab {}", index),
+                    Err(e) => println!("❌ Failed to switch tab: {}", e),
+                }
+            }
+            ShellCommand::TabClose { index } => {
+                let tab_index = index.unwrap_or_else(|| {
+                    // Will be resolved to current tab
+                    0 // fallback
+                });
+                let tab_index = if index.is_some() {
+                    tab_index
+                } else {
+                    match adapter.list_tabs().await {
+                        Ok(tabs) => tabs.iter().find(|t| t.active).map(|t| t.index).unwrap_or(0),
+                        Err(_) => 0,
+                    }
+                };
+                match adapter.close_tab(tab_index).await {
+                    Ok(()) => println!("✓ Closed tab {}", tab_index),
+                    Err(e) => println!("❌ Failed to close tab: {}", e),
+                }
+            }
+            ShellCommand::Pdf { path } => {
+                match adapter.pdf().await {
+                    Ok(data) => {
+                        let path = path.unwrap_or_else(|| {
+                            PathBuf::from(format!(
+                                "page_{}.pdf",
+                                chrono::Utc::now().format("%Y%m%d_%H%M%S")
+                            ))
+                        });
+                        match std::fs::write(&path, &data) {
+                            Ok(_) => println!("✓ PDF saved to {}", path.display()),
+                            Err(e) => println!("❌ Failed to save PDF: {}", e),
+                        }
+                    }
+                    Err(e) => println!("❌ PDF export failed: {}", e),
+                }
+            }
             ShellCommand::Unknown { command } => {
                 if !command.is_empty() {
                     println!("Unknown command: '{}'. Type 'help' for commands.", command);
@@ -1836,6 +1903,86 @@ async fn run_shell_daemon(
             ShellCommand::DebugStatus => {
                 println!("  Debug: off (toggle with 'debug on')");
                 println!("  Mode: daemon-connected");
+            }
+            ShellCommand::DebugClean => {
+                match client.debug_clean().await {
+                    Ok(data) => {
+                        let removed = data["files_removed"].as_u64().unwrap_or(0);
+                        let freed = data["bytes_freed"].as_u64().unwrap_or(0);
+                        let remaining = data["files_remaining"].as_u64().unwrap_or(0);
+                        let freed_str = if freed >= 1_048_576 {
+                            format!("{:.1} MB", freed as f64 / 1_048_576.0)
+                        } else if freed >= 1024 {
+                            format!("{:.1} KB", freed as f64 / 1024.0)
+                        } else {
+                            format!("{} bytes", freed)
+                        };
+                        println!("✓ Removed {} files ({}), {} remaining", removed, freed_str, remaining);
+                    }
+                    Err(e) => println!("❌ Cleanup failed: {}", e),
+                }
+            }
+            ShellCommand::Tabs => {
+                match client.browser_tab_list().await {
+                    Ok(tabs) => {
+                        println!("Open tabs ({}):", tabs.len());
+                        for tab in &tabs {
+                            let active = tab["active"].as_bool().unwrap_or(false);
+                            let marker = if active { " *" } else { "  " };
+                            let index = tab["index"].as_u64().unwrap_or(0);
+                            let url = tab["url"].as_str().unwrap_or("about:blank");
+                            println!("{} [{}] {}", marker, index, url);
+                        }
+                    }
+                    Err(e) => println!("❌ Failed to list tabs: {}", e),
+                }
+            }
+            ShellCommand::TabNew { url } => {
+                match client.browser_tab_new(url.as_deref()).await {
+                    Ok(index) => println!("✓ Opened new tab {}", index),
+                    Err(e) => println!("❌ Failed to open tab: {}", e),
+                }
+            }
+            ShellCommand::TabSwitch { index } => {
+                match client.browser_tab_switch(index).await {
+                    Ok(()) => println!("✓ Switched to tab {}", index),
+                    Err(e) => println!("❌ Failed to switch tab: {}", e),
+                }
+            }
+            ShellCommand::TabClose { index } => {
+                let tab_index = if let Some(idx) = index {
+                    idx
+                } else {
+                    // Close the current/active tab
+                    match client.browser_tab_list().await {
+                        Ok(tabs) => tabs.iter()
+                            .find(|t| t["active"].as_bool().unwrap_or(false))
+                            .and_then(|t| t["index"].as_u64())
+                            .unwrap_or(0) as usize,
+                        Err(_) => 0,
+                    }
+                };
+                match client.browser_tab_close(tab_index).await {
+                    Ok(()) => println!("✓ Closed tab {}", tab_index),
+                    Err(e) => println!("❌ Failed to close tab: {}", e),
+                }
+            }
+            ShellCommand::Pdf { path } => {
+                match client.browser_pdf().await {
+                    Ok(data) => {
+                        let path = path.unwrap_or_else(|| {
+                            PathBuf::from(format!(
+                                "page_{}.pdf",
+                                chrono::Utc::now().format("%Y%m%d_%H%M%S")
+                            ))
+                        });
+                        match std::fs::write(&path, &data) {
+                            Ok(_) => println!("✓ PDF saved to {}", path.display()),
+                            Err(e) => println!("❌ Failed to save PDF: {}", e),
+                        }
+                    }
+                    Err(e) => println!("❌ PDF export failed: {}", e),
+                }
             }
             ShellCommand::Unknown { command } => {
                 if !command.is_empty() {

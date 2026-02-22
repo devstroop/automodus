@@ -509,6 +509,240 @@ pub async fn page_info_handler(State(state): State<Arc<ServerState>>) -> impl In
 }
 
 // ============================================================================
+// Tabs
+// ============================================================================
+
+/// List open tabs
+#[utoipa::path(
+    get,
+    path = "/api/browser/tabs",
+    tag = "browser",
+    responses(
+        (status = 200, description = "List of open tabs", body = TabListResponse)
+    )
+)]
+pub async fn tab_list_handler(State(state): State<Arc<ServerState>>) -> impl IntoResponse {
+    let adapter = match state.get_page().await {
+        Ok(a) => a,
+        Err(e) => {
+            return Json(serde_json::json!({"error": format!("Browser error: {}", e)}));
+        }
+    };
+
+    match adapter.list_tabs().await {
+        Ok(tabs) => {
+            let tab_list: Vec<TabInfoResponse> = tabs
+                .iter()
+                .map(|t| TabInfoResponse {
+                    index: t.index,
+                    url: t.url.clone(),
+                    active: t.active,
+                })
+                .collect();
+            Json(serde_json::json!(TabListResponse { tabs: tab_list }))
+        }
+        Err(e) => Json(serde_json::json!({"error": e.to_string()})),
+    }
+}
+
+/// Open a new tab
+#[utoipa::path(
+    post,
+    path = "/api/browser/tabs",
+    tag = "browser",
+    request_body = TabNewRequest,
+    responses(
+        (status = 200, description = "Tab opened", body = TabNewResponse)
+    )
+)]
+pub async fn tab_new_handler(
+    State(state): State<Arc<ServerState>>,
+    Json(request): Json<TabNewRequest>,
+) -> impl IntoResponse {
+    let adapter = match state.get_page().await {
+        Ok(a) => a,
+        Err(e) => {
+            return Json(TabNewResponse {
+                success: false,
+                index: None,
+                error: Some(format!("Browser error: {}", e)),
+            });
+        }
+    };
+
+    match adapter.new_tab(request.url.as_deref()).await {
+        Ok(index) => Json(TabNewResponse {
+            success: true,
+            index: Some(index),
+            error: None,
+        }),
+        Err(e) => Json(TabNewResponse {
+            success: false,
+            index: None,
+            error: Some(e.to_string()),
+        }),
+    }
+}
+
+/// Switch to a tab
+#[utoipa::path(
+    post,
+    path = "/api/browser/tabs/switch",
+    tag = "browser",
+    request_body = TabSwitchRequest,
+    responses(
+        (status = 200, description = "Tab switched", body = BrowserActionResponse)
+    )
+)]
+pub async fn tab_switch_handler(
+    State(state): State<Arc<ServerState>>,
+    Json(request): Json<TabSwitchRequest>,
+) -> impl IntoResponse {
+    let adapter = match state.get_page().await {
+        Ok(a) => a,
+        Err(e) => {
+            return Json(BrowserActionResponse {
+                success: false,
+                result: None,
+                error: Some(format!("Browser error: {}", e)),
+            });
+        }
+    };
+
+    match adapter.switch_tab(request.index).await {
+        Ok(()) => Json(BrowserActionResponse {
+            success: true,
+            result: None,
+            error: None,
+        }),
+        Err(e) => Json(BrowserActionResponse {
+            success: false,
+            result: None,
+            error: Some(e.to_string()),
+        }),
+    }
+}
+
+/// Close a tab
+#[utoipa::path(
+    delete,
+    path = "/api/browser/tabs/{index}",
+    tag = "browser",
+    params(
+        ("index" = usize, Path, description = "Tab index to close")
+    ),
+    responses(
+        (status = 200, description = "Tab closed", body = BrowserActionResponse)
+    )
+)]
+pub async fn tab_close_handler(
+    State(state): State<Arc<ServerState>>,
+    Path(index): Path<usize>,
+) -> impl IntoResponse {
+    let adapter = match state.get_page().await {
+        Ok(a) => a,
+        Err(e) => {
+            return Json(BrowserActionResponse {
+                success: false,
+                result: None,
+                error: Some(format!("Browser error: {}", e)),
+            });
+        }
+    };
+
+    match adapter.close_tab(index).await {
+        Ok(()) => Json(BrowserActionResponse {
+            success: true,
+            result: None,
+            error: None,
+        }),
+        Err(e) => Json(BrowserActionResponse {
+            success: false,
+            result: None,
+            error: Some(e.to_string()),
+        }),
+    }
+}
+
+// ============================================================================
+// PDF Export
+// ============================================================================
+
+/// Export page as PDF
+#[utoipa::path(
+    get,
+    path = "/api/browser/pdf",
+    tag = "browser",
+    responses(
+        (status = 200, description = "PDF document", content_type = "application/pdf"),
+        (status = 500, description = "Browser error")
+    )
+)]
+pub async fn pdf_handler(State(state): State<Arc<ServerState>>) -> impl IntoResponse {
+    let adapter = match state.get_page().await {
+        Ok(a) => a,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                format!(r#"{{"error":"{}"}}"#, e).into_bytes(),
+            );
+        }
+    };
+
+    match adapter.pdf().await {
+        Ok(bytes) => (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "application/pdf")],
+            bytes,
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            format!(r#"{{"error":"{}"}}"#, e).into_bytes(),
+        ),
+    }
+}
+
+// ============================================================================
+// Debug
+// ============================================================================
+
+/// Clean debug output directory
+#[utoipa::path(
+    post,
+    path = "/api/debug/cleanup",
+    tag = "debug",
+    responses(
+        (status = 200, description = "Cleanup completed", body = DebugCleanupResponse),
+        (status = 500, description = "Cleanup failed")
+    )
+)]
+pub async fn debug_cleanup_handler(
+    State(state): State<Arc<ServerState>>,
+) -> impl IntoResponse {
+    let debug_dir = state.debug_dir();
+    let policy = crate::utils::CleanupPolicy::default();
+
+    match crate::utils::cleanup_debug_dir(&debug_dir, &policy) {
+        Ok(stats) => Json(DebugCleanupResponse {
+            success: true,
+            files_removed: stats.files_removed,
+            bytes_freed: stats.bytes_freed,
+            files_remaining: stats.files_remaining,
+            error: None,
+        }),
+        Err(e) => Json(DebugCleanupResponse {
+            success: false,
+            files_removed: 0,
+            bytes_freed: 0,
+            files_remaining: 0,
+            error: Some(e.to_string()),
+        }),
+    }
+}
+
+// ============================================================================
 // Sessions
 // ============================================================================
 
