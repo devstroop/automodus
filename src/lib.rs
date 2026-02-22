@@ -83,6 +83,9 @@ pub mod core;
 /// Triggers (API, schedule, events)
 pub mod triggers;
 
+/// Daemon process
+pub mod daemon;
+
 // ============================================================================
 // Browser Automation
 // ============================================================================
@@ -108,7 +111,10 @@ pub use actions::{
 };
 
 // Engine types
-pub use core::{ExecutionContext, WorkflowEngine, WorkflowResult};
+pub use core::{AppCore, CoreEvent, ExecutionContext, Session, SessionError, SessionInfo, WorkflowEngine, WorkflowResult};
+
+// Daemon types
+pub use daemon::{Daemon, DaemonClient, DaemonConfig, DaemonError, DaemonEvent, DaemonStatus};
 
 // Browser types
 pub use modules::{BrowserService, ChromePageAdapter};
