@@ -392,7 +392,7 @@ automodus daemon stop
 Stateless shell connecting to daemon.
 
 ### Issue #16: Create ShellClient
-**Status:** ⬜ Not Started  
+**Status:** ✅ Done  
 **File:** `src/shell/client.rs` (new)  
 **Depends:** #11, cargo deps (rustyline, dirs)  
 **Estimate:** 1 day
@@ -400,14 +400,15 @@ Stateless shell connecting to daemon.
 > **User pain point:** Current shell uses `std::io::BufRead` - no arrow key history, no line editing.
 
 **Tasks:**
-- [ ] Create `src/shell/mod.rs` and `src/shell/client.rs`
-- [ ] Implement daemon connection via Unix socket
-- [ ] Replace inline browser launch with daemon commands
-- [ ] Add rustyline for readline support
-- [ ] **Arrow up/down cycles through command history**
-- [ ] **Home/End, Ctrl+A/E for line navigation**
-- [ ] **Ctrl+R for reverse history search**
-- [ ] Implement history save/load (`~/.local/share/automodus/history.txt`)
+- [x] Create `src/shell/mod.rs` and `src/shell/client.rs`
+- [x] Add rustyline for readline support
+- [x] **Arrow up/down cycles through command history**
+- [x] **Home/End, Ctrl+A/E for line navigation**
+- [x] **Ctrl+R for reverse history search**
+- [x] Implement history save/load (`~/.local/share/automodus/history.txt`)
+- [x] Add command completion for commands and workflow paths
+- [ ] Implement daemon connection via Unix socket (deferred)
+- [ ] Replace inline browser launch with daemon commands (deferred)
 
 **Acceptance:**
 ```
@@ -421,20 +422,21 @@ automodus> [UP ARROW]  # Shows: goto https://example.com
 ---
 
 ### Issue #17: Shell command expansion
-**Status:** ⬜ Not Started  
+**Status:** ✅ Done (parsing)  
 **File:** `src/shell/client.rs`  
 **Depends:** #16  
 **Estimate:** 1-2 days
 
 **Tasks:**
-- [ ] Add `click <selector>` command
-- [ ] Add `type <selector> <text>` command  
-- [ ] Add `wait <selector> [timeout]` command
-- [ ] Add `screenshot [path]` command
-- [ ] Add `eval <js>` command
-- [ ] Add `text <selector>` command
-- [ ] Add `find <selector>` command
-- [ ] Add navigation: `back`, `forward`, `refresh`
+- [x] Add `click <selector>` command
+- [x] Add `type <selector> <text>` command  
+- [x] Add `wait <selector> [timeout]` command
+- [x] Add `screenshot [path]` command
+- [x] Add `eval <js>` command
+- [x] Add `text <selector>` command
+- [ ] Add `find <selector>` command (deferred)
+- [x] Add navigation: `back`, `forward`, `refresh`
+- [ ] Wire commands to browser adapter execution (deferred)
 
 ---
 
