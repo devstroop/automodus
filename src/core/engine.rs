@@ -1391,4 +1391,131 @@ steps:
         // (the log step, since the call is skipped)
         assert_eq!(result.steps_executed, 2);
     }
+
+    // --- Pause handler tests ---
+
+    /// Custom pause handler that records calls and returns a configured response
+    struct TestPauseHandler {
+        response: PauseResponse,
+        calls: std::sync::Mutex<Vec<(String, usize, String)>>,
+    }
+
+    impl TestPauseHandler {
+        fn new(response: PauseResponse) -> Self {
+            Self { response: response, calls: std::sync::Mutex::new(Vec::new()) }
+        }
+        fn call_count(&self) -> usize {
+            self.calls.lock().unwrap().len()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PauseHandler for TestPauseHandler {
+        async fn on_pause(&self, workflow: &str, step: usize, action: &str, _selector: Option<&str>) -> PauseResponse {
+            self.calls.lock().unwrap().push((workflow.to_string(), step, action.to_string()));
+            self.response.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_pause_handler_continue() {
+        let engine = WorkflowEngine::new();
+        let browser = MockBrowser;
+        let handler = TestPauseHandler::new(PauseResponse::Continue);
+
+        let wf = WorkflowParser::parse(r#"
+name: pause-test
+debug:
+  enabled: true
+  pause: true
+steps:
+  - action: log
+    message: "step one"
+  - action: log
+    message: "step two"
+"#).unwrap();
+
+        let debug = wf.debug.resolve();
+        let result = engine.execute_with_pause_handler(&wf, &browser, HashMap::new(), debug, &handler, None).await.unwrap();
+        assert!(result.success);
+        assert_eq!(result.steps_executed, 2);
+        assert_eq!(handler.call_count(), 2, "Pause handler should be called for each step");
+    }
+
+    #[tokio::test]
+    async fn test_pause_handler_skip() {
+        let engine = WorkflowEngine::new();
+        let browser = MockBrowser;
+        let handler = TestPauseHandler::new(PauseResponse::Skip);
+
+        let wf = WorkflowParser::parse(r#"
+name: skip-test
+debug:
+  enabled: true
+  pause: true
+steps:
+  - action: log
+    message: "step one"
+  - action: log
+    message: "step two"
+"#).unwrap();
+
+        let debug = wf.debug.resolve();
+        let result = engine.execute_with_pause_handler(&wf, &browser, HashMap::new(), debug, &handler, None).await.unwrap();
+        assert!(result.success);
+        // Both steps are skipped, but step_index still advances
+        assert_eq!(handler.call_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_pause_handler_abort() {
+        let engine = WorkflowEngine::new();
+        let browser = MockBrowser;
+        let handler = TestPauseHandler::new(PauseResponse::Abort);
+
+        let wf = WorkflowParser::parse(r#"
+name: abort-test
+debug:
+  enabled: true
+  pause: true
+steps:
+  - action: log
+    message: "step one"
+  - action: log
+    message: "step two"
+"#).unwrap();
+
+        let debug = wf.debug.resolve();
+        let result = engine.execute_with_pause_handler(&wf, &browser, HashMap::new(), debug, &handler, None).await.unwrap();
+        assert!(!result.success, "Abort should fail the workflow");
+        assert!(result.error.as_ref().unwrap().contains("abort"), "Error should mention abort");
+        assert_eq!(handler.call_count(), 1, "Only first step should pause before abort");
+    }
+
+    #[tokio::test]
+    async fn test_pause_not_called_when_disabled() {
+        let engine = WorkflowEngine::new();
+        let browser = MockBrowser;
+        let handler = TestPauseHandler::new(PauseResponse::Continue);
+
+        let wf = WorkflowParser::parse(r#"
+name: no-pause-test
+steps:
+  - action: log
+    message: "step one"
+  - action: log
+    message: "step two"
+"#).unwrap();
+
+        let result = engine.execute_with_pause_handler(&wf, &browser, HashMap::new(), ResolvedDebugConfig::default(), &handler, None).await.unwrap();
+        assert!(result.success);
+        assert_eq!(handler.call_count(), 0, "Pause handler should NOT be called when pause is disabled");
+    }
+
+    #[tokio::test]
+    async fn test_default_pause_handler_always_continues() {
+        let handler = DefaultPauseHandler;
+        let response = handler.on_pause("wf", 0, "click", Some("button")).await;
+        assert_eq!(response, PauseResponse::Continue);
+    }
 }
