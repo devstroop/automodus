@@ -168,12 +168,19 @@ if ctx.debug.delay > 0 {
 ---
 
 ### Issue #7: Debug directory cleanup
-**Status:** ⬜ Not Started (deferred)  
-**File:** `src/utils/debug.rs` (new)  
+**Status:** ✅ Done  
+**File:** `src/utils/debug.rs`  
 **Depends:** #6  
 **Estimate:** 1-2 hours
 
-> **Note:** Deferred to future iteration - basic capture working.
+**Implemented:**
+- `CleanupPolicy` with `max_age`, `max_files`, `max_size_bytes` options
+- `cleanup_debug_dir()` — three-phase cleanup (age → count → size)
+- `debug clean` shell command (standalone + daemon)
+- `POST /api/debug/cleanup` API endpoint
+- `DebugClean` daemon protocol message
+- Engine now uses configurable `debug_dir` instead of hardcoded path
+- 5 unit tests for cleanup logic
 
 ---
 
@@ -430,6 +437,10 @@ Stateless shell connecting to daemon.
 - [x] Shell auto-detects running daemon; falls back to standalone mode
 - [x] Unified session store: `ServerState` delegates to `AppCore` (removed `ServerSession` + dual HashMap)
 
+> **⚠ Merge note (2026-02-22):** `feature/sub-workflows` branch reverts all #16 socket-protocol work
+> (deletes `protocol.rs`, stubs daemon handler, re-adds `ServerSession` dual store, removes shell-daemon wiring).
+> The sub-workflow `call` action itself is fine — the branch just needs rebasing onto current `main`.
+
 **Acceptance:**
 ```
 $ automodus shell
@@ -649,28 +660,33 @@ Final debug features.
 ## Backlog / Future
 
 ### Issue #29: Tab management
-**Status:** ⬜ Not Started  
+**Status:** ✅ Done  
 **File:** `src/modules/browser/actions/tabs.rs`  
 **Estimate:** 4-6 hours
 
 **Tasks:**
-- [ ] `tabs` - list open tabs
-- [ ] `tab <index>` - switch to tab
-- [ ] `tab new [url]` - open new tab
-- [ ] `tab close [index]` - close tab
-- [ ] Wire through shell and API
+- [x] `tabs` - list open tabs
+- [x] `tab <index>` - switch to tab
+- [x] `tab new [url]` - open new tab
+- [x] `tab close [index]` - close tab
+- [x] Wire through shell and API
+- [x] `TabListAction` workflow action
+- [x] Daemon protocol (`BrowserTabList`, `BrowserTabNew`, `BrowserTabSwitch`, `BrowserTabClose`)
+- [x] API endpoints (`GET/POST /api/browser/tabs`, `POST /api/browser/tabs/switch`, `DELETE /api/browser/tabs/:index`)
 
 ---
 
 ### Issue #30: PDF export
-**Status:** ⬜ Not Started  
+**Status:** ✅ Done  
 **File:** `src/modules/browser/adapter.rs`  
 **Estimate:** 2-3 hours
 
 **Tasks:**
-- [ ] Add `pdf [path]` command
-- [ ] Add `POST /api/browser/pdf` endpoint
-- [ ] Use CDP `Page.printToPDF`
+- [x] Add `pdf [path]` shell command
+- [x] Add `GET /api/browser/pdf` endpoint
+- [x] Use CDP `Page.printToPDF`
+- [x] `BrowserPdf` daemon protocol message
+- [x] `pdf()` method on `BrowserHandle` trait
 
 ---
 
