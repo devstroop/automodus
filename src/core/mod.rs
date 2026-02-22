@@ -9,5 +9,5 @@ pub mod template;
 
 pub use app::{AppCore, CoreEvent, Session, SessionError, SessionInfo};
 pub use context::ExecutionContext;
-pub use engine::{DefaultPauseHandler, PauseHandler, PauseResponse, WorkflowEngine, WorkflowResult};
+pub use engine::{DefaultPauseHandler, PauseHandler, PauseResponse, ShellPauseHandler, WorkflowEngine, WorkflowResult};
 pub use template::TemplateEngine;

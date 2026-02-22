@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::actions::{ActionError, ActionOutput, ActionRegistry, BrowserHandle};
@@ -58,6 +59,46 @@ impl PauseHandler for DefaultPauseHandler {
     }
 }
 
+/// Interactive pause handler that prompts on stdin.
+pub struct ShellPauseHandler;
+
+#[async_trait::async_trait]
+impl PauseHandler for ShellPauseHandler {
+    async fn on_pause(
+        &self,
+        workflow: &str,
+        step: usize,
+        action: &str,
+        selector: Option<&str>,
+    ) -> PauseResponse {
+        let sel = selector.unwrap_or("-");
+        println!(
+            "\n⏸  Paused at step {} ({}) selector={} in '{}'",
+            step, action, sel, workflow
+        );
+        println!("   [c]ontinue  [s]kip  [a]bort");
+
+        // Read from stdin on a blocking thread so we don't block the runtime
+        let response = tokio::task::spawn_blocking(|| {
+            loop {
+                let mut input = String::new();
+                if std::io::stdin().read_line(&mut input).is_err() {
+                    return PauseResponse::Continue;
+                }
+                match input.trim().to_lowercase().as_str() {
+                    "c" | "continue" | "" => return PauseResponse::Continue,
+                    "s" | "skip" => return PauseResponse::Skip,
+                    "a" | "abort" => return PauseResponse::Abort,
+                    _ => println!("   [c]ontinue  [s]kip  [a]bort"),
+                }
+            }
+        })
+        .await;
+
+        response.unwrap_or(PauseResponse::Continue)
+    }
+}
+
 /// Workflow execution error
 #[derive(Debug, Error)]
 pub enum WorkflowError {
@@ -81,6 +122,9 @@ pub enum WorkflowError {
 
     #[error("Workflow aborted: {0}")]
     Aborted(String),
+
+    #[error("Workflow cancelled")]
+    Cancelled,
 
     #[error("Invalid configuration: {0}")]
     InvalidConfig(String),
@@ -182,6 +226,7 @@ impl WorkflowEngine {
             params,
             debug_config,
             &DefaultPauseHandler,
+            None,
         )
         .await
     }
@@ -194,6 +239,7 @@ impl WorkflowEngine {
         params: HashMap<String, Value>,
         debug_config: ResolvedDebugConfig,
         pause_handler: &dyn PauseHandler,
+        cancel_token: Option<CancellationToken>,
     ) -> Result<WorkflowResult, WorkflowError> {
         let instance_id = uuid::Uuid::new_v4().to_string();
 
@@ -222,7 +268,7 @@ impl WorkflowEngine {
 
         // Execute steps
         let result = self
-            .execute_steps(workflow, browser, &mut ctx, &mut debug_screenshots, pause_handler)
+            .execute_steps(workflow, browser, &mut ctx, &mut debug_screenshots, pause_handler, &cancel_token)
             .await;
 
         // Build result
@@ -286,8 +332,16 @@ impl WorkflowEngine {
         ctx: &mut ExecutionContext,
         debug_screenshots: &mut Vec<String>,
         pause_handler: &dyn PauseHandler,
+        cancel_token: &Option<CancellationToken>,
     ) -> Result<Value, WorkflowError> {
         while ctx.step_index < workflow.steps.len() {
+            // Check cancellation before each step
+            if let Some(token) = cancel_token {
+                if token.is_cancelled() {
+                    return Err(WorkflowError::Cancelled);
+                }
+            }
+
             let step = &workflow.steps[ctx.step_index];
 
             // Merge step-level debug config with workflow-level
