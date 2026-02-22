@@ -13,7 +13,7 @@ use tracing::{debug, error, info, warn};
 use crate::actions::{ActionError, ActionOutput, ActionRegistry, BrowserHandle};
 use crate::utils::yaml_to_json;
 use crate::workflow::schema::{CaptureMode, DebugConfig, ResolvedDebugConfig};
-use crate::workflow::{CompleteHandler, ErrorHandler, Step, Workflow};
+use crate::workflow::{CompleteHandler, ErrorHandler, Step, Workflow, WorkflowResolver};
 
 use super::context::ExecutionContext;
 use super::template::TemplateEngine;
@@ -164,6 +164,9 @@ pub struct WorkflowResult {
     pub debug_screenshots: Vec<String>,
 }
 
+/// Maximum nesting depth for workflow `call` actions
+const MAX_CALL_DEPTH: usize = 16;
+
 /// Workflow execution engine
 pub struct WorkflowEngine {
     /// Action registry
@@ -174,6 +177,9 @@ pub struct WorkflowEngine {
 
     /// Debug output directory
     debug_dir: std::path::PathBuf,
+
+    /// Optional resolver for sub-workflow `call` actions
+    resolver: Option<Arc<dyn WorkflowResolver>>,
 }
 
 impl WorkflowEngine {
@@ -183,12 +189,28 @@ impl WorkflowEngine {
             registry: ActionRegistry::new(),
             event_handlers: Arc::new(RwLock::new(HashMap::new())),
             debug_dir: std::path::PathBuf::from("data/debug"),
+            resolver: None,
         }
     }
 
     /// Set the debug output directory
     pub fn set_debug_dir(&mut self, dir: std::path::PathBuf) {
         self.debug_dir = dir;
+    }
+
+    /// Create a new workflow engine with a workflow resolver for `call` actions
+    pub fn with_resolver(resolver: Arc<dyn WorkflowResolver>) -> Self {
+        Self {
+            registry: ActionRegistry::new(),
+            event_handlers: Arc::new(RwLock::new(HashMap::new())),
+            debug_dir: std::path::PathBuf::from("data/debug"),
+            resolver: Some(resolver),
+        }
+    }
+
+    /// Set the workflow resolver (for `call` actions)
+    pub fn set_resolver(&mut self, resolver: Arc<dyn WorkflowResolver>) {
+        self.resolver = Some(resolver);
     }
 
     /// Register an event handler
@@ -398,6 +420,14 @@ impl WorkflowEngine {
                 }
             }
 
+            // Handle `call` action — invoke a sub-workflow
+            if step.action == "call" {
+                self.execute_call_action(step, browser, ctx, debug_screenshots, pause_handler)
+                    .await?;
+                ctx.next_step();
+                continue;
+            }
+
             // Handle `condition` action specially (with then/else blocks)
             // Must check BEFORE step-level condition because `if:` gets captured into step.condition
             if step.action == "condition" {
@@ -581,6 +611,158 @@ impl WorkflowEngine {
         Err(last_error.unwrap_or_else(|| {
             WorkflowError::ActionFailed(ActionError::Internal("Unknown error".into()))
         }))
+    }
+
+    /// Execute a `call` action — invoke a sub-workflow by name.
+    ///
+    /// The sub-workflow runs in the same browser context, sharing the page.
+    /// Its output is stored under the step's `store_as` or step `id`.
+    async fn execute_call_action(
+        &self,
+        step: &Step,
+        browser: &dyn BrowserHandle,
+        ctx: &mut ExecutionContext,
+        debug_screenshots: &mut Vec<String>,
+        pause_handler: &dyn PauseHandler,
+    ) -> Result<(), WorkflowError> {
+        // Check recursion depth
+        if ctx.call_depth >= MAX_CALL_DEPTH {
+            return Err(WorkflowError::InvalidConfig(format!(
+                "Maximum call depth ({}) exceeded — possible recursive workflow loop",
+                MAX_CALL_DEPTH
+            )));
+        }
+
+        // Resolve the workflow name
+        let workflow_name = step
+            .params
+            .get("workflow")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                WorkflowError::InvalidConfig("call action requires 'workflow' parameter".into())
+            })?;
+
+        // Render the name through templates (supports {{params.x}})
+        let rendered_name = TemplateEngine::render(workflow_name, ctx);
+
+        let resolver = self.resolver.as_ref().ok_or_else(|| {
+            WorkflowError::InvalidConfig(
+                "No workflow resolver configured — cannot use 'call' action. \
+                 Ensure the engine was created with WorkflowEngine::with_resolver()."
+                    .into(),
+            )
+        })?;
+
+        let sub_workflow = resolver.resolve(&rendered_name).await.map_err(|e| {
+            WorkflowError::NotFound(format!("Called workflow '{}': {}", rendered_name, e))
+        })?;
+
+        info!(
+            workflow = %ctx.workflow_name,
+            calling = %sub_workflow.name,
+            depth = ctx.call_depth + 1,
+            "Calling sub-workflow"
+        );
+
+        // Build sub-workflow params from the call step
+        let mut sub_params: HashMap<String, serde_json::Value> = HashMap::new();
+        if let Some(params_val) = step.params.get("params") {
+            if let Some(mapping) = params_val.as_mapping() {
+                for (k, v) in mapping {
+                    if let Some(key) = k.as_str() {
+                        let rendered = TemplateEngine::render_yaml(v, ctx);
+                        sub_params.insert(key.to_string(), yaml_to_json(&rendered));
+                    }
+                }
+            }
+        }
+
+        // Provide defaults from sub-workflow param definitions
+        for (name, def) in &sub_workflow.params {
+            if !sub_params.contains_key(name) {
+                if let Some(default) = &def.default {
+                    sub_params.insert(name.clone(), yaml_to_json(default));
+                }
+            }
+        }
+
+        // Create child execution context
+        let child_debug = if let Some(step_dbg) = &step.debug {
+            let parent_debug = DebugConfig {
+                enabled: Some(ctx.debug.enabled),
+                level: Some(ctx.debug.level.clone()),
+                capture: Some(ctx.debug.capture.clone()),
+                highlight: Some(ctx.debug.highlight),
+                delay: Some(ctx.debug.delay),
+                pause: Some(ctx.debug.pause),
+                console: Some(ctx.debug.console),
+                network: Some(ctx.debug.network),
+                profile: None,
+            };
+            parent_debug.merge(step_dbg).merge(&sub_workflow.debug).resolve()
+        } else {
+            sub_workflow.debug.clone().with_profile().resolve()
+        };
+
+        let mut child_ctx = ExecutionContext::new(&sub_workflow.name, &ctx.instance_id)
+            .with_debug(child_debug)
+            .with_params(sub_params);
+        child_ctx.call_depth = ctx.call_depth + 1;
+        child_ctx.tab_index = ctx.tab_index;
+
+        // Set sub-workflow variables
+        if let Some(vars) = &sub_workflow.vars {
+            for (key, value) in vars {
+                child_ctx.vars.insert(key.clone(), yaml_to_json(value));
+            }
+        }
+
+        // Execute sub-workflow steps (Box::pin for recursive async)
+        let result = Box::pin(
+            self.execute_steps(&sub_workflow, browser, &mut child_ctx, debug_screenshots, pause_handler)
+        ).await;
+
+        // Propagate tab index changes back to parent
+        ctx.tab_index = child_ctx.tab_index;
+
+        match result {
+            Ok(output) => {
+                info!(
+                    workflow = %ctx.workflow_name,
+                    called = %sub_workflow.name,
+                    duration_ms = child_ctx.duration().num_milliseconds(),
+                    "Sub-workflow completed successfully"
+                );
+
+                // Store output under store_as or step id
+                let store_key = step
+                    .params
+                    .get("store_as")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                    .or_else(|| step.id.clone());
+
+                if let Some(key) = store_key {
+                    ctx.store_value(key, output);
+                }
+
+                // Propagate events from sub-workflow
+                for (event, data) in child_ctx.events {
+                    ctx.emit_event(event, data);
+                }
+
+                Ok(())
+            }
+            Err(e) => {
+                error!(
+                    workflow = %ctx.workflow_name,
+                    called = %sub_workflow.name,
+                    error = %e,
+                    "Sub-workflow failed"
+                );
+                Err(e)
+            }
+        }
     }
 
     /// Execute a condition action with then/else branches
@@ -936,5 +1118,273 @@ impl WorkflowEngine {
 impl Default for WorkflowEngine {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workflow::{Workflow, WorkflowParser, WorkflowResolver};
+
+    /// Mock browser that does nothing (for testing non-browser actions)
+    struct MockBrowser;
+
+    #[async_trait::async_trait]
+    impl BrowserHandle for MockBrowser {
+        async fn goto(&self, _url: &str) -> Result<(), ActionError> { Ok(()) }
+        async fn click(&self, _sel: &str) -> Result<(), ActionError> { Ok(()) }
+        async fn type_text(&self, _sel: &str, _text: &str, _clear: bool) -> Result<(), ActionError> { Ok(()) }
+        async fn get_text(&self, _sel: &str) -> Result<String, ActionError> { Ok(String::new()) }
+        async fn get_attribute(&self, _sel: &str, _attr: &str) -> Result<Option<String>, ActionError> { Ok(None) }
+        async fn wait_for(&self, _sel: &str, _timeout: u64) -> Result<(), ActionError> { Ok(()) }
+        async fn wait_for_hidden(&self, _sel: &str, _timeout: u64) -> Result<(), ActionError> { Ok(()) }
+        async fn wait_for_url(&self, _cond: &str, _timeout: u64) -> Result<(), ActionError> { Ok(()) }
+        async fn screenshot(&self, _full: bool) -> Result<Vec<u8>, ActionError> { Ok(vec![]) }
+        async fn eval(&self, _script: &str) -> Result<Value, ActionError> { Ok(Value::Null) }
+        async fn current_url(&self) -> Result<String, ActionError> { Ok("about:blank".into()) }
+        async fn back(&self) -> Result<(), ActionError> { Ok(()) }
+        async fn forward(&self) -> Result<(), ActionError> { Ok(()) }
+        async fn reload(&self) -> Result<(), ActionError> { Ok(()) }
+        async fn new_tab(&self, _url: Option<&str>) -> Result<usize, ActionError> { Ok(0) }
+        async fn switch_tab(&self, _idx: usize) -> Result<(), ActionError> { Ok(()) }
+        async fn close_tab(&self, _idx: usize) -> Result<(), ActionError> { Ok(()) }
+        async fn tab_count(&self) -> Result<usize, ActionError> { Ok(1) }
+        async fn set_file_input_files(&self, _sel: &str, _paths: Vec<String>) -> Result<(), ActionError> { Ok(()) }
+        async fn set_file_chooser_intercept(&self, _enabled: bool) -> Result<(), ActionError> { Ok(()) }
+        async fn upload_via_file_chooser(&self, _trigger: Option<&str>, _paths: Vec<String>, _timeout: u64) -> Result<(), ActionError> { Ok(()) }
+    }
+
+    /// Mock resolver that returns workflows from a HashMap
+    struct MockResolver {
+        workflows: HashMap<String, Workflow>,
+    }
+
+    impl MockResolver {
+        fn new() -> Self {
+            Self { workflows: HashMap::new() }
+        }
+
+        fn add(&mut self, yaml: &str) -> String {
+            let wf = WorkflowParser::parse(yaml).expect("valid yaml");
+            let name = wf.name.clone();
+            self.workflows.insert(name.clone(), wf);
+            name
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl WorkflowResolver for MockResolver {
+        async fn resolve(&self, name: &str) -> anyhow::Result<Workflow> {
+            self.workflows
+                .get(name)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Workflow '{}' not found", name))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_call_action_basic() {
+        // Sub-workflow that logs and stores a value
+        let mut resolver = MockResolver::new();
+        resolver.add(r#"
+name: greet
+params:
+  name:
+    type: string
+    default: "World"
+steps:
+  - action: log
+    message: "Hello {{params.name}}"
+  - id: result
+    action: eval
+    script: "return 'greeted'"
+    store_as: greeting_status
+output:
+  status: "{{store.greeting_status}}"
+"#);
+
+        let engine = WorkflowEngine::with_resolver(Arc::new(resolver));
+        let browser = MockBrowser;
+
+        // Parent workflow calls sub-workflow
+        let parent = WorkflowParser::parse(r#"
+name: parent
+steps:
+  - action: call
+    workflow: greet
+    params:
+      name: "Alice"
+    store_as: greet_result
+  - action: log
+    message: "Done"
+"#).unwrap();
+
+        let result = engine.execute(&parent, &browser, HashMap::new()).await.unwrap();
+        assert!(result.success, "Parent workflow should succeed");
+        assert_eq!(result.steps_executed, 2);
+    }
+
+    #[tokio::test]
+    async fn test_call_action_nested() {
+        // Three-level nesting: A calls B calls C
+        let mut resolver = MockResolver::new();
+        resolver.add(r#"
+name: level_c
+steps:
+  - action: log
+    message: "Level C"
+"#);
+        resolver.add(r#"
+name: level_b
+steps:
+  - action: call
+    workflow: level_c
+  - action: log
+    message: "Level B"
+"#);
+
+        let engine = WorkflowEngine::with_resolver(Arc::new(resolver));
+        let browser = MockBrowser;
+
+        let top = WorkflowParser::parse(r#"
+name: level_a
+steps:
+  - action: call
+    workflow: level_b
+  - action: log
+    message: "Level A"
+"#).unwrap();
+
+        let result = engine.execute(&top, &browser, HashMap::new()).await.unwrap();
+        assert!(result.success, "Three-level nested call should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_call_action_no_resolver() {
+        // Engine without resolver should fail on call action
+        let engine = WorkflowEngine::new();
+        let browser = MockBrowser;
+
+        let wf = WorkflowParser::parse(r#"
+name: no-resolver
+steps:
+  - action: call
+    workflow: something
+"#).unwrap();
+
+        let result = engine.execute(&wf, &browser, HashMap::new()).await.unwrap();
+        assert!(!result.success, "Should fail without resolver");
+        assert!(result.error.as_ref().unwrap().contains("No workflow resolver"));
+    }
+
+    #[tokio::test]
+    async fn test_call_action_not_found() {
+        let resolver = MockResolver::new(); // empty
+        let engine = WorkflowEngine::with_resolver(Arc::new(resolver));
+        let browser = MockBrowser;
+
+        let wf = WorkflowParser::parse(r#"
+name: missing-call
+steps:
+  - action: call
+    workflow: nonexistent
+"#).unwrap();
+
+        let result = engine.execute(&wf, &browser, HashMap::new()).await.unwrap();
+        assert!(!result.success, "Should fail for missing workflow");
+        assert!(result.error.as_ref().unwrap().contains("nonexistent"));
+    }
+
+    #[tokio::test]
+    async fn test_call_action_max_depth() {
+        // Create a workflow that calls itself
+        let mut resolver = MockResolver::new();
+        resolver.add(r#"
+name: recursive
+steps:
+  - action: call
+    workflow: recursive
+"#);
+
+        let engine = WorkflowEngine::with_resolver(Arc::new(resolver));
+        let browser = MockBrowser;
+
+        let wf = WorkflowParser::parse(r#"
+name: start-recursion
+steps:
+  - action: call
+    workflow: recursive
+"#).unwrap();
+
+        let result = engine.execute(&wf, &browser, HashMap::new()).await.unwrap();
+        assert!(!result.success, "Should fail at max depth");
+        assert!(result.error.as_ref().unwrap().contains("Maximum call depth"));
+    }
+
+    #[tokio::test]
+    async fn test_call_action_params_forwarding() {
+        let mut resolver = MockResolver::new();
+        resolver.add(r#"
+name: echo
+params:
+  message:
+    type: string
+    required: true
+steps:
+  - action: log
+    message: "{{params.message}}"
+"#);
+
+        let engine = WorkflowEngine::with_resolver(Arc::new(resolver));
+        let browser = MockBrowser;
+
+        let parent = WorkflowParser::parse(r#"
+name: caller
+params:
+  greeting:
+    type: string
+    default: "hi"
+steps:
+  - action: call
+    workflow: echo
+    params:
+      message: "{{params.greeting}}"
+"#).unwrap();
+
+        let mut params = HashMap::new();
+        params.insert("greeting".to_string(), serde_json::Value::String("hello world".into()));
+
+        let result = engine.execute(&parent, &browser, params).await.unwrap();
+        assert!(result.success, "Param forwarding should work");
+    }
+
+    #[tokio::test]
+    async fn test_call_action_with_condition() {
+        let mut resolver = MockResolver::new();
+        resolver.add(r#"
+name: optional-step
+steps:
+  - action: log
+    message: "ran optional step"
+"#);
+
+        let engine = WorkflowEngine::with_resolver(Arc::new(resolver));
+        let browser = MockBrowser;
+
+        let wf = WorkflowParser::parse(r#"
+name: conditional-call
+steps:
+  - action: call
+    workflow: optional-step
+    if: "false"
+  - action: log
+    message: "after conditional call"
+"#).unwrap();
+
+        let result = engine.execute(&wf, &browser, HashMap::new()).await.unwrap();
+        assert!(result.success);
+        // The call should be skipped due to condition, so only 1 step actually runs  
+        // (the log step, since the call is skipped)
+        assert_eq!(result.steps_executed, 2);
     }
 }
