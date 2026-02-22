@@ -36,6 +36,11 @@ use super::state::{create_state, ServerState};
         run_workflow_handler,
         screenshot_handler,
         goto_handler,
+        click_handler,
+        type_handler,
+        wait_handler,
+        eval_handler,
+        page_info_handler,
     ),
     components(schemas(
         HealthResponse,
@@ -46,6 +51,12 @@ use super::state::{create_state, ServerState};
         RunWorkflowResponse,
         GotoRequest,
         GotoResponse,
+        ClickRequest,
+        TypeRequest,
+        WaitRequest,
+        EvalRequest,
+        BrowserActionResponse,
+        PageInfoResponse,
     )),
     tags(
         (name = "health", description = "Health check endpoints"),
@@ -59,7 +70,7 @@ pub struct ApiDoc;
 pub fn create_router(state: Arc<ServerState>) -> Router {
     // CORS configuration
     let cors = CorsLayer::new()
-        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
         .allow_headers(Any)
         .allow_origin(Any);
 
@@ -74,6 +85,11 @@ pub fn create_router(state: Arc<ServerState>) -> Router {
         // Browser endpoints
         .route("/api/browser/screenshot", get(screenshot_handler))
         .route("/api/browser/goto", post(goto_handler))
+        .route("/api/browser/click", post(click_handler))
+        .route("/api/browser/type", post(type_handler))
+        .route("/api/browser/wait", post(wait_handler))
+        .route("/api/browser/eval", post(eval_handler))
+        .route("/api/browser/page", get(page_info_handler))
         // State
         .with_state(state)
         // Swagger UI

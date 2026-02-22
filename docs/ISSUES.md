@@ -491,18 +491,18 @@ Full API parity with shell.
 ---
 
 ### Issue #21: Browser control API endpoints
-**Status:** ⬜ Not Started  
+**Status:** ✅ Done  
 **File:** `src/api/handlers.rs`  
 **Depends:** #12  
 **Estimate:** 4-6 hours
 
 **Tasks:**
-- [ ] `POST /api/browser/click` - click element
-- [ ] `POST /api/browser/type` - type into element
-- [ ] `POST /api/browser/wait` - wait for element
-- [ ] `POST /api/browser/eval` - execute JavaScript
-- [ ] `GET /api/browser/page` - get page info
-- [ ] Add to OpenAPI schema
+- [x] `POST /api/browser/click` - click element
+- [x] `POST /api/browser/type` - type into element
+- [x] `POST /api/browser/wait` - wait for element
+- [x] `POST /api/browser/eval` - execute JavaScript
+- [x] `GET /api/browser/page` - get page info
+- [x] Add to OpenAPI schema
 
 ---
 

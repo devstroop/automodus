@@ -124,3 +124,121 @@ impl ErrorResponse {
         }
     }
 }
+
+// ============================================================================
+// Sessions
+// ============================================================================
+
+/// Request to create a new session
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateSessionRequest {
+    /// Optional session name
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Keep browser alive between workflows
+    #[serde(default)]
+    pub keep_alive: bool,
+}
+
+/// Session information
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SessionInfo {
+    /// Session ID
+    pub id: String,
+    /// Optional session name
+    pub name: Option<String>,
+    /// Creation timestamp (ISO 8601)
+    pub created_at: String,
+    /// Last activity timestamp (ISO 8601)
+    pub last_activity: String,
+    /// Keep browser alive between workflows
+    pub keep_alive: bool,
+}
+
+/// Response for listing sessions
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SessionListResponse {
+    /// List of active sessions
+    pub sessions: Vec<SessionInfo>,
+}
+
+/// Response for creating a session
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CreateSessionResponse {
+    /// Whether creation succeeded
+    pub success: bool,
+    /// Session ID
+    pub id: Option<String>,
+    /// Error message if failed
+    pub error: Option<String>,
+}
+
+/// Response for deleting a session
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DeleteSessionResponse {
+    /// Whether deletion succeeded
+    pub success: bool,
+    /// Error message if failed
+    pub error: Option<String>,
+}
+
+// ============================================================================
+// Browser Control
+// ============================================================================
+
+/// Request to click an element
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ClickRequest {
+    /// CSS selector for the element
+    pub selector: String,
+}
+
+/// Request to type into an element
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct TypeRequest {
+    /// CSS selector for the element
+    pub selector: String,
+    /// Text to type
+    pub text: String,
+}
+
+/// Request to wait for an element
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct WaitRequest {
+    /// CSS selector for the element
+    pub selector: String,
+    /// Timeout in milliseconds
+    #[serde(default = "default_timeout")]
+    pub timeout: u64,
+}
+
+fn default_timeout() -> u64 {
+    30000
+}
+
+/// Request to evaluate JavaScript
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct EvalRequest {
+    /// JavaScript code to execute
+    pub script: String,
+}
+
+/// Response from browser actions
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BrowserActionResponse {
+    /// Whether action succeeded
+    pub success: bool,
+    /// Optional result data
+    pub result: Option<serde_json::Value>,
+    /// Error message if failed
+    pub error: Option<String>,
+}
+
+/// Page information
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PageInfoResponse {
+    /// Current page URL
+    pub url: String,
+    /// Page title
+    pub title: String,
+}
