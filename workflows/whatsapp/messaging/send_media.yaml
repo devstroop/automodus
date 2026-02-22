@@ -41,51 +41,33 @@ vars:
   send_media_button: "div[aria-label='Send']"
 
 steps:
-  # 1. Ensure we're on WhatsApp Web
-  - id: navigate
-    action: goto
-    url: "{{vars.whatsapp_url}}"
-
-  # 2. Check authorization
-  - id: check_auth
-    action: eval
-    script: "document.querySelector('#pane-side') !== null"
-    store_as: is_authenticated
+  # 1. Ensure WhatsApp Web is ready
+  - action: call
+    workflow: _common/ensure_ready
+    store_as: ready
 
   - action: condition
-    if: "{{store.is_authenticated}} == false"
+    if: "{{store.ready.authorized}} == false"
     then:
       - action: eval
         script: "({ status: 'not_authenticated', success: false })"
         store_as: result
     else:
-      # 3. Navigate to chat
-      - id: navigate_to_chat
-        action: eval
-        script: |
-          (function() {
-            var phone = '{{params.phone}}'.replace(/[^\d+]/g, '').replace(/^\+/, '');
-            var loader = document.querySelector('#phoneLoaderParent');
-            if (!loader) {
-              document.querySelector('#pane-side').innerHTML += '<div id="phoneLoaderParent"></div>';
-            }
-            document.querySelector('#phoneLoaderParent').innerHTML = 
-              '<a id="phoneLoader" href="https://api.whatsapp.com/send?phone=' + phone + '" style="display:none"></a>';
-            document.querySelector('#phoneLoader').click();
-            document.querySelector('#phoneLoaderParent').remove();
-            return true;
-          })();
+      # 2. Open chat by phone number
+      - action: call
+        workflow: _common/open_chat
+        params:
+          phone: "{{params.phone}}"
+        store_as: chat
 
-      - action: sleep
-        duration: "2s"
-
-      # 4. Wait for message input (indicates chat is open)
-      - id: wait_for_chat
-        action: wait_for
-        selector: "#app #main footer div[aria-placeholder='Type a message']"
-        timeout: "10s"
-
-      # 5. Click attach button
+      - action: condition
+        if: "{{store.chat.success}} == false"
+        then:
+          - action: eval
+            script: "({ status: 'chat_not_found', success: false, error: '{{store.chat.error}}' })"
+            store_as: result
+        else:
+          # 3. Click attach button
       - id: click_attach
         action: eval
         script: |

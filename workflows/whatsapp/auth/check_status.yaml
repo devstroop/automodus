@@ -20,9 +20,10 @@ vars:
   whatsapp_url: "https://web.whatsapp.com"
 
 steps:
-  - id: navigate
-    action: goto
-    url: "{{vars.whatsapp_url}}"
+  # 1. Ensure WhatsApp Web is loaded
+  - action: call
+    workflow: _common/ensure_ready
+    store_as: ready
 
   - id: check_auth
     action: eval
