@@ -789,6 +789,9 @@ async fn run_workflow(
     // Create adapter and engine
     let browser_ref = Arc::new(tokio::sync::Mutex::new(Some(browser)));
     let adapter = ChromePageAdapter::with_browser(page, browser_ref);
+    if let Err(e) = adapter.start_console_listener().await {
+        eprintln!("Warning: failed to start console listener: {}", e);
+    }
     let engine = WorkflowEngine::new();
 
     println!("\n▶ Executing workflow...\n");
@@ -900,6 +903,9 @@ async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
     // Create adapter and engine (reused across flows)
     let browser_ref = Arc::new(tokio::sync::Mutex::new(Some(browser)));
     let adapter = ChromePageAdapter::with_browser(page, browser_ref);
+    if let Err(e) = adapter.start_console_listener().await {
+        eprintln!("Warning: failed to start console listener: {}", e);
+    }
     let engine = WorkflowEngine::new();
 
     // Create AppCore for session management
