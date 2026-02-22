@@ -79,6 +79,9 @@ impl ServerState {
     /// Create a new server state with a shared AppCore
     pub fn with_core(config: AppConfig, core: Arc<AppCore>) -> Self {
         let (event_tx, _) = tokio::sync::broadcast::channel(256);
+        let workflows_dir = std::env::var("AUTOMODUS_WORKFLOWS")
+            .unwrap_or_else(|_| "workflows".to_string());
+        let loader = Arc::new(crate::workflow::WorkflowLoader::new(&workflows_dir));
 
         // Bridge CoreEvent → ServerEvent so WebSocket clients receive daemon events
         let mut core_rx = core.subscribe();
@@ -101,7 +104,7 @@ impl ServerState {
 
         Self {
             core,
-            engine: WorkflowEngine::new(),
+            engine: WorkflowEngine::with_resolver(loader),
             workflows: RwLock::new(HashMap::new()),
             config,
             executions: RwLock::new(HashMap::new()),
