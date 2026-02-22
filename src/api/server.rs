@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use axum::http::Method;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::Router;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{info, warn};
@@ -41,6 +41,10 @@ use super::state::{create_state, ServerState};
         wait_handler,
         eval_handler,
         page_info_handler,
+        create_session_handler,
+        list_sessions_handler,
+        get_session_handler,
+        delete_session_handler,
     ),
     components(schemas(
         HealthResponse,
@@ -57,11 +61,17 @@ use super::state::{create_state, ServerState};
         EvalRequest,
         BrowserActionResponse,
         PageInfoResponse,
+        CreateSessionRequest,
+        CreateSessionResponse,
+        SessionInfo,
+        SessionListResponse,
+        DeleteSessionResponse,
     )),
     tags(
         (name = "health", description = "Health check endpoints"),
         (name = "workflows", description = "Workflow management and execution"),
-        (name = "browser", description = "Browser control endpoints")
+        (name = "browser", description = "Browser control endpoints"),
+        (name = "sessions", description = "Session management endpoints")
     )
 )]
 pub struct ApiDoc;
@@ -90,6 +100,11 @@ pub fn create_router(state: Arc<ServerState>) -> Router {
         .route("/api/browser/wait", post(wait_handler))
         .route("/api/browser/eval", post(eval_handler))
         .route("/api/browser/page", get(page_info_handler))
+        // Session endpoints
+        .route("/api/sessions", post(create_session_handler))
+        .route("/api/sessions", get(list_sessions_handler))
+        .route("/api/sessions/:id", get(get_session_handler))
+        .route("/api/sessions/:id", delete(delete_session_handler))
         // State
         .with_state(state)
         // Swagger UI

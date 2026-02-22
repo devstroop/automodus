@@ -476,17 +476,17 @@ automodus> [UP ARROW]  # Shows: goto https://example.com
 Full API parity with shell.
 
 ### Issue #20: Session API endpoints
-**Status:** ⬜ Not Started  
-**File:** `src/api/handlers.rs`  
+**Status:** ✅ Done  
+**File:** `src/api/handlers.rs`, `src/api/state.rs`  
 **Depends:** #13  
 **Estimate:** 3-4 hours
 
 **Tasks:**
-- [ ] `POST /api/sessions` - create session (with `keep_alive` option)
-- [ ] `GET /api/sessions` - list sessions
-- [ ] `GET /api/sessions/:id` - get session info
-- [ ] `DELETE /api/sessions/:id` - close session
-- [ ] Add to OpenAPI schema
+- [x] `POST /api/sessions` - create session (with `keep_alive` option)
+- [x] `GET /api/sessions` - list sessions
+- [x] `GET /api/sessions/:id` - get session info
+- [x] `DELETE /api/sessions/:id` - close session
+- [x] Add to OpenAPI schema
 
 ---
 

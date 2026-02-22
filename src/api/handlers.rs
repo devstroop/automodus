@@ -508,3 +508,134 @@ pub async fn page_info_handler(State(state): State<Arc<ServerState>>) -> impl In
         Json(serde_json::json!(PageInfoResponse { url, title })),
     )
 }
+
+// ============================================================================
+// Sessions
+// ============================================================================
+
+/// Create a new session
+#[utoipa::path(
+    post,
+    path = "/api/sessions",
+    tag = "sessions",
+    request_body = CreateSessionRequest,
+    responses(
+        (status = 200, description = "Session created", body = CreateSessionResponse),
+        (status = 400, description = "Failed to create session")
+    )
+)]
+pub async fn create_session_handler(
+    State(state): State<Arc<ServerState>>,
+    Json(request): Json<CreateSessionRequest>,
+) -> impl IntoResponse {
+    match state.create_session(request.name, request.keep_alive).await {
+        Ok(session) => Json(CreateSessionResponse {
+            success: true,
+            id: Some(session.id),
+            error: None,
+        }),
+        Err(e) => Json(CreateSessionResponse {
+            success: false,
+            id: None,
+            error: Some(e),
+        }),
+    }
+}
+
+/// List all sessions
+#[utoipa::path(
+    get,
+    path = "/api/sessions",
+    tag = "sessions",
+    responses(
+        (status = 200, description = "List of active sessions", body = SessionListResponse)
+    )
+)]
+pub async fn list_sessions_handler(State(state): State<Arc<ServerState>>) -> impl IntoResponse {
+    let sessions = state.list_sessions().await;
+
+    let session_list: Vec<SessionInfo> = sessions
+        .into_iter()
+        .map(|s| SessionInfo {
+            id: s.id,
+            name: s.name,
+            created_at: s.created_at.to_rfc3339(),
+            last_activity: s.last_activity.to_rfc3339(),
+            keep_alive: s.keep_alive,
+        })
+        .collect();
+
+    Json(SessionListResponse {
+        sessions: session_list,
+    })
+}
+
+/// Get session by ID
+#[utoipa::path(
+    get,
+    path = "/api/sessions/{id}",
+    tag = "sessions",
+    params(
+        ("id" = String, Path, description = "Session ID")
+    ),
+    responses(
+        (status = 200, description = "Session details", body = SessionInfo),
+        (status = 404, description = "Session not found")
+    )
+)]
+pub async fn get_session_handler(
+    State(state): State<Arc<ServerState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.get_session(&id).await {
+        Some(session) => (
+            StatusCode::OK,
+            Json(serde_json::json!(SessionInfo {
+                id: session.id,
+                name: session.name,
+                created_at: session.created_at.to_rfc3339(),
+                last_activity: session.last_activity.to_rfc3339(),
+                keep_alive: session.keep_alive,
+            })),
+        ),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": format!("Session '{}' not found", id)})),
+        ),
+    }
+}
+
+/// Delete a session
+#[utoipa::path(
+    delete,
+    path = "/api/sessions/{id}",
+    tag = "sessions",
+    params(
+        ("id" = String, Path, description = "Session ID")
+    ),
+    responses(
+        (status = 200, description = "Session deleted", body = DeleteSessionResponse),
+        (status = 404, description = "Session not found")
+    )
+)]
+pub async fn delete_session_handler(
+    State(state): State<Arc<ServerState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.close_session(&id).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(DeleteSessionResponse {
+                success: true,
+                error: None,
+            }),
+        ),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(DeleteSessionResponse {
+                success: false,
+                error: Some(e),
+            }),
+        ),
+    }
+}
