@@ -35,7 +35,10 @@ impl WorkflowLoader {
         // Ensure directory exists
         if !self.workflows_dir.exists() {
             std::fs::create_dir_all(&self.workflows_dir).with_context(|| {
-                format!("Failed to create workflows directory: {:?}", self.workflows_dir)
+                format!(
+                    "Failed to create workflows directory: {:?}",
+                    self.workflows_dir
+                )
             })?;
             return Ok(loaded);
         }
@@ -82,7 +85,11 @@ impl WorkflowLoader {
             }
         }
 
-        tracing::info!("Loaded {} workflows from {:?}", loaded.len(), self.workflows_dir);
+        tracing::info!(
+            "Loaded {} workflows from {:?}",
+            loaded.len(),
+            self.workflows_dir
+        );
         Ok(loaded)
     }
 
@@ -161,7 +168,8 @@ impl WorkflowLoader {
     pub async fn save(&self, workflow: &Workflow) -> Result<PathBuf> {
         let path = self.workflows_dir.join(format!("{}.yaml", workflow.name));
 
-        let yaml = serde_yaml::to_string(workflow).context("Failed to serialize workflow to YAML")?;
+        let yaml =
+            serde_yaml::to_string(workflow).context("Failed to serialize workflow to YAML")?;
 
         std::fs::write(&path, yaml)
             .with_context(|| format!("Failed to write workflow to {:?}", path))?;

@@ -233,7 +233,11 @@ impl HttpClient {
     /// Convert reqwest Response to HttpResponse
     async fn convert_response(&self, response: Response) -> Result<HttpResponse, HttpError> {
         let status = response.status().as_u16();
-        let status_text = response.status().canonical_reason().unwrap_or("").to_string();
+        let status_text = response
+            .status()
+            .canonical_reason()
+            .unwrap_or("")
+            .to_string();
         let ok = response.status().is_success();
         let url = response.url().to_string();
 
@@ -304,7 +308,7 @@ mod tests {
         };
         let client = HttpClient::with_config(config.clone());
         assert!(client.is_ok());
-        
+
         let client = client.unwrap();
         assert_eq!(client.config().timeout_ms, 5000);
         assert!(!client.config().follow_redirects);
@@ -314,12 +318,12 @@ mod tests {
     fn test_config_with_default_headers() {
         let mut headers = HashMap::new();
         headers.insert("X-Custom-Header".to_string(), "test-value".to_string());
-        
+
         let config = HttpConfig {
             default_headers: headers,
             ..Default::default()
         };
-        
+
         let client = HttpClient::with_config(config);
         assert!(client.is_ok());
     }
@@ -343,10 +347,10 @@ mod tests {
     #[tokio::test]
     async fn test_http_get_request() {
         let client = HttpClient::new().unwrap();
-        
+
         // Use httpbin.org for testing
         let response = client.get("https://httpbin.org/get", None).await;
-        
+
         assert!(response.is_ok(), "GET request should succeed");
         let response = response.unwrap();
         assert_eq!(response.status, 200);
@@ -357,21 +361,21 @@ mod tests {
     #[tokio::test]
     async fn test_http_post_request() {
         let client = HttpClient::new().unwrap();
-        
+
         let body = serde_json::json!({
             "name": "test",
             "value": 42
         });
-        
+
         let response = client
             .post("https://httpbin.org/post", None, Some(body.clone()))
             .await;
-        
+
         assert!(response.is_ok(), "POST request should succeed");
         let response = response.unwrap();
         assert_eq!(response.status, 200);
         assert!(response.ok);
-        
+
         // httpbin echoes back the JSON we sent
         let echoed = &response.body["json"];
         assert_eq!(echoed["name"], "test");
@@ -381,17 +385,17 @@ mod tests {
     #[tokio::test]
     async fn test_http_request_with_headers() {
         let client = HttpClient::new().unwrap();
-        
+
         let mut headers = HashMap::new();
         headers.insert("X-Test-Header".to_string(), "test-value".to_string());
-        
+
         let response = client
             .get("https://httpbin.org/headers", Some(headers))
             .await;
-        
+
         assert!(response.is_ok());
         let response = response.unwrap();
-        
+
         // httpbin echoes back our headers
         let echoed_headers = &response.body["headers"];
         assert_eq!(echoed_headers["X-Test-Header"], "test-value");
@@ -400,11 +404,9 @@ mod tests {
     #[tokio::test]
     async fn test_http_404_response() {
         let client = HttpClient::new().unwrap();
-        
-        let response = client
-            .get("https://httpbin.org/status/404", None)
-            .await;
-        
+
+        let response = client.get("https://httpbin.org/status/404", None).await;
+
         assert!(response.is_ok(), "Should not error on 404");
         let response = response.unwrap();
         assert_eq!(response.status, 404);
@@ -414,9 +416,9 @@ mod tests {
     #[tokio::test]
     async fn test_http_invalid_url() {
         let client = HttpClient::new().unwrap();
-        
+
         let response = client.get("not-a-valid-url", None).await;
-        
+
         assert!(response.is_err(), "Invalid URL should error");
     }
 }

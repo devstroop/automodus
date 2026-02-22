@@ -28,7 +28,9 @@ pub fn yaml_to_json(yaml: &serde_yaml::Value) -> Value {
             } else if let Some(u) = n.as_u64() {
                 Value::Number(u.into())
             } else if let Some(f) = n.as_f64() {
-                Value::Number(serde_json::Number::from_f64(f).unwrap_or(serde_json::Number::from(0)))
+                Value::Number(
+                    serde_json::Number::from_f64(f).unwrap_or(serde_json::Number::from(0)),
+                )
             } else {
                 Value::Null
             }
@@ -65,9 +67,7 @@ pub fn json_to_yaml(json: &Value) -> serde_yaml::Value {
             }
         }
         Value::String(s) => serde_yaml::Value::String(s.clone()),
-        Value::Array(arr) => {
-            serde_yaml::Value::Sequence(arr.iter().map(json_to_yaml).collect())
-        }
+        Value::Array(arr) => serde_yaml::Value::Sequence(arr.iter().map(json_to_yaml).collect()),
         Value::Object(obj) => {
             let mut map = serde_yaml::Mapping::new();
             for (k, v) in obj {

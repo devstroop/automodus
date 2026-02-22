@@ -111,7 +111,10 @@ pub fn build_browser_config(options: &LaunchOptions) -> Result<BrowserConfig, St
     }
 
     // Add user data dir
-    builder = builder.arg(format!("--user-data-dir={}", options.user_data_dir.display()));
+    builder = builder.arg(format!(
+        "--user-data-dir={}",
+        options.user_data_dir.display()
+    ));
 
     // Add extra args
     for arg in &options.extra_args {
@@ -156,7 +159,10 @@ pub async fn launch_browser(options: &LaunchOptions) -> Result<Browser, String> 
 }
 
 /// Get or create a page in the browser
-pub async fn get_or_create_page(browser: &Browser, url: Option<&str>) -> Result<chromiumoxide::page::Page, String> {
+pub async fn get_or_create_page(
+    browser: &Browser,
+    url: Option<&str>,
+) -> Result<chromiumoxide::page::Page, String> {
     // Wait a bit for browser to settle
     tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
 

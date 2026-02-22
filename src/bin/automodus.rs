@@ -246,7 +246,8 @@ async fn run_workflow(
     let headless = workflow.browser.headless;
 
     // Create temp user data dir to ensure clean profile
-    let temp_profile = std::env::temp_dir().join(format!("automodus-workflow-{}", std::process::id()));
+    let temp_profile =
+        std::env::temp_dir().join(format!("automodus-workflow-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&temp_profile);
 
     let mut browser_config = BrowserConfig::builder();
@@ -510,8 +511,8 @@ async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             "list" | "ls" => {
-                let workflows_dir =
-                    std::env::var("AUTOMODUS_WORKFLOWS").unwrap_or_else(|_| "workflows".to_string());
+                let workflows_dir = std::env::var("AUTOMODUS_WORKFLOWS")
+                    .unwrap_or_else(|_| "workflows".to_string());
                 println!("Workflows in {}:", workflows_dir);
 
                 if let Ok(entries) = glob::glob(&format!("{}/**/*.yaml", workflows_dir)) {
@@ -565,7 +566,11 @@ async fn run_workflow_with_adapter(
     let content = std::fs::read_to_string(path)?;
     let workflow = WorkflowParser::parse(&content)?;
 
-    println!("✓ Workflow '{}' loaded ({} steps)", workflow.name, workflow.steps.len());
+    println!(
+        "✓ Workflow '{}' loaded ({} steps)",
+        workflow.name,
+        workflow.steps.len()
+    );
     println!("▶ Executing...\n");
 
     // Build params from workflow defaults + extra params
@@ -679,7 +684,8 @@ fn validate_single_workflow(path: &std::path::Path) -> Result<(), Box<dyn std::e
 }
 
 async fn list_workflows() -> Result<(), Box<dyn std::error::Error>> {
-    let workflows_dir = std::env::var("AUTOMODUS_WORKFLOWS").unwrap_or_else(|_| "workflows".to_string());
+    let workflows_dir =
+        std::env::var("AUTOMODUS_WORKFLOWS").unwrap_or_else(|_| "workflows".to_string());
 
     println!("Workflows in {}:\n", workflows_dir);
 
@@ -733,4 +739,3 @@ fn describe_triggers(workflow: &automodus::workflow::Workflow) -> String {
         triggers.join(", ")
     }
 }
-

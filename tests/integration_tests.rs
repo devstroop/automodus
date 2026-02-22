@@ -42,7 +42,10 @@ mod health_tests {
             .send()
             .await?;
 
-        assert!(response.status().is_success(), "Health check should succeed");
+        assert!(
+            response.status().is_success(),
+            "Health check should succeed"
+        );
 
         let body: Value = response.json().await?;
 
@@ -96,8 +99,14 @@ mod workflow_tests {
 
         for workflow in workflows {
             assert!(workflow["name"].is_string(), "Workflow should have name");
-            assert!(workflow["steps"].is_number(), "Workflow should have steps count");
-            assert!(workflow["params"].is_array(), "Workflow should have params array");
+            assert!(
+                workflow["steps"].is_number(),
+                "Workflow should have steps count"
+            );
+            assert!(
+                workflow["params"].is_array(),
+                "Workflow should have params array"
+            );
             println!("  - {}", workflow["name"]);
         }
 
@@ -238,7 +247,10 @@ mod workflow_tests {
             body["workflow_name"].is_string(),
             "Should have workflow_name field"
         );
-        assert!(body["duration_ms"].is_number(), "Should have duration_ms field");
+        assert!(
+            body["duration_ms"].is_number(),
+            "Should have duration_ms field"
+        );
         assert!(
             body["steps_executed"].is_number(),
             "Should have steps_executed field"
@@ -393,10 +405,7 @@ mod concurrency_tests {
 
                 let status = response.status();
                 let body: Value = response.json().await?;
-                let count = body["workflows"]
-                    .as_array()
-                    .map(|v| v.len())
-                    .unwrap_or(0);
+                let count = body["workflows"].as_array().map(|v| v.len()).unwrap_or(0);
 
                 Ok::<_, anyhow::Error>((i, status, count))
             });
@@ -405,11 +414,7 @@ mod concurrency_tests {
 
         for handle in handles {
             let (i, status, count) = handle.await??;
-            assert!(
-                status.is_success(),
-                "Request {} should succeed",
-                i
-            );
+            assert!(status.is_success(), "Request {} should succeed", i);
             println!("Request {} found {} workflows", i, count);
         }
 
@@ -486,4 +491,3 @@ mod error_tests {
         Ok(())
     }
 }
-

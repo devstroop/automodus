@@ -17,20 +17,32 @@ pub use control::{EmitAction, LogAction};
 
 // Re-export browser actions for backwards compatibility
 pub use crate::modules::browser::actions::{
+    // Navigate
+    BackAction,
+    // Interact
+    ClickAction,
+    // Extract
+    EvalAction,
+    ExtractAction,
+    // Upload
+    FileChooserAction,
+    ForwardAction,
+    GotoAction,
+    HoverAction,
+    ReloadAction,
     // Capture
     ScreenshotAction,
-    // Extract
-    EvalAction, ExtractAction,
-    // Interact
-    ClickAction, HoverAction, SelectAction, TypeAction,
-    // Navigate
-    BackAction, ForwardAction, GotoAction, ReloadAction,
-    // Tabs
-    TabCloseAction, TabNewAction, TabSwitchAction,
-    // Upload
-    FileChooserAction, UploadAction, WaitUploadAction,
+    SelectAction,
     // Wait
-    SleepAction, WaitForAction,
+    SleepAction,
+    // Tabs
+    TabCloseAction,
+    TabNewAction,
+    TabSwitchAction,
+    TypeAction,
+    UploadAction,
+    WaitForAction,
+    WaitUploadAction,
 };
 
 // Re-export HTTP actions
