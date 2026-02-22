@@ -18,6 +18,8 @@ use tracing::{debug, error, info, warn};
 
 use super::state::ServerState;
 
+use crate::core::engine::PauseResponse;
+
 /// WebSocket protocol version
 pub const WS_PROTOCOL_VERSION: u32 = 1;
 
@@ -296,21 +298,27 @@ async fn handle_command(state: &Arc<ServerState>, command: WsCommand) {
             // Resume paused execution
             if let Some(id) = command.payload.get("id").and_then(|v| v.as_str()) {
                 info!("Continue command for execution: {}", id);
-                // TODO: Signal execution to continue
-                let _ = state;
+                if let Err(e) = state.resolve_pause(id, PauseResponse::Continue).await {
+                    warn!("Continue signal failed: {}", e);
+                }
             }
         }
         "skip" => {
             // Skip current step
             if let Some(id) = command.payload.get("id").and_then(|v| v.as_str()) {
                 info!("Skip command for execution: {}", id);
-                // TODO: Signal execution to skip step
+                if let Err(e) = state.resolve_pause(id, PauseResponse::Skip).await {
+                    warn!("Skip signal failed: {}", e);
+                }
             }
         }
         "abort" => {
-            // Abort execution
+            // Abort execution — resolve any pending pause AND cancel the token
             if let Some(id) = command.payload.get("id").and_then(|v| v.as_str()) {
                 info!("Abort command for execution: {}", id);
+                // Try resolving a pending pause first (engine returns Abort immediately)
+                let _ = state.resolve_pause(id, PauseResponse::Abort).await;
+                // Also cancel the token so non-paused executions stop at next step
                 let _ = state.cancel_execution(id).await;
             }
         }

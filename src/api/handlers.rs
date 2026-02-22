@@ -13,7 +13,7 @@ use tracing::info;
 use crate::actions::BrowserHandle;
 
 use super::schemas::*;
-use super::state::ServerState;
+use super::state::{ServerState, WebSocketPauseHandler};
 
 /// Version constant for health check
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -201,13 +201,22 @@ pub async fn run_workflow_handler(
     info!("Executing workflow: {}", workflow.name);
 
     let total_steps = workflow.steps.len();
-    let exec_id = state
+    let (exec_id, cancel_token) = state
         .start_execution(&workflow.name, total_steps, request.params.clone())
         .await;
 
+    let pause_handler = WebSocketPauseHandler::new(exec_id.clone(), state.clone());
+
     let result = state
         .engine
-        .execute(&workflow, &adapter, request.params)
+        .execute_with_pause_handler(
+            &workflow,
+            &adapter,
+            request.params,
+            crate::workflow::schema::ResolvedDebugConfig::default(),
+            &pause_handler,
+            Some(cancel_token),
+        )
         .await;
 
     match result {
