@@ -355,17 +355,17 @@ automodus daemon stop
 ---
 
 ### Issue #15a: Daemon config file loading
-**Status:** ⬜ Not Started  
+**Status:** ✅ Done  
 **File:** `src/daemon/config.rs` (new)  
 **Depends:** #11  
 **Estimate:** 2-3 hours
 
 **Tasks:**
-- [ ] Create `DaemonConfig` struct matching SHELL.md spec
-- [ ] Load from `~/.automodus/daemon.toml` if exists
-- [ ] Fall back to defaults
-- [ ] Validate config values (port ranges, paths)
-- [ ] Create default config file on first run
+- [x] Create `DaemonConfig` struct matching SHELL.md spec
+- [x] Load from `~/.automodus/daemon.toml` if exists
+- [x] Fall back to defaults
+- [x] Validate config values (port ranges, paths)
+- [x] Create default config file on first run
 
 **Config locations:**
 - `~/.automodus/daemon.toml` (user global)
