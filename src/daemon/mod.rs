@@ -4,6 +4,7 @@
 //! Implements Docker-style daemon/client separation.
 
 pub mod config;
+pub mod protocol;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -11,12 +12,14 @@ use tokio::net::UnixListener;
 use tokio::sync::broadcast;
 use tracing::{error, info, warn};
 
+use crate::actions::BrowserHandle;
 use crate::core::AppCore;
 
 pub use config::{
     ensure_config_exists, load_config, validate_config, BrowserSection, DaemonConfigFile,
     DaemonSection, HttpSection, LimitsSection, Viewport,
 };
+pub use protocol::{SocketRequest, SocketResponse};
 
 /// Daemon configuration
 #[derive(Debug, Clone)]
@@ -385,12 +388,294 @@ pub enum DaemonError {
 
 /// Handle a Unix socket connection
 async fn handle_socket_connection(
-    _stream: tokio::net::UnixStream,
-    _core: Arc<AppCore>,
+    stream: tokio::net::UnixStream,
+    core: Arc<AppCore>,
 ) -> Result<(), DaemonError> {
-    // TODO: Implement socket protocol
-    // For now, this is a placeholder
+    use protocol::{read_message, write_message, SocketRequest};
+
+    let (mut reader, mut writer) = tokio::io::split(stream);
+
+    loop {
+        let request: SocketRequest = match read_message(&mut reader).await {
+            Ok(req) => req,
+            Err(protocol::ProtocolError::Io(ref e))
+                if e.kind() == std::io::ErrorKind::UnexpectedEof =>
+            {
+                // Client disconnected
+                break;
+            }
+            Err(e) => {
+                warn!("Protocol error: {}", e);
+                break;
+            }
+        };
+
+        let response = dispatch_request(&core, request).await;
+
+        if let Err(e) = write_message(&mut writer, &response).await {
+            warn!("Failed to send response: {}", e);
+            break;
+        }
+    }
+
     Ok(())
+}
+
+/// Dispatch a socket request to the appropriate handler
+async fn dispatch_request(core: &Arc<AppCore>, request: SocketRequest) -> SocketResponse {
+    use base64::Engine;
+
+    match request {
+        SocketRequest::Ping => SocketResponse::ok_data(serde_json::json!({"pong": true})),
+
+        SocketRequest::Status => {
+            let sessions = core.list_sessions().await;
+            let has_browser = core.has_browser().await;
+            SocketResponse::ok_data(serde_json::json!({
+                "browser_running": has_browser,
+                "sessions": sessions.len(),
+            }))
+        }
+
+        // --- Session Commands ---
+        SocketRequest::SessionCreate { name, keep_alive } => {
+            match core.create_session(name.clone()).await {
+                Ok(id) => {
+                    if keep_alive {
+                        let _ = core.set_session_keep_alive(&id, true).await;
+                    }
+                    SocketResponse::ok_data(serde_json::json!({"id": id}))
+                }
+                Err(e) => SocketResponse::err(e.to_string()),
+            }
+        }
+
+        SocketRequest::SessionList => {
+            let sessions = core.list_sessions().await;
+            let list: Vec<serde_json::Value> = sessions
+                .iter()
+                .map(|s| {
+                    serde_json::json!({
+                        "id": s.id,
+                        "name": s.name,
+                        "created_at": s.created_at.to_rfc3339(),
+                        "last_activity": s.last_activity.to_rfc3339(),
+                        "keep_alive": s.keep_alive,
+                    })
+                })
+                .collect();
+            SocketResponse::ok_data(serde_json::json!({"sessions": list}))
+        }
+
+        SocketRequest::SessionGet { id } => match core.get_session(&id).await {
+            Some(s) => SocketResponse::ok_data(serde_json::json!({
+                "id": s.id,
+                "name": s.name,
+                "created_at": s.created_at.to_rfc3339(),
+                "last_activity": s.last_activity.to_rfc3339(),
+                "keep_alive": s.keep_alive,
+            })),
+            None => SocketResponse::err(format!("Session '{}' not found", id)),
+        },
+
+        SocketRequest::SessionFind { id_or_name } => match core.find_session(&id_or_name).await {
+            Some(s) => SocketResponse::ok_data(serde_json::json!({
+                "id": s.id,
+                "name": s.name,
+                "created_at": s.created_at.to_rfc3339(),
+                "last_activity": s.last_activity.to_rfc3339(),
+                "keep_alive": s.keep_alive,
+            })),
+            None => SocketResponse::err(format!("No session matching '{}'", id_or_name)),
+        },
+
+        SocketRequest::SessionClose { id } => match core.close_session(&id).await {
+            Ok(()) => SocketResponse::ok(),
+            Err(e) => SocketResponse::err(e.to_string()),
+        },
+
+        SocketRequest::SessionSetKeepAlive { id, keep_alive } => {
+            match core.set_session_keep_alive(&id, keep_alive).await {
+                Ok(()) => SocketResponse::ok(),
+                Err(e) => SocketResponse::err(e.to_string()),
+            }
+        }
+
+        // --- Browser Commands ---
+        SocketRequest::BrowserGoto { url } => {
+            match core.get_page().await {
+                Ok(adapter) => match adapter.goto(&url).await {
+                    Ok(()) => {
+                        let current = adapter.current_url().await.unwrap_or_default();
+                        SocketResponse::ok_data(serde_json::json!({"url": current}))
+                    }
+                    Err(e) => SocketResponse::err(e.to_string()),
+                },
+                Err(e) => SocketResponse::err(format!("Browser error: {}", e)),
+            }
+        }
+
+        SocketRequest::BrowserClick { selector } => match core.get_page().await {
+            Ok(adapter) => match adapter.click(&selector).await {
+                Ok(()) => SocketResponse::ok(),
+                Err(e) => SocketResponse::err(e.to_string()),
+            },
+            Err(e) => SocketResponse::err(format!("Browser error: {}", e)),
+        },
+
+        SocketRequest::BrowserType { selector, text } => match core.get_page().await {
+            Ok(adapter) => match adapter.type_text(&selector, &text, true).await {
+                Ok(()) => SocketResponse::ok(),
+                Err(e) => SocketResponse::err(e.to_string()),
+            },
+            Err(e) => SocketResponse::err(format!("Browser error: {}", e)),
+        },
+
+        SocketRequest::BrowserWait { selector, timeout } => match core.get_page().await {
+            Ok(adapter) => match adapter.wait_for(&selector, timeout.unwrap_or(5000)).await {
+                Ok(()) => SocketResponse::ok(),
+                Err(e) => SocketResponse::err(e.to_string()),
+            },
+            Err(e) => SocketResponse::err(format!("Browser error: {}", e)),
+        },
+
+        SocketRequest::BrowserScreenshot { full_page } => match core.get_page().await {
+            Ok(adapter) => match adapter.screenshot(full_page).await {
+                Ok(bytes) => {
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                    SocketResponse::ok_data(serde_json::json!({"png_base64": b64, "size": bytes.len()}))
+                }
+                Err(e) => SocketResponse::err(e.to_string()),
+            },
+            Err(e) => SocketResponse::err(format!("Browser error: {}", e)),
+        },
+
+        SocketRequest::BrowserEval { script } => match core.get_page().await {
+            Ok(adapter) => match adapter.eval(&script).await {
+                Ok(value) => SocketResponse::ok_data(serde_json::json!({"result": value})),
+                Err(e) => SocketResponse::err(e.to_string()),
+            },
+            Err(e) => SocketResponse::err(format!("Browser error: {}", e)),
+        },
+
+        SocketRequest::BrowserGetText { selector } => match core.get_page().await {
+            Ok(adapter) => match adapter.get_text(&selector).await {
+                Ok(text) => SocketResponse::ok_data(serde_json::json!({"text": text})),
+                Err(e) => SocketResponse::err(e.to_string()),
+            },
+            Err(e) => SocketResponse::err(format!("Browser error: {}", e)),
+        },
+
+        SocketRequest::BrowserGetUrl => match core.get_page().await {
+            Ok(adapter) => match adapter.current_url().await {
+                Ok(url) => SocketResponse::ok_data(serde_json::json!({"url": url})),
+                Err(e) => SocketResponse::err(e.to_string()),
+            },
+            Err(e) => SocketResponse::err(format!("Browser error: {}", e)),
+        },
+
+        SocketRequest::BrowserBack => match core.get_page().await {
+            Ok(adapter) => match adapter.back().await {
+                Ok(()) => SocketResponse::ok(),
+                Err(e) => SocketResponse::err(e.to_string()),
+            },
+            Err(e) => SocketResponse::err(format!("Browser error: {}", e)),
+        },
+
+        SocketRequest::BrowserForward => match core.get_page().await {
+            Ok(adapter) => match adapter.forward().await {
+                Ok(()) => SocketResponse::ok(),
+                Err(e) => SocketResponse::err(e.to_string()),
+            },
+            Err(e) => SocketResponse::err(format!("Browser error: {}", e)),
+        },
+
+        SocketRequest::BrowserReload => match core.get_page().await {
+            Ok(adapter) => match adapter.reload().await {
+                Ok(()) => SocketResponse::ok(),
+                Err(e) => SocketResponse::err(e.to_string()),
+            },
+            Err(e) => SocketResponse::err(format!("Browser error: {}", e)),
+        },
+
+        SocketRequest::BrowserHighlight { selector } => match core.get_page().await {
+            Ok(adapter) => {
+                let js = format!(
+                    r#"(function() {{
+                        const el = document.querySelector('{}');
+                        if (!el) return 'not found';
+                        el.style.outline = '3px solid red';
+                        el.style.outlineOffset = '2px';
+                        setTimeout(() => {{ el.style.outline = ''; el.style.outlineOffset = ''; }}, 3000);
+                        return 'highlighted';
+                    }})()
+                    "#,
+                    selector.replace('\\', "\\\\").replace('\'', "\\'")
+                );
+                match adapter.eval(&js).await {
+                    Ok(val) => {
+                        let result = val.as_str().unwrap_or("done");
+                        if result == "not found" {
+                            SocketResponse::err(format!("Element not found: {}", selector))
+                        } else {
+                            SocketResponse::ok()
+                        }
+                    }
+                    Err(e) => SocketResponse::err(e.to_string()),
+                }
+            }
+            Err(e) => SocketResponse::err(format!("Browser error: {}", e)),
+        },
+
+        // --- Workflow Commands ---
+        SocketRequest::WorkflowRun { path, params } => {
+            let file_path = std::path::Path::new(&path);
+            let content = match std::fs::read_to_string(file_path) {
+                Ok(c) => c,
+                Err(e) => return SocketResponse::err(format!("Failed to read workflow: {}", e)),
+            };
+
+            let workflow = match crate::workflow::WorkflowParser::parse(&content) {
+                Ok(w) => w,
+                Err(e) => return SocketResponse::err(format!("Parse error: {}", e)),
+            };
+
+            let adapter = match core.get_page().await {
+                Ok(a) => a,
+                Err(e) => return SocketResponse::err(format!("Browser error: {}", e)),
+            };
+
+            let engine = crate::core::WorkflowEngine::new();
+            let json_params: std::collections::HashMap<String, serde_json::Value> = params
+                .into_iter()
+                .map(|(k, v)| (k, serde_json::Value::String(v)))
+                .collect();
+
+            match engine.execute(&workflow, &adapter, json_params).await {
+                Ok(result) => SocketResponse::ok_data(serde_json::json!({
+                    "success": result.success,
+                    "workflow_name": result.workflow_name,
+                    "duration_ms": result.duration_ms,
+                    "steps_executed": result.steps_executed,
+                    "output": result.output,
+                    "error": result.error,
+                })),
+                Err(e) => SocketResponse::err(e.to_string()),
+            }
+        }
+
+        SocketRequest::WorkflowList => {
+            let workflows_dir =
+                std::env::var("AUTOMODUS_WORKFLOWS").unwrap_or_else(|_| "workflows".to_string());
+            let mut names = Vec::new();
+            if let Ok(entries) = glob::glob(&format!("{}/**/*.yaml", workflows_dir)) {
+                for entry in entries.flatten() {
+                    names.push(entry.display().to_string());
+                }
+            }
+            SocketResponse::ok_data(serde_json::json!({"workflows": names}))
+        }
+    }
 }
 
 /// Start HTTP server (runs until shutdown signal)
@@ -454,19 +739,257 @@ pub async fn connect_to_daemon(config: &DaemonConfig) -> Result<DaemonClient, Da
         .await
         .map_err(|e| DaemonError::ConnectionFailed(e.to_string()))?;
 
-    Ok(DaemonClient { stream })
+    Ok(DaemonClient::new(stream))
 }
 
-/// Client for communicating with the daemon
+/// Client for communicating with the daemon via Unix socket.
+///
+/// All methods send a typed request and return the parsed response.
 pub struct DaemonClient {
-    #[allow(dead_code)]
-    stream: tokio::net::UnixStream,
+    reader: tokio::io::ReadHalf<tokio::net::UnixStream>,
+    writer: tokio::io::WriteHalf<tokio::net::UnixStream>,
 }
 
 impl DaemonClient {
-    /// Send a command to the daemon
-    pub async fn send_command(&mut self, _cmd: &str) -> Result<String, DaemonError> {
-        // TODO: Implement protocol
-        Ok("OK".to_string())
+    fn new(stream: tokio::net::UnixStream) -> Self {
+        let (reader, writer) = tokio::io::split(stream);
+        Self { reader, writer }
+    }
+
+    /// Send a request and get a response
+    async fn request(&mut self, req: SocketRequest) -> Result<SocketResponse, DaemonError> {
+        protocol::write_message(&mut self.writer, &req)
+            .await
+            .map_err(|e| DaemonError::CommandFailed(format!("Send failed: {}", e)))?;
+
+        protocol::read_message(&mut self.reader)
+            .await
+            .map_err(|e| DaemonError::CommandFailed(format!("Recv failed: {}", e)))
+    }
+
+    /// Convenience: extract response data or return error
+    fn unwrap_response(resp: SocketResponse) -> Result<serde_json::Value, String> {
+        if resp.ok {
+            Ok(resp.data)
+        } else {
+            Err(resp.error.unwrap_or_else(|| "Unknown error".to_string()))
+        }
+    }
+
+    // --- High-level API ---
+
+    /// Ping the daemon
+    pub async fn ping(&mut self) -> Result<(), DaemonError> {
+        let resp = self.request(SocketRequest::Ping).await?;
+        Self::unwrap_response(resp).map(|_| ()).map_err(DaemonError::CommandFailed)
+    }
+
+    /// Get daemon status
+    pub async fn status(&mut self) -> Result<serde_json::Value, DaemonError> {
+        let resp = self.request(SocketRequest::Status).await?;
+        Self::unwrap_response(resp).map_err(DaemonError::CommandFailed)
+    }
+
+    // --- Sessions ---
+
+    pub async fn session_create(
+        &mut self,
+        name: Option<String>,
+        keep_alive: bool,
+    ) -> Result<String, DaemonError> {
+        let resp = self
+            .request(SocketRequest::SessionCreate { name, keep_alive })
+            .await?;
+        let data = Self::unwrap_response(resp).map_err(DaemonError::CommandFailed)?;
+        Ok(data["id"].as_str().unwrap_or("").to_string())
+    }
+
+    pub async fn session_list(&mut self) -> Result<Vec<serde_json::Value>, DaemonError> {
+        let resp = self.request(SocketRequest::SessionList).await?;
+        let data = Self::unwrap_response(resp).map_err(DaemonError::CommandFailed)?;
+        Ok(data["sessions"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    pub async fn session_get(&mut self, id: &str) -> Result<serde_json::Value, DaemonError> {
+        let resp = self
+            .request(SocketRequest::SessionGet { id: id.to_string() })
+            .await?;
+        Self::unwrap_response(resp).map_err(DaemonError::CommandFailed)
+    }
+
+    pub async fn session_find(&mut self, id_or_name: &str) -> Result<serde_json::Value, DaemonError> {
+        let resp = self
+            .request(SocketRequest::SessionFind {
+                id_or_name: id_or_name.to_string(),
+            })
+            .await?;
+        Self::unwrap_response(resp).map_err(DaemonError::CommandFailed)
+    }
+
+    pub async fn session_close(&mut self, id: &str) -> Result<(), DaemonError> {
+        let resp = self
+            .request(SocketRequest::SessionClose { id: id.to_string() })
+            .await?;
+        Self::unwrap_response(resp).map(|_| ()).map_err(DaemonError::CommandFailed)
+    }
+
+    pub async fn session_set_keep_alive(
+        &mut self,
+        id: &str,
+        keep_alive: bool,
+    ) -> Result<(), DaemonError> {
+        let resp = self
+            .request(SocketRequest::SessionSetKeepAlive {
+                id: id.to_string(),
+                keep_alive,
+            })
+            .await?;
+        Self::unwrap_response(resp).map(|_| ()).map_err(DaemonError::CommandFailed)
+    }
+
+    // --- Browser ---
+
+    pub async fn browser_goto(&mut self, url: &str) -> Result<String, DaemonError> {
+        let resp = self
+            .request(SocketRequest::BrowserGoto {
+                url: url.to_string(),
+            })
+            .await?;
+        let data = Self::unwrap_response(resp).map_err(DaemonError::CommandFailed)?;
+        Ok(data["url"].as_str().unwrap_or("").to_string())
+    }
+
+    pub async fn browser_click(&mut self, selector: &str) -> Result<(), DaemonError> {
+        let resp = self
+            .request(SocketRequest::BrowserClick {
+                selector: selector.to_string(),
+            })
+            .await?;
+        Self::unwrap_response(resp).map(|_| ()).map_err(DaemonError::CommandFailed)
+    }
+
+    pub async fn browser_type(
+        &mut self,
+        selector: &str,
+        text: &str,
+    ) -> Result<(), DaemonError> {
+        let resp = self
+            .request(SocketRequest::BrowserType {
+                selector: selector.to_string(),
+                text: text.to_string(),
+            })
+            .await?;
+        Self::unwrap_response(resp).map(|_| ()).map_err(DaemonError::CommandFailed)
+    }
+
+    pub async fn browser_wait(
+        &mut self,
+        selector: &str,
+        timeout: Option<u64>,
+    ) -> Result<(), DaemonError> {
+        let resp = self
+            .request(SocketRequest::BrowserWait {
+                selector: selector.to_string(),
+                timeout,
+            })
+            .await?;
+        Self::unwrap_response(resp).map(|_| ()).map_err(DaemonError::CommandFailed)
+    }
+
+    pub async fn browser_screenshot(&mut self) -> Result<Vec<u8>, DaemonError> {
+        use base64::Engine;
+        let resp = self
+            .request(SocketRequest::BrowserScreenshot { full_page: false })
+            .await?;
+        let data = Self::unwrap_response(resp).map_err(DaemonError::CommandFailed)?;
+        let b64 = data["png_base64"].as_str().unwrap_or("");
+        base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .map_err(|e| DaemonError::CommandFailed(format!("Invalid screenshot data: {}", e)))
+    }
+
+    pub async fn browser_eval(
+        &mut self,
+        script: &str,
+    ) -> Result<serde_json::Value, DaemonError> {
+        let resp = self
+            .request(SocketRequest::BrowserEval {
+                script: script.to_string(),
+            })
+            .await?;
+        let data = Self::unwrap_response(resp).map_err(DaemonError::CommandFailed)?;
+        Ok(data["result"].clone())
+    }
+
+    pub async fn browser_get_text(&mut self, selector: &str) -> Result<String, DaemonError> {
+        let resp = self
+            .request(SocketRequest::BrowserGetText {
+                selector: selector.to_string(),
+            })
+            .await?;
+        let data = Self::unwrap_response(resp).map_err(DaemonError::CommandFailed)?;
+        Ok(data["text"].as_str().unwrap_or("").to_string())
+    }
+
+    pub async fn browser_get_url(&mut self) -> Result<String, DaemonError> {
+        let resp = self.request(SocketRequest::BrowserGetUrl).await?;
+        let data = Self::unwrap_response(resp).map_err(DaemonError::CommandFailed)?;
+        Ok(data["url"].as_str().unwrap_or("").to_string())
+    }
+
+    pub async fn browser_back(&mut self) -> Result<(), DaemonError> {
+        let resp = self.request(SocketRequest::BrowserBack).await?;
+        Self::unwrap_response(resp).map(|_| ()).map_err(DaemonError::CommandFailed)
+    }
+
+    pub async fn browser_forward(&mut self) -> Result<(), DaemonError> {
+        let resp = self.request(SocketRequest::BrowserForward).await?;
+        Self::unwrap_response(resp).map(|_| ()).map_err(DaemonError::CommandFailed)
+    }
+
+    pub async fn browser_reload(&mut self) -> Result<(), DaemonError> {
+        let resp = self.request(SocketRequest::BrowserReload).await?;
+        Self::unwrap_response(resp).map(|_| ()).map_err(DaemonError::CommandFailed)
+    }
+
+    pub async fn browser_highlight(&mut self, selector: &str) -> Result<(), DaemonError> {
+        let resp = self
+            .request(SocketRequest::BrowserHighlight {
+                selector: selector.to_string(),
+            })
+            .await?;
+        Self::unwrap_response(resp).map(|_| ()).map_err(DaemonError::CommandFailed)
+    }
+
+    // --- Workflows ---
+
+    pub async fn workflow_run(
+        &mut self,
+        path: &str,
+        params: std::collections::HashMap<String, String>,
+    ) -> Result<serde_json::Value, DaemonError> {
+        let resp = self
+            .request(SocketRequest::WorkflowRun {
+                path: path.to_string(),
+                params,
+            })
+            .await?;
+        Self::unwrap_response(resp).map_err(DaemonError::CommandFailed)
+    }
+
+    pub async fn workflow_list(&mut self) -> Result<Vec<String>, DaemonError> {
+        let resp = self.request(SocketRequest::WorkflowList).await?;
+        let data = Self::unwrap_response(resp).map_err(DaemonError::CommandFailed)?;
+        Ok(data["workflows"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default())
     }
 }
