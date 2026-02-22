@@ -204,7 +204,7 @@ if ctx.debug.delay > 0 {
 Browser console and network capture.
 
 ### Issue #9: Console capture via CDP
-**Status:** ✅ Done (basic)  
+**Status:** ✅ Done  
 **File:** `src/modules/browser/adapter.rs`  
 **Depends:** #5  
 **Estimate:** 3-4 hours
@@ -214,7 +214,7 @@ Browser console and network capture.
 - [x] Add console_logs storage to ChromePageAdapter
 - [x] Add capture_console_logs() via JS injection
 - [x] Add get_console_logs() and clear_console_logs()
-- [ ] Setup real CDP `ConsoleAPICalledEvent` listener (deferred)
+- [x] Setup real CDP `ConsoleAPICalledEvent` listener
 
 **Output format:**
 ```
