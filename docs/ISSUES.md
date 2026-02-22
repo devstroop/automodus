@@ -465,7 +465,7 @@ automodus> [UP ARROW]  # Shows: goto https://example.com
 - [x] Add `screenshot [path]` command
 - [x] Add `eval <js>` command
 - [x] Add `text <selector>` command
-- [ ] Add `find <selector>` command (deferred)
+- [x] Add `find <selector>` command
 - [x] Add navigation: `back`, `forward`, `refresh`
 - [x] Wire commands to browser adapter execution
 
