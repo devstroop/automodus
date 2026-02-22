@@ -1,6 +1,7 @@
 //! Browser Adapter
 //!
 //! Implements BrowserHandle trait using chromiumoxide Page.
+//! Supports extended selector patterns: text:, text*:, role:, xpath:, CSS
 
 use async_trait::async_trait;
 use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
@@ -11,6 +12,10 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
+use super::selector::{
+    parse_selector, selector_click_js, selector_exists_js, selector_get_attribute_js,
+    selector_get_text_js, selector_type_js,
+};
 use crate::actions::{ActionError, BrowserHandle};
 
 /// Adapter that implements BrowserHandle for chromiumoxide Page
@@ -62,15 +67,26 @@ impl BrowserHandle for ChromePageAdapter {
         debug!("Clicking: {}", selector);
         let page = self.page.lock().await;
 
-        let element = page
-            .find_element(selector)
-            .await
-            .map_err(|e| ActionError::ElementNotFound(format!("{}: {}", selector, e)))?;
+        let parsed = parse_selector(selector);
 
-        element
-            .click()
-            .await
-            .map_err(|e| ActionError::BrowserError(format!("Click failed: {}", e)))?;
+        // For CSS selectors, use native chromiumoxide for better reliability
+        if let Some(css) = parsed.as_css() {
+            let element = page
+                .find_element(css)
+                .await
+                .map_err(|e| ActionError::ElementNotFound(format!("{}: {}", selector, e)))?;
+
+            element
+                .click()
+                .await
+                .map_err(|e| ActionError::BrowserError(format!("Click failed: {}", e)))?;
+        } else {
+            // For extended selectors (text:, role:, xpath:), use JavaScript
+            let js = selector_click_js(&parsed);
+            page.evaluate(js.as_str())
+                .await
+                .map_err(|e| ActionError::ElementNotFound(format!("{}: {}", selector, e)))?;
+        }
 
         Ok(())
     }
@@ -79,24 +95,35 @@ impl BrowserHandle for ChromePageAdapter {
         debug!("Typing into: {}", selector);
         let page = self.page.lock().await;
 
-        let element = page
-            .find_element(selector)
-            .await
-            .map_err(|e| ActionError::ElementNotFound(format!("{}: {}", selector, e)))?;
+        let parsed = parse_selector(selector);
 
-        if clear {
-            // Clear existing content by triple-clicking to select all, then type
-            element.click().await.ok();
-            element.click().await.ok();
-            element.click().await.ok(); // Triple click to select all
-                                        // Small delay
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // For CSS selectors, use native chromiumoxide
+        if let Some(css) = parsed.as_css() {
+            let element = page
+                .find_element(css)
+                .await
+                .map_err(|e| ActionError::ElementNotFound(format!("{}: {}", selector, e)))?;
+
+            if clear {
+                // Clear existing content by triple-clicking to select all, then type
+                element.click().await.ok();
+                element.click().await.ok();
+                element.click().await.ok(); // Triple click to select all
+                                            // Small delay
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+
+            element
+                .type_str(text)
+                .await
+                .map_err(|e| ActionError::BrowserError(format!("Type failed: {}", e)))?;
+        } else {
+            // For extended selectors, use JavaScript
+            let js = selector_type_js(&parsed, text, clear);
+            page.evaluate(js.as_str())
+                .await
+                .map_err(|e| ActionError::ElementNotFound(format!("{}: {}", selector, e)))?;
         }
-
-        element
-            .type_str(text)
-            .await
-            .map_err(|e| ActionError::BrowserError(format!("Type failed: {}", e)))?;
 
         Ok(())
     }
@@ -105,18 +132,36 @@ impl BrowserHandle for ChromePageAdapter {
         debug!("Getting text from: {}", selector);
         let page = self.page.lock().await;
 
-        let element = page
-            .find_element(selector)
-            .await
-            .map_err(|e| ActionError::ElementNotFound(format!("{}: {}", selector, e)))?;
+        let parsed = parse_selector(selector);
 
-        let text = element
-            .inner_text()
-            .await
-            .map_err(|e| ActionError::BrowserError(format!("Get text failed: {}", e)))?
-            .unwrap_or_default();
+        // For CSS selectors, use native chromiumoxide
+        if let Some(css) = parsed.as_css() {
+            let element = page
+                .find_element(css)
+                .await
+                .map_err(|e| ActionError::ElementNotFound(format!("{}: {}", selector, e)))?;
 
-        Ok(text)
+            let text = element
+                .inner_text()
+                .await
+                .map_err(|e| ActionError::BrowserError(format!("Get text failed: {}", e)))?
+                .unwrap_or_default();
+
+            Ok(text)
+        } else {
+            // For extended selectors, use JavaScript
+            let js = selector_get_text_js(&parsed);
+            let result = page
+                .evaluate(js.as_str())
+                .await
+                .map_err(|e| ActionError::ElementNotFound(format!("{}: {}", selector, e)))?;
+
+            Ok(result
+                .value()
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string())
+        }
     }
 
     async fn get_attribute(
@@ -127,17 +172,34 @@ impl BrowserHandle for ChromePageAdapter {
         debug!("Getting attribute {} from: {}", attr, selector);
         let page = self.page.lock().await;
 
-        let element = page
-            .find_element(selector)
-            .await
-            .map_err(|e| ActionError::ElementNotFound(format!("{}: {}", selector, e)))?;
+        let parsed = parse_selector(selector);
 
-        let value = element
-            .attribute(attr)
-            .await
-            .map_err(|e| ActionError::BrowserError(format!("Get attribute failed: {}", e)))?;
+        // For CSS selectors, use native chromiumoxide
+        if let Some(css) = parsed.as_css() {
+            let element = page
+                .find_element(css)
+                .await
+                .map_err(|e| ActionError::ElementNotFound(format!("{}: {}", selector, e)))?;
 
-        Ok(value)
+            let value = element
+                .attribute(attr)
+                .await
+                .map_err(|e| ActionError::BrowserError(format!("Get attribute failed: {}", e)))?;
+
+            Ok(value)
+        } else {
+            // For extended selectors, use JavaScript
+            let js = selector_get_attribute_js(&parsed, attr);
+            let result = page
+                .evaluate(js.as_str())
+                .await
+                .map_err(|e| ActionError::ElementNotFound(format!("{}: {}", selector, e)))?;
+
+            Ok(result
+                .value()
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()))
+        }
     }
 
     async fn wait_for(&self, selector: &str, timeout_ms: u64) -> Result<(), ActionError> {
@@ -149,18 +211,41 @@ impl BrowserHandle for ChromePageAdapter {
 
         let duration = Duration::from_millis(timeout_ms);
         let start = std::time::Instant::now();
+        let parsed = parse_selector(selector);
 
-        loop {
-            match page.find_element(selector).await {
-                Ok(_) => return Ok(()),
-                Err(_) if start.elapsed() < duration => {
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+        // For CSS selectors, use native chromiumoxide
+        if let Some(css) = parsed.as_css() {
+            loop {
+                match page.find_element(css).await {
+                    Ok(_) => return Ok(()),
+                    Err(_) if start.elapsed() < duration => {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    Err(e) => {
+                        return Err(ActionError::Timeout(format!(
+                            "Element {} not found after {}ms: {}",
+                            selector, timeout_ms, e
+                        )));
+                    }
                 }
-                Err(e) => {
-                    return Err(ActionError::Timeout(format!(
-                        "Element {} not found after {}ms: {}",
-                        selector, timeout_ms, e
-                    )));
+            }
+        } else {
+            // For extended selectors, use JavaScript polling
+            let js = selector_exists_js(&parsed);
+            loop {
+                match page.evaluate(js.as_str()).await {
+                    Ok(result) if result.value().and_then(|v| v.as_bool()).unwrap_or(false) => {
+                        return Ok(());
+                    }
+                    _ if start.elapsed() < duration => {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    _ => {
+                        return Err(ActionError::Timeout(format!(
+                            "Element {} not found after {}ms",
+                            selector, timeout_ms
+                        )));
+                    }
                 }
             }
         }
@@ -175,22 +260,45 @@ impl BrowserHandle for ChromePageAdapter {
 
         let duration = Duration::from_millis(timeout_ms);
         let start = std::time::Instant::now();
+        let parsed = parse_selector(selector);
 
-        loop {
-            match page.find_element(selector).await {
-                // Element still exists, continue waiting
-                Ok(_) if start.elapsed() < duration => {
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+        // For CSS selectors, use native chromiumoxide
+        if let Some(css) = parsed.as_css() {
+            loop {
+                match page.find_element(css).await {
+                    // Element still exists, continue waiting
+                    Ok(_) if start.elapsed() < duration => {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    // Element still exists but timeout reached
+                    Ok(_) => {
+                        return Err(ActionError::Timeout(format!(
+                            "Element {} still visible after {}ms",
+                            selector, timeout_ms
+                        )));
+                    }
+                    // Element not found - success!
+                    Err(_) => return Ok(()),
                 }
-                // Element still exists but timeout reached
-                Ok(_) => {
-                    return Err(ActionError::Timeout(format!(
-                        "Element {} still visible after {}ms",
-                        selector, timeout_ms
-                    )));
+            }
+        } else {
+            // For extended selectors, use JavaScript polling
+            let js = selector_exists_js(&parsed);
+            loop {
+                match page.evaluate(js.as_str()).await {
+                    // Element exists (returns true), continue waiting
+                    Ok(result) if result.value().and_then(|v| v.as_bool()).unwrap_or(false) => {
+                        if start.elapsed() >= duration {
+                            return Err(ActionError::Timeout(format!(
+                                "Element {} still visible after {}ms",
+                                selector, timeout_ms
+                            )));
+                        }
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    // Element not found (returns false) - success!
+                    _ => return Ok(()),
                 }
-                // Element not found - success!
-                Err(_) => return Ok(()),
             }
         }
     }
