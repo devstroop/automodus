@@ -251,6 +251,9 @@ steps:
 
         // List of WhatsApp workflow file paths relative to project root
         let workflow_files = [
+            "workflows/whatsapp/whatsapp.yaml",
+            "workflows/whatsapp/_common/ensure_ready.yaml",
+            "workflows/whatsapp/_common/open_chat.yaml",
             "workflows/whatsapp/auth/qr_login.yaml",
             "workflows/whatsapp/auth/phone_login.yaml",
             "workflows/whatsapp/auth/check_status.yaml",
