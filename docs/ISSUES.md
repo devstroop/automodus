@@ -236,7 +236,7 @@ Browser console and network capture.
 - [x] Add network_logs storage to ChromePageAdapter
 - [x] Add capture_network_logs() via Performance API
 - [x] Add get_network_logs() and clear_network_logs()
-- [ ] Setup real CDP `ResponseReceivedEvent` listener (deferred)
+- [x] Setup real CDP `ResponseReceivedEvent` listener (deferred)
 
 **Output format:**
 ```
@@ -302,7 +302,7 @@ Foundation for persistent sessions. Largest effort.
 - [x] Implement session create/get/close/list in AppCore
 - [x] Implement `cleanup_idle_sessions()` for idle timeout
 - [x] Single source of truth for browser lifecycle (AppCore)
-- [ ] Handle browser crash/disconnect gracefully (deferred)
+- [x] Handle browser crash/disconnect gracefully (deferred)
 
 **Unified browser launch:**
 - `src/modules/browser/launch.rs` — single launch helper used everywhere
