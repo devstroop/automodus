@@ -48,6 +48,9 @@ pub struct ExecutionContext {
 
     /// Environment variables (from system)
     pub env: HashMap<String, String>,
+
+    /// Current call depth (for nested workflow calls)
+    pub call_depth: usize,
 }
 
 impl ExecutionContext {
@@ -67,6 +70,7 @@ impl ExecutionContext {
             step_index: 0,
             started_at: chrono::Utc::now(),
             env: std::env::vars().collect(),
+            call_depth: 0,
         }
     }
 

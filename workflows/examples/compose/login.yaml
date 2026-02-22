@@ -1,0 +1,55 @@
+# Reusable Login Workflow
+#
+# A self-contained login flow that can be called from other workflows.
+# Accepts credentials as parameters and outputs the login status.
+
+name: login
+version: "1.0"
+description: Reusable login flow
+
+params:
+  url:
+    type: string
+    required: true
+    description: Login page URL
+  username:
+    type: string
+    required: true
+  password:
+    type: string
+    required: true
+
+steps:
+  - id: navigate
+    action: goto
+    url: "{{params.url}}"
+
+  - id: enter_username
+    action: type
+    selector: "input[name='username'], input[type='email'], #username"
+    text: "{{params.username}}"
+    clear: true
+
+  - id: enter_password
+    action: type
+    selector: "input[name='password'], input[type='password'], #password"
+    text: "{{params.password}}"
+    clear: true
+
+  - id: submit
+    action: click
+    selector: "button[type='submit'], input[type='submit'], #login-btn"
+
+  - id: wait_nav
+    action: wait_for
+    selector: "[data-testid='dashboard'], .dashboard, #main-content"
+    timeout: "15s"
+
+  - id: get_url
+    action: eval
+    script: "return window.location.href"
+    store_as: final_url
+
+output:
+  logged_in: true
+  url: "{{store.final_url}}"

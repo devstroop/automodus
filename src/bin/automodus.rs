@@ -18,6 +18,7 @@
 use futures_util::FutureExt;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use automodus::{
     actions::BrowserHandle,
@@ -786,7 +787,7 @@ async fn run_workflow(
 
     println!("✓ Browser page ready");
 
-    // Create adapter and engine
+    // Create adapter and engine with workflow resolver for `call` actions
     let browser_ref = Arc::new(tokio::sync::Mutex::new(Some(browser)));
     let adapter = ChromePageAdapter::with_browser(page, browser_ref);
     if let Err(e) = adapter.start_console_listener().await {
@@ -798,7 +799,12 @@ async fn run_workflow(
     if let Err(e) = adapter.start_crash_listener().await {
         eprintln!("Warning: failed to start crash listener: {}", e);
     }
-    let engine = WorkflowEngine::new();
+    let workflows_dir = path
+        .parent()
+        .unwrap_or(std::path::Path::new("workflows"))
+        .to_path_buf();
+    let loader = Arc::new(WorkflowLoader::new(&workflows_dir));
+    let engine = WorkflowEngine::with_resolver(loader);
 
     println!("\n▶ Executing workflow...\n");
 
@@ -906,7 +912,7 @@ async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("✓ Browser ready!\n");
 
-    // Create adapter and engine (reused across flows)
+    // Create adapter and engine with workflow resolver for `call` actions
     let browser_ref = Arc::new(tokio::sync::Mutex::new(Some(browser)));
     let adapter = ChromePageAdapter::with_browser(page, browser_ref);
     if let Err(e) = adapter.start_console_listener().await {
@@ -918,7 +924,10 @@ async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
     if let Err(e) = adapter.start_crash_listener().await {
         eprintln!("Warning: failed to start crash listener: {}", e);
     }
-    let engine = WorkflowEngine::new();
+    let workflows_dir = std::env::var("AUTOMODUS_WORKFLOWS")
+        .unwrap_or_else(|_| "workflows".to_string());
+    let loader = Arc::new(WorkflowLoader::new(&workflows_dir));
+    let engine = WorkflowEngine::with_resolver(loader);
 
     // Create AppCore for session management
     let daemon_config = DaemonConfig::default();
