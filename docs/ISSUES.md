@@ -212,9 +212,9 @@ Browser console and network capture.
 **Tasks:**
 - [x] Add ConsoleEntry struct with format() method
 - [x] Add console_logs storage to ChromePageAdapter
-- [x] Add capture_console_logs() via JS injection
+- [x] Add capture_console_logs() as CDP buffer drain
 - [x] Add get_console_logs() and clear_console_logs()
-- [x] Setup real CDP `ConsoleAPICalledEvent` listener
+- [x] Setup real CDP `ConsoleAPICalledEvent` listener via `start_console_listener()`
 
 **Output format:**
 ```
@@ -226,7 +226,7 @@ Browser console and network capture.
 ---
 
 ### Issue #10: Network capture via CDP
-**Status:** ✅ Done (basic)  
+**Status:** ✅ Done  
 **File:** `src/modules/browser/adapter.rs`  
 **Depends:** #5  
 **Estimate:** 3-4 hours
@@ -234,9 +234,10 @@ Browser console and network capture.
 **Tasks:**
 - [x] Add NetworkEntry struct with format() method
 - [x] Add network_logs storage to ChromePageAdapter
-- [x] Add capture_network_logs() via Performance API
+- [x] Add capture_network_logs() as CDP buffer drain
 - [x] Add get_network_logs() and clear_network_logs()
-- [x] Setup real CDP `ResponseReceivedEvent` listener (deferred)
+- [x] Setup real CDP `ResponseReceivedEvent` + `RequestWillBeSent` listener via `start_network_listener()`
+- [x] Correlate request/response by `request_id` (method, url, status, duration)
 
 **Output format:**
 ```

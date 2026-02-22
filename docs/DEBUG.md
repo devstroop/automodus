@@ -11,8 +11,8 @@ This document outlines the debug mode implementation for automodus workflows.
 | `debug` field on Step | ✅ Implemented | `workflow/schema.rs` |
 | CLI `--debug` flags | ✅ Implemented | `bin/automodus.rs` |
 | Engine debug context | ✅ Implemented | `core/context.rs`, `core/engine.rs` |
-| CDP console listener | ⚠️ Basic | JS injection; real CDP listener deferred |
-| CDP network listener | ⚠️ Basic | Performance API; real CDP listener deferred |
+| CDP console listener | ✅ Implemented | Native CDP `EventConsoleApiCalled` via `start_console_listener()` |
+| CDP network listener | ✅ Implemented | Native CDP `RequestWillBeSent`/`ResponseReceived` via `start_network_listener()` |
 | Element highlighting | ✅ Implemented | `core/engine.rs` |
 | Screenshot capture | ✅ Implemented | Wired to debug modes |
 
