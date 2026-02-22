@@ -323,7 +323,7 @@ automodus daemon stop
 ---
 
 ### Issue #14a: Unify error types
-**Status:** ⬜ Not Started  
+**Status:** ✅ Done  
 **File:** `src/error.rs`  
 **Depends:** #11  
 **Estimate:** 2-3 hours
@@ -331,11 +331,11 @@ automodus daemon stop
 > **Note:** Moved from backlog - daemon needs `ErrorCode` enum for proper API responses.
 
 **Tasks:**
-- [ ] Merge `AutomodusError` and proposed `AppError`
-- [ ] Add `ErrorCode` enum per SHELL.md spec
-- [ ] Add daemon-specific codes: `DaemonNotRunning`, `DaemonAlreadyRunning`, `DaemonConnectionFailed`
-- [ ] Implement `From<AutomodusError>` for API error response
-- [ ] Update all error handling sites
+- [x] Merge `AutomodusError` and proposed `AppError`
+- [x] Add `ErrorCode` enum per SHELL.md spec
+- [x] Add daemon-specific codes: `DaemonNotRunning`, `DaemonAlreadyRunning`, `DaemonConnectionFailed`
+- [x] Implement `From<AutomodusError>` for API error response
+- [x] Update all error handling sites
 
 ---
 
