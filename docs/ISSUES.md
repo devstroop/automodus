@@ -374,16 +374,16 @@ automodus daemon stop
 ---
 
 ### Issue #15b: Backward compatibility for serve command
-**Status:** ⬜ Not Started  
+**Status:** ✅ Done  
 **File:** `src/bin/automodus.rs`  
 **Depends:** #14, #15  
 **Estimate:** 1 hour
 
 **Tasks:**
-- [ ] Keep `automodus serve` command working
-- [ ] Internally call `daemon start` with HTTP enabled
-- [ ] Print deprecation warning
-- [ ] Document in help text
+- [x] Keep `automodus serve` command working
+- [x] Internally call `daemon start` with HTTP enabled
+- [x] Print deprecation warning
+- [x] Document in help text
 
 ---
 

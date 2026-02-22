@@ -348,7 +348,8 @@ COMMANDS:
             --lines=<n>     Number of lines to show (default: 50)
 
     shell               Interactive shell mode (keeps browser running)
-    serve               Start the API server
+    serve               [DEPRECATED] Start HTTP server in foreground
+                        (Use 'daemon start' for background)
     validate [path]     Validate workflow files (default: workflows/)
     list                List all loaded workflows
     help                Show this help message
@@ -477,6 +478,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::Serve => {
             print_banner();
+            println!("⚠️  DEPRECATED: 'automodus serve' is deprecated.");
+            println!("   Use 'automodus daemon start' instead for background operation,");
+            println!("   or the daemon will now start in foreground mode.\n");
+            
+            // Start daemon in foreground with HTTP enabled
+            let config = DaemonConfig {
+                enable_http: true,
+                ..DaemonConfig::default()
+            };
+            
+            let daemon = Daemon::new(config.clone());
+            
+            // Check if daemon is already running
+            if daemon.is_running() {
+                println!("❌ Daemon is already running");
+                if let DaemonStatus::Running { pid } = daemon.status() {
+                    println!("   PID: {}", pid);
+                }
+                println!("\nUse 'automodus daemon stop' to stop it first.");
+                std::process::exit(1);
+            }
+            
+            println!("🚀 Starting server (foreground mode)...");
+            println!("   HTTP: http://{}:{}", config.http_host, config.http_port);
+            println!("   Press Ctrl+C to stop\n");
+            
+            // Run the API server directly (foreground)
             api::run_server().await?;
         }
         Command::Validate { path } => {
