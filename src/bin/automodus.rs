@@ -18,7 +18,6 @@
 use futures_util::FutureExt;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use automodus::{
     actions::BrowserHandle,
@@ -168,6 +167,8 @@ enum DaemonOp {
     Restart,
     /// View daemon logs
     Logs { follow: bool, lines: usize },
+    /// Internal: run daemon in foreground (used by background spawn)
+    Run,
 }
 
 fn parse_args() -> Command {
@@ -279,6 +280,7 @@ fn parse_args() -> Command {
                 "stop" => DaemonOp::Stop,
                 "status" => DaemonOp::Status,
                 "restart" => DaemonOp::Restart,
+                "__run__" => DaemonOp::Run,
                 "logs" => {
                     let follow = args.iter().any(|a| a == "--follow" || a == "-f");
                     let mut lines: usize = 50;
@@ -665,6 +667,13 @@ async fn handle_daemon_command(op: DaemonOp) -> Result<(), Box<dyn std::error::E
                 println!("❌ Daemon mode is only supported on Unix systems");
                 std::process::exit(1);
             }
+        }
+
+        DaemonOp::Run => {
+            // Internal: run daemon in foreground (spawned by `daemon start`)
+            let mut daemon = Daemon::new(config.clone());
+            daemon.start().await.map_err(|e| format!("Failed to start daemon: {}", e))?;
+            daemon.run().await.map_err(|e| format!("Daemon error: {}", e))?;
         }
 
         DaemonOp::Logs { follow, lines } => {

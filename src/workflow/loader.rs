@@ -100,17 +100,35 @@ impl WorkflowLoader {
             return Ok(workflow.clone());
         }
 
-        // Try to find and load the workflow file
-        let yaml_path = self.workflows_dir.join(format!("{}.yaml", name));
-        let yml_path = self.workflows_dir.join(format!("{}.yml", name));
+        // Try to find and load the workflow file.
+        // Search workflows_dir first, then walk up parent directories (max 3 levels)
+        // so sub-workflows can resolve sibling paths from nested directories.
+        let mut search_dir = self.workflows_dir.clone();
+        let mut path = None;
 
-        let path = if yaml_path.exists() {
-            yaml_path
-        } else if yml_path.exists() {
-            yml_path
-        } else {
-            anyhow::bail!("Workflow '{}' not found in {:?}", name, self.workflows_dir);
-        };
+        for _ in 0..=3 {
+            let yaml_path = search_dir.join(format!("{}.yaml", name));
+            let yml_path = search_dir.join(format!("{}.yml", name));
+
+            if yaml_path.exists() {
+                path = Some(yaml_path);
+                break;
+            } else if yml_path.exists() {
+                path = Some(yml_path);
+                break;
+            }
+
+            match search_dir.parent() {
+                Some(parent) if parent != search_dir => {
+                    search_dir = parent.to_path_buf();
+                }
+                _ => break,
+            }
+        }
+
+        let path = path.ok_or_else(|| {
+            anyhow::anyhow!("Workflow '{}' not found in {:?}", name, self.workflows_dir)
+        })?;
 
         let workflow = WorkflowParser::parse_file(&path)?;
 
