@@ -421,8 +421,14 @@ Stateless shell connecting to daemon.
 - [x] Implement history save/load (`~/.local/share/automodus/history.txt`)
 - [x] Add command completion for commands and workflow paths
 - [x] **Wire ShellClient into `bin/automodus.rs::run_shell()`**
-- [ ] Implement daemon connection via Unix socket (deferred)
-- [ ] Replace inline browser launch with daemon commands (deferred)
+- [x] Implement daemon connection via Unix socket
+- [x] Replace inline browser launch with daemon commands
+- [x] Create `src/daemon/protocol.rs` with typed `SocketRequest`/`SocketResponse` enums
+- [x] Length-prefixed JSON framing (4-byte big-endian + JSON payload)
+- [x] Server-side `handle_socket_connection()` + `dispatch_request()` in `daemon/mod.rs`
+- [x] `DaemonClient` typed methods (ping, session_*, browser_*, workflow_*)
+- [x] Shell auto-detects running daemon; falls back to standalone mode
+- [x] Unified session store: `ServerState` delegates to `AppCore` (removed `ServerSession` + dual HashMap)
 
 **Acceptance:**
 ```
@@ -727,6 +733,9 @@ Final debug features.
 | 2026-02-22 | #15b ✅: `serve` routes through daemon.start()+run() instead of api::run_server() |
 | 2026-02-22 | #19 ✅: Session shell commands (6 commands + parsing + execution wiring + AppCore lookup methods) |
 | 2026-02-22 | #18 ✅: Shell autocomplete (session name + file path + session subcommand completion) |
+| 2026-02-22 | #16 deferred items ✅: Socket protocol (`daemon/protocol.rs`), server handler, DaemonClient typed methods |
+| 2026-02-22 | Session store unified: removed `ServerSession`, `ServerState.sessions` delegates to `AppCore` |
+| 2026-02-22 | Shell wired to daemon: `run_shell()` auto-detects daemon, `run_shell_daemon()` routes via socket |
 
 ---
 
