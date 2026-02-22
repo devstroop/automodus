@@ -552,17 +552,17 @@ Full API parity with shell.
 Final debug features.
 
 ### Issue #24: Shell debug commands
-**Status:** ⬜ Not Started  
+**Status:** ✅ Done  
 **File:** `src/shell/client.rs`  
 **Depends:** #16, #5  
 **Estimate:** 2-3 hours
 
 **Tasks:**
-- [ ] Add `debug on [--profile=PROFILE]`
-- [ ] Add `debug off`
-- [ ] Add `debug status`
-- [ ] Add `highlight <selector>`
-- [ ] Add `trace <workflow>` (alias for `run --debug=trace`)
+- [x] Add `debug on [--profile=PROFILE]`
+- [x] Add `debug off`
+- [x] Add `debug status`
+- [x] Add `highlight <selector>`
+- [x] Add `trace <workflow>` (alias for `run --debug=trace`)
 
 ---
 
