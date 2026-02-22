@@ -19,8 +19,8 @@ use crate::workflow::schema::{DebugConfig, ResolvedDebugConfig, Workflow};
 
 /// Application core - shared state for all daemon operations
 pub struct AppCore {
-    /// Browser instance (lazily initialized)
-    browser: Mutex<Option<chromiumoxide::browser::Browser>>,
+    /// Browser instance (lazily initialized, Arc-shared with adapters for tab support)
+    browser: Arc<Mutex<Option<chromiumoxide::browser::Browser>>>,
     /// Current page adapter
     page_adapter: Mutex<Option<ChromePageAdapter>>,
     /// Whether to run browser headless
@@ -47,7 +47,7 @@ impl AppCore {
         let (event_tx, _) = broadcast::channel(256);
 
         Self {
-            browser: Mutex::new(None),
+            browser: Arc::new(Mutex::new(None)),
             page_adapter: Mutex::new(None),
             headless: true,
             sessions: Arc::new(RwLock::new(SessionStore::new())),
@@ -92,30 +92,30 @@ impl AppCore {
     /// Lazily launches the browser on first call. Returns an existing valid
     /// adapter if available.
     pub async fn get_page(&self) -> Result<ChromePageAdapter, String> {
-        let mut browser_guard = self.browser.lock().await;
-        let mut page_guard = self.page_adapter.lock().await;
-
-        // Check if we have a valid page
-        if let Some(ref adapter) = *page_guard {
-            if adapter.current_url().await.is_ok() {
-                return Ok(adapter.clone());
+        // Check if we have a valid cached adapter
+        {
+            let page_guard = self.page_adapter.lock().await;
+            if let Some(ref adapter) = *page_guard {
+                if adapter.current_url().await.is_ok() {
+                    return Ok(adapter.clone());
+                }
             }
         }
 
-        // Need to create browser
-        if browser_guard.is_none() {
-            info!("AppCore: launching browser...");
-            let options = LaunchOptions::for_server(self.headless);
-            let browser = launch_browser(&options).await?;
-            *browser_guard = Some(browser);
-        }
+        // Need to create browser and page
+        let page = {
+            let mut browser_guard = self.browser.lock().await;
+            if browser_guard.is_none() {
+                info!("AppCore: launching browser...");
+                let options = LaunchOptions::for_server(self.headless);
+                let browser = launch_browser(&options).await?;
+                *browser_guard = Some(browser);
+            }
+            get_or_create_page(browser_guard.as_ref().unwrap(), None).await?
+        };
 
-        // Get or create page
-        let browser = browser_guard.as_ref().unwrap();
-        let page = get_or_create_page(browser, None).await?;
-
-        let adapter = ChromePageAdapter::new(page);
-        *page_guard = Some(adapter.clone());
+        let adapter = ChromePageAdapter::with_browser(page, self.browser.clone());
+        *self.page_adapter.lock().await = Some(adapter.clone());
 
         Ok(adapter)
     }

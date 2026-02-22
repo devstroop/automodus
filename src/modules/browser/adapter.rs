@@ -64,12 +64,12 @@ impl NetworkEntry {
 #[derive(Clone)]
 pub struct ChromePageAdapter {
     page: Arc<Mutex<Page>>,
-    /// Additional pages/tabs (for future multi-tab support)
-    #[allow(dead_code)]
-    _tabs: Arc<Mutex<Vec<Page>>>,
-    /// Current tab index (for future multi-tab support)
-    #[allow(dead_code)]
-    _current_tab: Arc<Mutex<usize>>,
+    /// All open tabs
+    tabs: Arc<Mutex<Vec<Page>>>,
+    /// Current tab index
+    current_tab: Arc<Mutex<usize>>,
+    /// Browser reference for multi-tab operations (optional)
+    browser: Option<Arc<Mutex<Option<chromiumoxide::browser::Browser>>>>,
     /// Captured console logs (when console capture is enabled)
     console_logs: Arc<Mutex<Vec<ConsoleEntry>>>,
     /// Captured network requests (when network capture is enabled)
@@ -80,9 +80,25 @@ impl ChromePageAdapter {
     /// Create a new adapter wrapping a chromiumoxide Page
     pub fn new(page: Page) -> Self {
         Self {
-            page: Arc::new(Mutex::new(page)),
-            _tabs: Arc::new(Mutex::new(Vec::new())),
-            _current_tab: Arc::new(Mutex::new(0)),
+            page: Arc::new(Mutex::new(page.clone())),
+            tabs: Arc::new(Mutex::new(vec![page])),
+            current_tab: Arc::new(Mutex::new(0)),
+            browser: None,
+            console_logs: Arc::new(Mutex::new(Vec::new())),
+            network_logs: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Create an adapter with a browser reference for multi-tab support
+    pub fn with_browser(
+        page: Page,
+        browser: Arc<Mutex<Option<chromiumoxide::browser::Browser>>>,
+    ) -> Self {
+        Self {
+            page: Arc::new(Mutex::new(page.clone())),
+            tabs: Arc::new(Mutex::new(vec![page])),
+            current_tab: Arc::new(Mutex::new(0)),
+            browser: Some(browser),
             console_logs: Arc::new(Mutex::new(Vec::new())),
             network_logs: Arc::new(Mutex::new(Vec::new())),
         }

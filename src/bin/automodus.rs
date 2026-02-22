@@ -769,6 +769,7 @@ async fn run_workflow(
 
     // Launch browser using shared launch helper
     use automodus::modules::browser::launch::{launch_browser, get_or_create_page, LaunchOptions};
+    use std::sync::Arc;
 
     let headless = workflow.browser.headless;
     let options = LaunchOptions::for_workflow().headless(headless);
@@ -786,7 +787,8 @@ async fn run_workflow(
     println!("✓ Browser page ready");
 
     // Create adapter and engine
-    let adapter = ChromePageAdapter::new(page);
+    let browser_ref = Arc::new(tokio::sync::Mutex::new(Some(browser)));
+    let adapter = ChromePageAdapter::with_browser(page, browser_ref);
     let engine = WorkflowEngine::new();
 
     println!("\n▶ Executing workflow...\n");
@@ -896,7 +898,8 @@ async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ Browser ready!\n");
 
     // Create adapter and engine (reused across flows)
-    let adapter = ChromePageAdapter::new(page);
+    let browser_ref = Arc::new(tokio::sync::Mutex::new(Some(browser)));
+    let adapter = ChromePageAdapter::with_browser(page, browser_ref);
     let engine = WorkflowEngine::new();
 
     // Create AppCore for session management
