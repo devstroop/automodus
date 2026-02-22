@@ -88,6 +88,18 @@ pub enum ShellCommand {
     Highlight { selector: String },
     /// Trace workflow (run with --debug=trace)
     Trace { path: PathBuf, params: HashMap<String, String> },
+    /// Create a new session
+    SessionNew { name: Option<String>, keep_alive: bool },
+    /// List all sessions
+    SessionList,
+    /// Switch to a session by ID or name
+    SessionSwitch { target: String },
+    /// Close a session
+    SessionClose { target: Option<String> },
+    /// Show current session info
+    SessionInfo,
+    /// Toggle keep-alive on a session
+    SessionKeepAlive { target: Option<String>, toggle: Option<bool> },
     /// Unknown command
     Unknown { command: String },
 }
