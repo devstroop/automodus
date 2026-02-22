@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex, RwLock};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::actions::BrowserHandle;
 use crate::modules::browser::launch::{launch_browser, get_or_create_page, LaunchOptions};
@@ -115,6 +115,9 @@ impl AppCore {
         };
 
         let adapter = ChromePageAdapter::with_browser(page, self.browser.clone());
+        if let Err(e) = adapter.start_console_listener().await {
+            warn!("Failed to start console listener: {}", e);
+        }
         *self.page_adapter.lock().await = Some(adapter.clone());
 
         Ok(adapter)
