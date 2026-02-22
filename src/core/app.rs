@@ -251,6 +251,32 @@ impl AppCore {
         }
     }
 
+    /// Find a session by name (returns first match)
+    pub async fn find_session_by_name(&self, name: &str) -> Option<Session> {
+        self.sessions.read().await.find_by_name(name)
+    }
+
+    /// Find a session by ID or name
+    pub async fn find_session(&self, id_or_name: &str) -> Option<Session> {
+        let sessions = self.sessions.read().await;
+        if let Some(session) = sessions.get(id_or_name) {
+            return Some(session);
+        }
+        sessions.find_by_name(id_or_name)
+    }
+
+    /// Set keep_alive on a session
+    pub async fn set_session_keep_alive(&self, id: &str, keep_alive: bool) -> Result<(), SessionError> {
+        let mut sessions = self.sessions.write().await;
+        match sessions.get_mut(id) {
+            Some(session) => {
+                session.keep_alive = keep_alive;
+                Ok(())
+            }
+            None => Err(SessionError::NotFound),
+        }
+    }
+
     /// Set session idle timeout in seconds (0 = no timeout)
     pub fn set_session_idle_timeout(&mut self, seconds: u64) {
         self.session_idle_timeout = seconds;
@@ -387,6 +413,13 @@ impl SessionStore {
 
     fn list(&self) -> Vec<SessionInfo> {
         self.sessions.values().map(SessionInfo::from).collect()
+    }
+
+    fn find_by_name(&self, name: &str) -> Option<Session> {
+        self.sessions
+            .values()
+            .find(|s| s.name.as_deref() == Some(name))
+            .cloned()
     }
 }
 
