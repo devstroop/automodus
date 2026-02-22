@@ -4,7 +4,7 @@ Track implementation progress for automodus. Update status as work progresses.
 
 **Legend:** ⬜ Not Started | 🟡 In Progress | ✅ Done | ❌ Blocked
 
-**Summary:** 33 issues across 8 priorities
+**Summary:** 34 issues across 8 priorities
 
 | Priority | Issues | Description | Est. Total |
 |----------|--------|-------------|------------|
@@ -781,6 +781,12 @@ steps:
 | 2026-02-22 | #16 deferred items ✅: Socket protocol (`daemon/protocol.rs`), server handler, DaemonClient typed methods |
 | 2026-02-22 | Session store unified: removed `ServerSession`, `ServerState.sessions` delegates to `AppCore` |
 | 2026-02-22 | Shell wired to daemon: `run_shell()` auto-detects daemon, `run_shell_daemon()` routes via socket |
+| 2026-02-23 | #9: Updated task text — console capture uses CDP `ConsoleAPICalledEvent` listener (not JS injection) |
+| 2026-02-23 | #10: Upgraded status from "Done (basic)" to "Done" — full CDP `ResponseReceivedEvent` + `RequestWillBeSent` with request/response correlation |
+| 2026-02-23 | #13: Removed "(deferred)" from crash recovery task — fully implemented via `start_crash_listener()` + `EventTargetCrashed` |
+| 2026-02-23 | #16: Updated merge note — `feature/sub-workflows` rebased and merged via PR #1 |
+| 2026-02-23 | Added Issue #28: Sub-workflow composition (WorkflowResolver, call action, ARCHITECTURE.md) |
+| 2026-02-23 | Audit: Verified all 34 issues match codebase reality |
 
 ---
 
