@@ -313,3 +313,198 @@ pub async fn goto_handler(
         }),
     }
 }
+
+// ============================================================================
+// Browser Control
+// ============================================================================
+
+/// Click an element
+#[utoipa::path(
+    post,
+    path = "/api/browser/click",
+    tag = "browser",
+    request_body = ClickRequest,
+    responses(
+        (status = 200, description = "Click result", body = BrowserActionResponse)
+    )
+)]
+pub async fn click_handler(
+    State(state): State<Arc<ServerState>>,
+    Json(request): Json<ClickRequest>,
+) -> impl IntoResponse {
+    let adapter = match state.get_page().await {
+        Ok(a) => a,
+        Err(e) => {
+            return Json(BrowserActionResponse {
+                success: false,
+                result: None,
+                error: Some(format!("Browser error: {}", e)),
+            });
+        }
+    };
+
+    match adapter.click(&request.selector).await {
+        Ok(()) => Json(BrowserActionResponse {
+            success: true,
+            result: None,
+            error: None,
+        }),
+        Err(e) => Json(BrowserActionResponse {
+            success: false,
+            result: None,
+            error: Some(e.to_string()),
+        }),
+    }
+}
+
+/// Type into an element
+#[utoipa::path(
+    post,
+    path = "/api/browser/type",
+    tag = "browser",
+    request_body = TypeRequest,
+    responses(
+        (status = 200, description = "Type result", body = BrowserActionResponse)
+    )
+)]
+pub async fn type_handler(
+    State(state): State<Arc<ServerState>>,
+    Json(request): Json<TypeRequest>,
+) -> impl IntoResponse {
+    let adapter = match state.get_page().await {
+        Ok(a) => a,
+        Err(e) => {
+            return Json(BrowserActionResponse {
+                success: false,
+                result: None,
+                error: Some(format!("Browser error: {}", e)),
+            });
+        }
+    };
+
+    // clear: false by default - append text
+    match adapter.type_text(&request.selector, &request.text, false).await {
+        Ok(()) => Json(BrowserActionResponse {
+            success: true,
+            result: None,
+            error: None,
+        }),
+        Err(e) => Json(BrowserActionResponse {
+            success: false,
+            result: None,
+            error: Some(e.to_string()),
+        }),
+    }
+}
+
+/// Wait for an element
+#[utoipa::path(
+    post,
+    path = "/api/browser/wait",
+    tag = "browser",
+    request_body = WaitRequest,
+    responses(
+        (status = 200, description = "Wait result", body = BrowserActionResponse)
+    )
+)]
+pub async fn wait_handler(
+    State(state): State<Arc<ServerState>>,
+    Json(request): Json<WaitRequest>,
+) -> impl IntoResponse {
+    let adapter = match state.get_page().await {
+        Ok(a) => a,
+        Err(e) => {
+            return Json(BrowserActionResponse {
+                success: false,
+                result: None,
+                error: Some(format!("Browser error: {}", e)),
+            });
+        }
+    };
+
+    match adapter.wait_for(&request.selector, request.timeout).await {
+        Ok(()) => Json(BrowserActionResponse {
+            success: true,
+            result: None,
+            error: None,
+        }),
+        Err(e) => Json(BrowserActionResponse {
+            success: false,
+            result: None,
+            error: Some(e.to_string()),
+        }),
+    }
+}
+
+/// Execute JavaScript
+#[utoipa::path(
+    post,
+    path = "/api/browser/eval",
+    tag = "browser",
+    request_body = EvalRequest,
+    responses(
+        (status = 200, description = "Eval result", body = BrowserActionResponse)
+    )
+)]
+pub async fn eval_handler(
+    State(state): State<Arc<ServerState>>,
+    Json(request): Json<EvalRequest>,
+) -> impl IntoResponse {
+    let adapter = match state.get_page().await {
+        Ok(a) => a,
+        Err(e) => {
+            return Json(BrowserActionResponse {
+                success: false,
+                result: None,
+                error: Some(format!("Browser error: {}", e)),
+            });
+        }
+    };
+
+    match adapter.eval(&request.script).await {
+        Ok(value) => Json(BrowserActionResponse {
+            success: true,
+            result: Some(value),
+            error: None,
+        }),
+        Err(e) => Json(BrowserActionResponse {
+            success: false,
+            result: None,
+            error: Some(e.to_string()),
+        }),
+    }
+}
+
+/// Get page info
+#[utoipa::path(
+    get,
+    path = "/api/browser/page",
+    tag = "browser",
+    responses(
+        (status = 200, description = "Page information", body = PageInfoResponse)
+    )
+)]
+pub async fn page_info_handler(State(state): State<Arc<ServerState>>) -> impl IntoResponse {
+    let adapter = match state.get_page().await {
+        Ok(a) => a,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("Browser error: {}", e)})),
+            );
+        }
+    };
+
+    let url = adapter.current_url().await.unwrap_or_default();
+    let title = adapter
+        .eval("document.title")
+        .await
+        .ok()
+        .and_then(|v| v.as_str().map(|s| s.to_string()))
+        .unwrap_or_default();
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!(PageInfoResponse { url, title })),
+    )
+}
