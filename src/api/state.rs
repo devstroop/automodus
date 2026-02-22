@@ -13,6 +13,7 @@ use crate::core::WorkflowEngine;
 use crate::modules::ChromePageAdapter;
 use crate::workflow::{Workflow, WorkflowParser};
 use crate::api::schemas::ExecutionStatus;
+use crate::api::ws::ServerEvent;
 
 /// Maximum executions to keep in history
 const MAX_EXECUTION_HISTORY: usize = 100;
@@ -69,6 +70,8 @@ pub struct ServerState {
     pub max_sessions: usize,
     /// Execution history (id -> Execution)
     pub executions: RwLock<HashMap<String, ServerExecution>>,
+    /// Event broadcaster for WebSocket clients
+    event_tx: tokio::sync::broadcast::Sender<ServerEvent>,
 }
 
 /// Workflow execution record
@@ -101,6 +104,8 @@ pub struct ServerExecution {
 impl ServerState {
     /// Create a new server state
     pub fn new(config: AppConfig) -> Self {
+        let (event_tx, _) = tokio::sync::broadcast::channel(256);
+
         Self {
             engine: WorkflowEngine::new(),
             workflows: RwLock::new(HashMap::new()),
@@ -110,7 +115,18 @@ impl ServerState {
             sessions: RwLock::new(HashMap::new()),
             max_sessions: 10, // Default max sessions
             executions: RwLock::new(HashMap::new()),
+            event_tx,
         }
+    }
+
+    /// Subscribe to server events
+    pub fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<ServerEvent> {
+        self.event_tx.subscribe()
+    }
+
+    /// Broadcast an event to all WebSocket clients
+    pub fn broadcast_event(&self, event: ServerEvent) {
+        let _ = self.event_tx.send(event);
     }
 
     /// Load workflows from directory
@@ -251,6 +267,9 @@ impl ServerState {
         let id = session.id.clone();
         sessions.insert(id.clone(), session.clone());
 
+        // Broadcast event
+        self.broadcast_event(ServerEvent::SessionCreated { id: id.clone() });
+
         info!("Created session: {}", id);
         Ok(session)
     }
@@ -272,6 +291,9 @@ impl ServerState {
         if sessions.remove(id).is_none() {
             return Err(format!("Session '{}' not found", id));
         }
+
+        // Broadcast event
+        self.broadcast_event(ServerEvent::SessionClosed { id: id.to_string() });
 
         info!("Closed session: {}", id);
         Ok(())
@@ -326,14 +348,27 @@ impl ServerState {
             }
         }
 
+        // Broadcast event
+        self.broadcast_event(ServerEvent::ExecutionStarted {
+            id: id.clone(),
+            workflow: workflow.to_string(),
+        });
+
         info!("Started execution: {} for workflow: {}", id, workflow);
         id
     }
 
     /// Update execution progress
-    pub async fn update_execution_progress(&self, id: &str, steps_executed: usize) {
+    pub async fn update_execution_progress(&self, id: &str, steps_executed: usize, action: &str) {
         if let Some(execution) = self.executions.write().await.get_mut(id) {
             execution.steps_executed = steps_executed;
+            
+            // Broadcast step event
+            self.broadcast_event(ServerEvent::ExecutionStep {
+                id: id.to_string(),
+                step: steps_executed,
+                action: action.to_string(),
+            });
         }
     }
 
@@ -355,7 +390,21 @@ impl ServerState {
                 ExecutionStatus::Failed
             };
             execution.output = output;
-            execution.error = error;
+            execution.error = error.clone();
+
+            // Broadcast event
+            if success {
+                self.broadcast_event(ServerEvent::ExecutionComplete {
+                    id: id.to_string(),
+                    success: true,
+                });
+            } else {
+                self.broadcast_event(ServerEvent::ExecutionError {
+                    id: id.to_string(),
+                    error: error.unwrap_or_else(|| "Unknown error".to_string()),
+                });
+            }
+
             info!("Completed execution: {} success={}", id, success);
         }
     }
