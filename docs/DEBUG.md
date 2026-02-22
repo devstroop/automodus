@@ -215,7 +215,38 @@ impl DebugCapture {
     }
     
     /// Remove oldest files if limits exceeded
-    fn cleanup_if_needed(path: &Path) -> Result<()>;
+    fn cleanup_if_needed(path: &Path) -> Result<()> {
+        let mut files: Vec<_> = std::fs::read_dir(path)?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map_or(false, |ext| ext == "png"))
+            .collect();
+        
+        // Sort by modification time (oldest first)
+        files.sort_by_key(|f| f.metadata().and_then(|m| m.modified()).ok());
+        
+        // Delete oldest files if count exceeds limit
+        while files.len() > MAX_DEBUG_FILES {
+            if let Some(oldest) = files.first() {
+                std::fs::remove_file(oldest.path())?;
+                files.remove(0);
+            }
+        }
+        
+        // Check total size and delete oldest if needed
+        let total_mb: u64 = files.iter()
+            .filter_map(|f| f.metadata().ok())
+            .map(|m| m.len())
+            .sum::<u64>() / (1024 * 1024);
+        
+        while total_mb > MAX_DEBUG_SIZE_MB && !files.is_empty() {
+            if let Some(oldest) = files.first() {
+                std::fs::remove_file(oldest.path())?;
+                files.remove(0);
+            }
+        }
+        
+        Ok(())
+    }
     
     /// Generate screenshot filename
     pub fn filename(workflow: &str, step: usize, phase: &str) -> String {
@@ -277,7 +308,13 @@ Client sends to resume:
 ```
 
 **API (without WebSocket):**
-If no WebSocket connected, `pause: true` is ignored with warning logged.
+If no WebSocket connected, `pause: true` is ignored with warning in response:
+```json
+{
+  "success": true,
+  "warnings": ["pause ignored: no WebSocket connection for step 3"]
+}
+```
 
 ## Precedence
 
@@ -299,28 +336,38 @@ Add to `workflow/schema.rs`:
 use serde::{Deserialize, Serialize};
 
 /// Debug configuration for workflow execution
+/// 
+/// Uses Option<T> for fields to distinguish "not set" from "set to default".
+/// This enables proper merge semantics where only explicitly-set fields override.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DebugConfig {
-    /// Master switch for debug mode
-    pub enabled: bool,
-    /// Log verbosity level
-    #[serde(default = "default_level")]
-    pub level: LogLevel,
-    /// Screenshot capture mode
-    #[serde(default = "default_capture")]
-    pub capture: CaptureMode,
-    /// Flash element with red border before interaction
-    pub highlight: bool,
-    /// Milliseconds to pause between actions
-    pub delay: u64,
-    /// Wait for user input before continuing
-    pub pause: bool,
-    /// Capture browser console output
-    pub console: bool,
-    /// Capture network requests
-    pub network: bool,
+    /// Master switch for debug mode (None = inherit from parent)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Log verbosity level (None = inherit from parent)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<LogLevel>,
+    /// Screenshot capture mode (None = inherit from parent)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture: Option<CaptureMode>,
+    /// Flash element with red border before interaction (None = inherit)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub highlight: Option<bool>,
+    /// Milliseconds to pause between actions (None = inherit)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delay: Option<u64>,
+    /// Wait for user input before continuing (None = inherit)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause: Option<bool>,
+    /// Capture browser console output (None = inherit)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub console: Option<bool>,
+    /// Capture network requests (None = inherit)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<bool>,
     /// Preset configuration profile
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<DebugProfile>,
 }
 
@@ -354,30 +401,44 @@ pub enum DebugProfile {
 }
 
 impl DebugConfig {
+    /// Resolve final values (apply defaults for None fields)
+    pub fn resolve(&self) -> ResolvedDebugConfig {
+        ResolvedDebugConfig {
+            enabled: self.enabled.unwrap_or(false),
+            level: self.level.unwrap_or_default(),
+            capture: self.capture.unwrap_or_default(),
+            highlight: self.highlight.unwrap_or(false),
+            delay: self.delay.unwrap_or(0),
+            pause: self.pause.unwrap_or(false),
+            console: self.console.unwrap_or(false),
+            network: self.network.unwrap_or(false),
+        }
+    }
+    
     /// Apply profile defaults, then merge explicit options
     pub fn with_profile(mut self) -> Self {
         if let Some(profile) = self.profile {
             let defaults = match profile {
                 DebugProfile::Minimal => DebugConfig {
-                    capture: CaptureMode::Failure,
+                    capture: Some(CaptureMode::Failure),
                     ..Default::default()
                 },
                 DebugProfile::Verbose => DebugConfig {
-                    level: LogLevel::Trace,
-                    capture: CaptureMode::All,
-                    console: true,
-                    network: true,
+                    level: Some(LogLevel::Trace),
+                    capture: Some(CaptureMode::All),
+                    console: Some(true),
+                    network: Some(true),
                     ..Default::default()
                 },
                 DebugProfile::Ci => DebugConfig {
-                    capture: CaptureMode::Failure,
-                    console: true,
-                    network: true,
+                    capture: Some(CaptureMode::Failure),
+                    console: Some(true),
+                    network: Some(true),
                     ..Default::default()
                 },
                 DebugProfile::Demo => DebugConfig {
-                    highlight: true,
-                    delay: 1000,
+                    highlight: Some(true),
+                    delay: Some(1000),
                     ..Default::default()
                 },
             };
@@ -387,8 +448,33 @@ impl DebugConfig {
         self
     }
     
-    /// Merge with another config (other takes precedence for non-default values)
-    pub fn merge(&self, other: &DebugConfig) -> Self;
+    /// Merge with another config (other's Some values take precedence)
+    pub fn merge(&self, other: &DebugConfig) -> Self {
+        Self {
+            enabled: other.enabled.or(self.enabled),
+            level: other.level.or(self.level),
+            capture: other.capture.or(self.capture),
+            highlight: other.highlight.or(self.highlight),
+            delay: other.delay.or(self.delay),
+            pause: other.pause.or(self.pause),
+            console: other.console.or(self.console),
+            network: other.network.or(self.network),
+            profile: other.profile.or(self.profile),
+        }
+    }
+}
+
+/// Resolved debug config with concrete values (no Options)
+#[derive(Debug, Clone)]
+pub struct ResolvedDebugConfig {
+    pub enabled: bool,
+    pub level: LogLevel,
+    pub capture: CaptureMode,
+    pub highlight: bool,
+    pub delay: u64,
+    pub pause: bool,
+    pub console: bool,
+    pub network: bool,
 }
 
 fn default_level() -> LogLevel { LogLevel::Info }
@@ -532,7 +618,9 @@ Captures all API calls made during the workflow, helping debug:
 
 ## Implementation Phases
 
-### Phase 1: Schema (Do First)
+> **Recommended:** Start with Phase 1 (Schema) - it's low-risk and provides immediate value while the daemon architecture is planned.
+
+### Phase 1: Schema (Priority - Do First, ~1-2 days)
 1. Add `DebugConfig` struct to `workflow/schema.rs`
 2. Add `debug` field to `Workflow` and `Step`
 3. Add CLI argument parsing for `--debug`, `--delay`, `--capture`, `--profile`

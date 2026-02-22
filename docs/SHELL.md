@@ -121,11 +121,12 @@ automodus shell --start-daemon  # Auto-start daemon if not running
 
 ```bash
 # Session management (browser contexts in daemon)
-session new [--name=NAME]     # Create new browser session
-session list                  # List active sessions  
-session switch <id|name>      # Switch active session
-session close [id]            # Close session (default: current)
-session info                  # Show current session details
+session new [--name=NAME] [--keep-alive]  # Create new browser session
+session list                               # List active sessions  
+session switch <id|name>                   # Switch active session
+session close [id]                         # Close session (default: current)
+session info                               # Show current session details
+session keep-alive [id] [on|off]           # Toggle keep-alive for session
 
 # Direct CLI (without entering shell)
 automodus sessions            # List sessions (like: docker ps)
@@ -351,6 +352,7 @@ Content-Type: application/json
 
 {
   "name": "whatsapp",
+  "keep_alive": true,             // Prevent idle timeout (optional)
   "browser": {
     "headless": false,
     "viewport": { "width": 1280, "height": 720 }
@@ -362,6 +364,7 @@ Content-Type: application/json
 {
   "id": "sess-xyz789",
   "name": "whatsapp",
+  "keep_alive": true,
   "created_at": "2026-02-22T10:00:00Z",
   "browser": {
     "headless": false,
@@ -414,6 +417,7 @@ pub struct DaemonConfig {
     pub http_port: u16,           // 8080
     pub pid_file: PathBuf,        // ~/.automodus/daemon.pid
     pub log_file: PathBuf,        // ~/.automodus/daemon.log
+    pub debug_dir: PathBuf,       // data/debug (configurable)
     pub max_sessions: usize,      // 10
 }
 ```
@@ -472,6 +476,8 @@ pub struct Session {
     browser: Browser,
     page: Page,
     created_at: DateTime<Utc>,
+    last_activity: DateTime<Utc>,
+    keep_alive: bool,              // Skip idle timeout when true
     config: BrowserConfig,
 }
 
@@ -481,6 +487,9 @@ impl SessionManager {
     pub async fn get_or_default(&self, id: Option<&str>) -> Result<&Session>;
     pub async fn close(&mut self, id: &str) -> Result<()>;
     pub fn list(&self) -> Vec<SessionInfo>;
+    
+    /// Close sessions idle longer than timeout (skip keep_alive sessions)
+    pub async fn cleanup_idle(&mut self, timeout: Duration) -> Vec<String>;
 }
 ```
 
@@ -836,6 +845,17 @@ user_data_dir = "~/.automodus/browser-data"  # Persistent profile
 [limits]
 execution_timeout = 300000        # 5 minutes
 session_idle_timeout = 3600000    # 1 hour (auto-close idle sessions)
+
+[session]
+# NOTE: session_idle_timeout affects long-running auth like WhatsApp Web.
+# WhatsApp web disconnects after ~14 days idle. A 1-hour timeout may cause
+# unexpected logouts for "always-on" use cases. Options:
+#   1. Increase timeout for long-running sessions
+#   2. Use keep_alive per session (see below)
+default_keep_alive = false        # Default for new sessions
+
+[debug]
+dir = "data/debug"                # Debug output directory (screenshots, traces)
 ```
 
 ### Shell Config
@@ -881,6 +901,9 @@ execution_timeout = 300000    # 5 minutes
 ```
 
 ## Error Handling
+
+> **Note:** `AppError` below extends the existing `AutomodusError` in `src/error.rs`. 
+> During implementation, consider unifying into a single error type.
 
 Error codes defined in shared module (`src/error.rs`):
 
@@ -979,14 +1002,16 @@ API response:
 
 ### Phase 1: Daemon Architecture (~2-3 weeks)
 
+> **Note:** This phase is approximately 60-70% of total implementation effort. Split into sub-phases to reduce risk.
+
 **Goal:** Docker-style daemon/client separation.
+
+#### Phase 1a: Daemon Core (~1 week)
 
 1. **Create `Daemon` struct** (`src/daemon/mod.rs`)
    - Long-running background process
-   - Owns `AppCore` with all state
-   - Unix socket listener for local clients
-   - HTTP server for REST API (merge with existing `serve`)
    - PID file for process management
+   - Unix socket listener for local clients
 
 2. **Create `AppCore` struct** (`src/core/app.rs`)
    - Move `WorkflowEngine` ownership here
@@ -994,26 +1019,44 @@ API response:
    - Add `DebugConfig` field
    - Add event broadcaster for WebSocket
 
-3. **Create `SessionManager`** (`src/core/session.rs`)
-   - Extract browser launch logic (single implementation)
-   - Session lifecycle: create, get, close, list
-   - Sessions persist until explicitly closed
-
-4. **Create `ShellClient`** (`src/shell/client.rs`)
-   - Stateless REPL connecting to daemon
-   - Sends commands via Unix socket
-   - Receives responses and prints output
-
-5. **Daemon CLI commands**
+3. **Daemon CLI commands**
    - `automodus daemon start` - start daemon
    - `automodus daemon stop` - stop daemon
    - `automodus daemon status` - check status
 
-6. **Add `rustyline` dependency**
+**Checkpoint:** Test with existing API via HTTP, daemon serves requests.
+
+#### Phase 1b: Session Manager (~3-4 days)
+
+1. **Create `SessionManager`** (`src/core/session.rs`)
+   - Extract browser launch logic (single implementation)
+   - Session lifecycle: create, get, close, list
+   - Sessions persist until explicitly closed
+   - Idle cleanup with `keep_alive` support
+
+2. **Merge `serve` command into daemon**
+   - HTTP server becomes part of daemon
+   - Remove standalone `serve` command
+
+**Checkpoint:** Multiple API clients share same browser via sessions.
+
+#### Phase 1c: Shell Refactor (~3-4 days)
+
+1. **Create `ShellClient`** (`src/shell/client.rs`)
+   - Stateless REPL connecting to daemon
+   - Sends commands via Unix socket
+   - Receives responses and prints output
+
+2. **Add `rustyline` dependency**
    - Basic readline with history
    - Save/load history from `~/.local/share/automodus/history.txt`
 
-**Deliverables:**
+3. **Test end-to-end**
+   - Browser survives shell exit
+   - Multiple shells can connect  
+   - Auth state persists
+
+**Deliverables (full Phase 1):**
 - [ ] Daemon process with PID file
 - [ ] Unix socket communication
 - [ ] `AppCore` and `SessionManager`
@@ -1124,23 +1167,32 @@ API response:
 ## Migration Checklist
 
 ```
-[ ] Phase 1 - Daemon Architecture
+[ ] Phase 1a - Daemon Core
     [ ] Create src/daemon/mod.rs with Daemon struct
     [ ] Create src/core/app.rs with AppCore
-    [ ] Create src/core/session.rs with SessionManager
     [ ] Implement Unix socket listener
     [ ] Implement daemon start/stop/status commands
-    [ ] Create src/shell/client.rs with ShellClient
-    [ ] Add rustyline to Cargo.toml
-    [ ] Refactor shell to connect to daemon (no local browser)
-    [ ] Merge api/server.rs into daemon (HTTP endpoint)
     [ ] Add PID file management
-    [ ] Add history save/load
     [ ] Test: daemon start/stop works
+    [ ] Test: API works via daemon HTTP
+
+[ ] Phase 1b - Session Manager
+    [ ] Create src/core/session.rs with SessionManager
+    [ ] Extract browser launch logic (remove duplicates)
+    [ ] Implement idle cleanup with keep_alive support
+    [ ] Merge api/server.rs into daemon (HTTP endpoint)
+    [ ] Test: sessions persist across API calls
+    [ ] Test: idle sessions cleaned up
+
+[ ] Phase 1c - Shell Refactor
+    [ ] Add rustyline + dirs to Cargo.toml
+    [ ] Create src/shell/client.rs with ShellClient
+    [ ] Refactor shell to connect to daemon (no local browser)
+    [ ] Add history save/load
     [ ] Test: shell connects to daemon
-    [ ] Test: API works via daemon
     [ ] Test: browser survives shell exit
     [ ] Test: multiple shells can connect
+    [ ] Test: auth state persists (WhatsApp QR)
 
 [ ] Phase 2
     [ ] Implement click command
