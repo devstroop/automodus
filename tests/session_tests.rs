@@ -22,8 +22,6 @@ use std::time::Duration;
 
 #[cfg(test)]
 mod lifecycle_tests {
-    use super::*;
-
     #[test]
     fn test_session_id_format() {
         // Session IDs should be valid UUIDs
@@ -184,8 +182,6 @@ mod store_tests {
 
 #[cfg(test)]
 mod api_tests {
-    use super::*;
-
     const BASE_URL: &str = "http://localhost:3000";
 
     #[tokio::test]

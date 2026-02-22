@@ -295,8 +295,6 @@ mod session_appcore_tests {
 
 #[cfg(test)]
 mod daemon_integration_tests {
-    use super::*;
-
     #[test]
     #[ignore] // Requires running daemon
     fn test_shell_connects_to_daemon() {
