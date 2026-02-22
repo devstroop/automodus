@@ -404,17 +404,12 @@ automodus daemon stop
 Stateless shell connecting to daemon.
 
 ### Issue #16: Create ShellClient
-**Status:** 🟡 In Progress (ShellClient built but not wired into main binary)  
+**Status:** ✅ Done  
 **File:** `src/shell/client.rs` (new)  
 **Depends:** #11, cargo deps (rustyline, dirs)  
 **Estimate:** 1 day
 
 > **User pain point:** Current shell uses `std::io::BufRead` - no arrow key history, no line editing.
->
-> **Audit (2026-02-22):** `ShellClient` with rustyline is fully built in `src/shell/client.rs`,
-> but `run_shell()` in `bin/automodus.rs` still uses the OLD `std::io::BufRead` loop.
-> The new ShellClient is never instantiated anywhere in the running application.
-> Until `run_shell()` is updated to use `ShellClient`, users don't get readline support.
 
 **Tasks:**
 - [x] Create `src/shell/mod.rs` and `src/shell/client.rs`
@@ -424,7 +419,7 @@ Stateless shell connecting to daemon.
 - [x] **Ctrl+R for reverse history search**
 - [x] Implement history save/load (`~/.local/share/automodus/history.txt`)
 - [x] Add command completion for commands and workflow paths
-- [ ] **Wire ShellClient into `bin/automodus.rs::run_shell()`** (BLOCKING)
+- [x] **Wire ShellClient into `bin/automodus.rs::run_shell()`**
 - [ ] Implement daemon connection via Unix socket (deferred)
 - [ ] Replace inline browser launch with daemon commands (deferred)
 
@@ -440,8 +435,8 @@ automodus> [UP ARROW]  # Shows: goto https://example.com
 ---
 
 ### Issue #17: Shell command expansion
-**Status:** ✅ Done (parsing)  
-**File:** `src/shell/client.rs`  
+**Status:** ✅ Done  
+**File:** `src/shell/client.rs`, `src/bin/automodus.rs`  
 **Depends:** #16  
 **Estimate:** 1-2 days
 
@@ -454,7 +449,7 @@ automodus> [UP ARROW]  # Shows: goto https://example.com
 - [x] Add `text <selector>` command
 - [ ] Add `find <selector>` command (deferred)
 - [x] Add navigation: `back`, `forward`, `refresh`
-- [ ] Wire commands to browser adapter execution (deferred)
+- [x] Wire commands to browser adapter execution
 
 ---
 
