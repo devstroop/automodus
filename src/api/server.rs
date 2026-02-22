@@ -45,6 +45,9 @@ use super::state::{create_state, ServerState};
         list_sessions_handler,
         get_session_handler,
         delete_session_handler,
+        list_executions_handler,
+        get_execution_handler,
+        cancel_execution_handler,
     ),
     components(schemas(
         HealthResponse,
@@ -66,12 +69,17 @@ use super::state::{create_state, ServerState};
         SessionInfo,
         SessionListResponse,
         DeleteSessionResponse,
+        ExecutionStatus,
+        ExecutionInfo,
+        ExecutionListResponse,
+        ExecutionDetail,
     )),
     tags(
         (name = "health", description = "Health check endpoints"),
         (name = "workflows", description = "Workflow management and execution"),
         (name = "browser", description = "Browser control endpoints"),
-        (name = "sessions", description = "Session management endpoints")
+        (name = "sessions", description = "Session management endpoints"),
+        (name = "executions", description = "Execution tracking endpoints")
     )
 )]
 pub struct ApiDoc;
@@ -105,6 +113,10 @@ pub fn create_router(state: Arc<ServerState>) -> Router {
         .route("/api/sessions", get(list_sessions_handler))
         .route("/api/sessions/:id", get(get_session_handler))
         .route("/api/sessions/:id", delete(delete_session_handler))
+        // Execution endpoints
+        .route("/api/executions", get(list_executions_handler))
+        .route("/api/executions/:id", get(get_execution_handler))
+        .route("/api/executions/:id", delete(cancel_execution_handler))
         // State
         .with_state(state)
         // Swagger UI

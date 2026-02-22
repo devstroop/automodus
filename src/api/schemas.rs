@@ -242,3 +242,69 @@ pub struct PageInfoResponse {
     /// Page title
     pub title: String,
 }
+
+// ============================================================================
+// Executions
+// ============================================================================
+
+/// Execution status
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ExecutionStatus {
+    /// Execution is running
+    Running,
+    /// Execution completed successfully
+    Completed,
+    /// Execution failed
+    Failed,
+    /// Execution was cancelled
+    Cancelled,
+}
+
+impl Default for ExecutionStatus {
+    fn default() -> Self {
+        Self::Running
+    }
+}
+
+/// Execution information
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ExecutionInfo {
+    /// Execution ID
+    pub id: String,
+    /// Workflow name
+    pub workflow: String,
+    /// Execution status
+    pub status: ExecutionStatus,
+    /// Started at (ISO 8601)
+    pub started_at: String,
+    /// Completed at (ISO 8601), if finished
+    pub completed_at: Option<String>,
+    /// Duration in milliseconds, if finished
+    pub duration_ms: Option<i64>,
+    /// Steps executed
+    pub steps_executed: usize,
+    /// Total steps
+    pub total_steps: usize,
+    /// Error message if failed
+    pub error: Option<String>,
+}
+
+/// Response for listing executions
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ExecutionListResponse {
+    /// List of executions
+    pub executions: Vec<ExecutionInfo>,
+}
+
+/// Detailed execution output
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ExecutionDetail {
+    /// Execution info
+    #[serde(flatten)]
+    pub info: ExecutionInfo,
+    /// Output data
+    pub output: serde_json::Value,
+    /// Parameters used
+    pub params: HashMap<String, serde_json::Value>,
+}

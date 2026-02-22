@@ -507,17 +507,17 @@ Full API parity with shell.
 ---
 
 ### Issue #22: Execution tracking endpoints
-**Status:** ⬜ Not Started  
-**File:** `src/api/handlers.rs`  
+**Status:** ✅ Done  
+**File:** `src/api/handlers.rs`, `src/api/state.rs`  
 **Depends:** #12  
 **Estimate:** 3-4 hours
 
 **Tasks:**
-- [ ] `GET /api/executions` - list recent executions
-- [ ] `GET /api/executions/:id` - get execution details
-- [ ] `DELETE /api/executions/:id` - cancel execution
-- [ ] `GET /api/executions/:id/output` - get execution output
-- [ ] Store execution history in memory/sqlite
+- [x] `GET /api/executions` - list recent executions
+- [x] `GET /api/executions/:id` - get execution details
+- [x] `DELETE /api/executions/:id` - cancel execution
+- [x] `GET /api/executions/:id/output` - get execution output (merged into detail)
+- [x] Store execution history in memory/sqlite
 
 ---
 
