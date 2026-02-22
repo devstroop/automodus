@@ -78,6 +78,16 @@ pub enum ShellCommand {
     Help,
     /// Quit shell
     Quit,
+    /// Debug on with optional profile
+    DebugOn { profile: Option<String> },
+    /// Debug off
+    DebugOff,
+    /// Debug status
+    DebugStatus,
+    /// Highlight an element
+    Highlight { selector: String },
+    /// Trace workflow (run with --debug=trace)
+    Trace { path: PathBuf, params: HashMap<String, String> },
     /// Unknown command
     Unknown { command: String },
 }
@@ -106,6 +116,9 @@ impl ShellCompleter {
                 "back".to_string(),
                 "forward".to_string(),
                 "refresh".to_string(),
+                "debug".to_string(),
+                "highlight".to_string(),
+                "trace".to_string(),
                 "help".to_string(),
                 "quit".to_string(),
                 "exit".to_string(),
@@ -301,6 +314,11 @@ impl ShellClient {
             "back" => ShellCommand::Back,
             "forward" => ShellCommand::Forward,
             "refresh" | "reload" => ShellCommand::Refresh,
+            "debug" => Self::parse_debug_command(args),
+            "highlight" | "hl" => ShellCommand::Highlight {
+                selector: args.to_string(),
+            },
+            "trace" => Self::parse_trace_command(args),
             "help" | "h" | "?" => ShellCommand::Help,
             "quit" | "exit" | "q" => ShellCommand::Quit,
             _ => ShellCommand::Unknown {
@@ -371,6 +389,40 @@ impl ShellClient {
         ShellCommand::Wait { selector, timeout }
     }
 
+    fn parse_debug_command(args: &str) -> ShellCommand {
+        let parts: Vec<&str> = args.split_whitespace().collect();
+        
+        if parts.is_empty() {
+            return ShellCommand::DebugStatus;
+        }
+
+        match parts[0] {
+            "on" => {
+                // Parse optional --profile=NAME
+                let profile = parts.iter().find_map(|p| {
+                    p.strip_prefix("--profile=")
+                        .map(|s| s.to_string())
+                });
+                ShellCommand::DebugOn { profile }
+            }
+            "off" => ShellCommand::DebugOff,
+            "status" => ShellCommand::DebugStatus,
+            _ => ShellCommand::Unknown {
+                command: format!("debug {}", args),
+            },
+        }
+    }
+
+    fn parse_trace_command(args: &str) -> ShellCommand {
+        // Parse same as run but adds trace mode
+        match Self::parse_run_command(args) {
+            ShellCommand::Run { path, params } => ShellCommand::Trace { path, params },
+            _ => ShellCommand::Unknown {
+                command: "trace".to_string(),
+            },
+        }
+    }
+
     /// Tokenize arguments handling quoted strings
     fn tokenize_args(input: &str) -> Vec<String> {
         let mut result = Vec::new();
@@ -433,11 +485,18 @@ Shell Commands:
     run <file> [k=v...]  Run workflow file
     list                 List workflows
 
+  Debug:
+    debug on [--profile=NAME]  Enable debug mode
+    debug off                   Disable debug mode
+    debug status                Show debug status
+    highlight <selector>        Highlight an element
+    trace <file>                Run workflow with trace logging
+
   General:
     help                 Show this help
     quit                 Exit shell
 
-Shortcuts: r=run, g=goto, c=click, t=type, w=wait, s=status, ls=list, q=quit
+Shortcuts: r=run, g=goto, c=click, t=type, w=wait, s=status, ls=list, hl=highlight, q=quit
 "#
         );
     }
@@ -511,5 +570,48 @@ mod tests {
             ShellClient::parse_command("q"),
             ShellCommand::Quit
         ));
+    }
+
+    #[test]
+    fn test_parse_debug_on() {
+        match ShellClient::parse_command("debug on") {
+            ShellCommand::DebugOn { profile } => assert!(profile.is_none()),
+            _ => panic!("Expected DebugOn"),
+        }
+    }
+
+    #[test]
+    fn test_parse_debug_on_with_profile() {
+        match ShellClient::parse_command("debug on --profile=verbose") {
+            ShellCommand::DebugOn { profile } => assert_eq!(profile, Some("verbose".to_string())),
+            _ => panic!("Expected DebugOn with profile"),
+        }
+    }
+
+    #[test]
+    fn test_parse_debug_off() {
+        assert!(matches!(
+            ShellClient::parse_command("debug off"),
+            ShellCommand::DebugOff
+        ));
+    }
+
+    #[test]
+    fn test_parse_highlight() {
+        match ShellClient::parse_command("highlight #element") {
+            ShellCommand::Highlight { selector } => assert_eq!(selector, "#element"),
+            _ => panic!("Expected Highlight"),
+        }
+    }
+
+    #[test]
+    fn test_parse_trace() {
+        match ShellClient::parse_command("trace workflow.yaml key=value") {
+            ShellCommand::Trace { path, params } => {
+                assert_eq!(path, PathBuf::from("workflow.yaml"));
+                assert_eq!(params.get("key"), Some(&"value".to_string()));
+            }
+            _ => panic!("Expected Trace"),
+        }
     }
 }
