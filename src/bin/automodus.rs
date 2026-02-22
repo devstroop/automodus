@@ -1262,6 +1262,70 @@ async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
                     Err(e) => println!("❌ Highlight failed: {}", e),
                 }
             }
+            ShellCommand::Find { selector } => {
+                if selector.is_empty() {
+                    println!("Usage: find <selector>");
+                    continue;
+                }
+                let js = format!(
+                    r#"(function() {{
+                        var els = document.querySelectorAll('{}');
+                        var results = [];
+                        for (var i = 0; i < Math.min(els.length, 10); i++) {{
+                            var el = els[i];
+                            results.push({{
+                                tag: el.tagName.toLowerCase(),
+                                id: el.id || null,
+                                classes: el.className || null,
+                                text: (el.textContent || '').trim().substring(0, 100)
+                            }});
+                        }}
+                        return JSON.stringify({{ count: els.length, matches: results }});
+                    }})()
+                    "#,
+                    selector.replace('\\', "\\\\").replace('\'', "\\'")
+                );
+                match adapter.eval(&js).await {
+                    Ok(val) => {
+                        let json_str = val.as_str().unwrap_or("{}");
+                        match serde_json::from_str::<serde_json::Value>(json_str) {
+                            Ok(data) => {
+                                let count = data["count"].as_u64().unwrap_or(0);
+                                if count == 0 {
+                                    println!("  No elements found matching '{}'", selector);
+                                } else {
+                                    println!("  Found {} element(s) matching '{}'", count, selector);
+                                    if let Some(matches) = data["matches"].as_array() {
+                                        for (i, m) in matches.iter().enumerate() {
+                                            let tag = m["tag"].as_str().unwrap_or("?");
+                                            let id = m["id"].as_str().filter(|s| !s.is_empty());
+                                            let classes = m["classes"].as_str().filter(|s| !s.is_empty());
+                                            let text = m["text"].as_str().unwrap_or("");
+                                            let mut desc = format!("<{}", tag);
+                                            if let Some(id) = id {
+                                                desc.push_str(&format!(" id=\"{}\"", id));
+                                            }
+                                            if let Some(cls) = classes {
+                                                desc.push_str(&format!(" class=\"{}\"", cls));
+                                            }
+                                            desc.push('>');
+                                            if !text.is_empty() {
+                                                desc.push_str(&format!(" \"{}\"", text));
+                                            }
+                                            println!("    [{}] {}", i, desc);
+                                        }
+                                        if count > 10 {
+                                            println!("    ... and {} more", count - 10);
+                                        }
+                                    }
+                                }
+                            }
+                            Err(_) => println!("  No elements found matching '{}'", selector),
+                        }
+                    }
+                    Err(e) => println!("❌ Find failed: {}", e),
+                }
+            }
             ShellCommand::Run { path, params } => {
                 let json_params: HashMap<String, serde_json::Value> = params
                     .into_iter()
@@ -1845,6 +1909,46 @@ async fn run_shell_daemon(
                 match client.browser_highlight(&selector).await {
                     Ok(_) => println!("✓ Highlighted {} (3s)", selector),
                     Err(e) => println!("❌ Highlight failed: {}", e),
+                }
+            }
+            ShellCommand::Find { selector } => {
+                if selector.is_empty() {
+                    println!("Usage: find <selector>");
+                    continue;
+                }
+                match client.browser_find(&selector).await {
+                    Ok(data) => {
+                        let count = data["count"].as_u64().unwrap_or(0);
+                        if count == 0 {
+                            println!("  No elements found matching '{}'", selector);
+                        } else {
+                            println!("  Found {} element(s) matching '{}'", count, selector);
+                            if let Some(matches) = data["matches"].as_array() {
+                                for (i, m) in matches.iter().enumerate() {
+                                    let tag = m["tag"].as_str().unwrap_or("?");
+                                    let id = m["id"].as_str().filter(|s| !s.is_empty());
+                                    let classes = m["classes"].as_str().filter(|s| !s.is_empty());
+                                    let text = m["text"].as_str().unwrap_or("");
+                                    let mut desc = format!("<{}", tag);
+                                    if let Some(id) = id {
+                                        desc.push_str(&format!(" id=\"{}\"", id));
+                                    }
+                                    if let Some(cls) = classes {
+                                        desc.push_str(&format!(" class=\"{}\"", cls));
+                                    }
+                                    desc.push('>');
+                                    if !text.is_empty() {
+                                        desc.push_str(&format!(" \"{}\"", text));
+                                    }
+                                    println!("    [{}] {}", i, desc);
+                                }
+                                if count > 10 {
+                                    println!("    ... and {} more", count - 10);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => println!("❌ Find failed: {}", e),
                 }
             }
 
