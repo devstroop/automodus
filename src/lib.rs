@@ -86,6 +86,9 @@ pub mod triggers;
 /// Daemon process
 pub mod daemon;
 
+/// Interactive shell
+pub mod shell;
+
 // ============================================================================
 // Browser Automation
 // ============================================================================
