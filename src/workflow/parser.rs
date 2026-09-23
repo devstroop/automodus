@@ -249,23 +249,25 @@ steps:
     fn test_parse_whatsapp_workflows() {
         use std::fs;
 
-        // List of WhatsApp workflow file paths relative to project root
+        // List of WhatsApp workflow file paths relative to project root.
+        // Examples live in the ../examples/ workspace sibling (not in this repo),
+        // so missing files are skipped (e.g. fresh clones / CI without examples).
         let workflow_files = [
-            "workflows/whatsapp/whatsapp.yaml",
-            "workflows/whatsapp/_common/ensure_ready.yaml",
-            "workflows/whatsapp/_common/open_chat.yaml",
-            "workflows/whatsapp/auth/qr_login.yaml",
-            "workflows/whatsapp/auth/phone_login.yaml",
-            "workflows/whatsapp/auth/check_status.yaml",
-            "workflows/whatsapp/auth/logout.yaml",
-            "workflows/whatsapp/messaging/send.yaml",
-            "workflows/whatsapp/messaging/send_text.yaml",
-            "workflows/whatsapp/messaging/send_media.yaml",
-            "workflows/whatsapp/messaging/send_document.yaml",
-            "workflows/whatsapp/chat/get_chats.yaml",
-            "workflows/whatsapp/chat/get_messages.yaml",
-            "workflows/whatsapp/chat/watch_messages.yaml",
-            "workflows/whatsapp/chat/navigate.yaml",
+            "../examples/whatsapp/whatsapp.yaml",
+            "../examples/whatsapp/_common/ensure_ready.yaml",
+            "../examples/whatsapp/_common/open_chat.yaml",
+            "../examples/whatsapp/auth/qr_login.yaml",
+            "../examples/whatsapp/auth/phone_login.yaml",
+            "../examples/whatsapp/auth/check_status.yaml",
+            "../examples/whatsapp/auth/logout.yaml",
+            "../examples/whatsapp/messaging/send.yaml",
+            "../examples/whatsapp/messaging/send_text.yaml",
+            "../examples/whatsapp/messaging/send_media.yaml",
+            "../examples/whatsapp/messaging/send_document.yaml",
+            "../examples/whatsapp/chat/get_chats.yaml",
+            "../examples/whatsapp/chat/get_messages.yaml",
+            "../examples/whatsapp/chat/watch_messages.yaml",
+            "../examples/whatsapp/chat/navigate.yaml",
         ];
 
         for file in workflow_files {
