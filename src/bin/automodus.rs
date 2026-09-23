@@ -7,6 +7,7 @@
 //! ```bash
 //! # Run a workflow
 //! automodus run ../examples/browser/search_form.yaml
+//! automodus run ../examples/whatsapp/whatsapp.yaml action=check_status
 //!
 //! # Start the API server
 //! automodus serve
@@ -339,7 +340,8 @@ USAGE:
     automodus <COMMAND> [OPTIONS]
 
 COMMANDS:
-    run <workflow.yaml>     Run a specific workflow file
+    run <workflow.yaml> [key=value ...]
+                        Run a workflow; key=value overrides param defaults
         -k, --keep-open     Keep browser open after workflow completes
         -d, --debug         Enable debug mode
         --debug=<level>     Set debug level (info, debug, trace)
@@ -757,6 +759,8 @@ async fn run_workflow(
     let workflow = WorkflowParser::parse(&content)?;
 
     // Merge debug configs: env (lowest) → workflow → CLI (highest)
+    // Note: workflow.debug.profile is not applied here (run path skips with_profile);
+    // use CLI --profile= instead.
     let env_debug = debug_config_from_env();
     let resolved_debug = env_debug
         .merge(&workflow.debug)
