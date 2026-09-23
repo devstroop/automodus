@@ -36,8 +36,8 @@ cargo build
 # Run tests
 cargo test
 
-# Run a workflow
-cargo run -- run workflows/example/login.yaml
+# Run a workflow (examples live in the workspace sibling ../examples/)
+cargo run -- run ../examples/browser/search_form.yaml
 
 # Start server mode
 cargo run -- serve
@@ -79,7 +79,7 @@ src/
 ├── utils/              # Utilities
 └── web/                # Web UI (server mode)
 
-workflows/              # Example workflow definitions
+../examples/            # Example workflow definitions (workspace sibling, outside this repo)
 config/                 # Configuration files
 templates/              # HTML templates
 tests/                  # Integration tests

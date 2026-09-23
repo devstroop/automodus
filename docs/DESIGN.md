@@ -216,8 +216,11 @@ automodus/
 ├── Cargo.toml
 ├── config/
 │   └── automodus.toml         # Server configuration
-├── workflows/                  # User-defined YAML workflows
-│   └── examples/
+├── ../examples/              # Example YAML workflows (workspace sibling, outside this repo)
+│   ├── browser/              # Browser demos
+│   ├── http/                 # HTTP demos
+│   ├── compose/              # Composition demos
+│   └── whatsapp/             # WhatsApp pack
 ├── src/
 │   ├── main.rs                # Entry point
 │   ├── lib.rs                 # Library exports
