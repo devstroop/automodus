@@ -145,7 +145,7 @@ impl WorkflowParser {
             }
             // Actions without required params
             "screenshot" | "wait_for" | "eval" | "http" => {}
-            "tab.new" | "tab.switch" | "tab.close" => {}
+            "tab.list" | "tab.new" | "tab.switch" | "tab.close" => {}
             "back" | "forward" | "reload" => {}
             // HTTP actions
             "http.get" | "http.post" | "http.put" | "http.patch" | "http.delete"
