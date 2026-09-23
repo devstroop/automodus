@@ -50,6 +50,10 @@ docker/volumes/
 config/app.toml
 config/local.toml
 
+# Runtime workflows directory (user-created via AUTOMODUS_WORKFLOWS default;
+# shared examples live in the workspace sibling ../examples/)
+workflows/
+
 
 /data/*.db
 .playwright-mcp
