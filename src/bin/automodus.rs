@@ -18,6 +18,7 @@
 use futures_util::FutureExt;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use automodus::{
     actions::BrowserHandle,
@@ -140,6 +141,8 @@ enum Command {
         keep_open: bool,
         /// CLI debug configuration (overrides workflow config)
         debug: DebugConfig,
+        /// Extra params as key=value CLI args (override workflow defaults)
+        params: HashMap<String, String>,
     },
     /// Start the API server
     Serve,
@@ -187,77 +190,85 @@ fn parse_args() -> Command {
             }
             let keep_open = args.iter().any(|a| a == "--keep-open" || a == "-k");
 
-            // Parse debug flags
+            // Parse debug flags and key=value params
             let mut debug = DebugConfig::default();
+            let mut params: HashMap<String, String> = HashMap::new();
 
             for arg in &args[3..] {
-                if arg == "--debug" || arg == "-d" {
-                    debug.enabled = Some(true);
-                } else if let Some(level) = arg.strip_prefix("--debug=") {
-                    debug.enabled = Some(true);
-                    debug.level = Some(match level.to_lowercase().as_str() {
-                        "info" => LogLevel::Info,
-                        "debug" => LogLevel::Debug,
-                        "trace" => LogLevel::Trace,
-                        _ => {
-                            eprintln!("Invalid debug level: {}. Use: info, debug, trace", level);
-                            std::process::exit(1);
+                if arg.starts_with("--") || arg == "-d" || arg == "-k" {
+                    if arg == "--debug" || arg == "-d" {
+                        debug.enabled = Some(true);
+                    } else if let Some(level) = arg.strip_prefix("--debug=") {
+                        debug.enabled = Some(true);
+                        debug.level = Some(match level.to_lowercase().as_str() {
+                            "info" => LogLevel::Info,
+                            "debug" => LogLevel::Debug,
+                            "trace" => LogLevel::Trace,
+                            _ => {
+                                eprintln!("Invalid debug level: {}. Use: info, debug, trace", level);
+                                std::process::exit(1);
+                            }
+                        });
+                    } else if let Some(delay) = arg.strip_prefix("--delay=") {
+                        debug.enabled = Some(true);
+                        match delay.parse::<u64>() {
+                            Ok(ms) => debug.delay = Some(ms),
+                            Err(_) => {
+                                eprintln!("Invalid delay value: {}. Expected milliseconds.", delay);
+                                std::process::exit(1);
+                            }
                         }
-                    });
-                } else if let Some(delay) = arg.strip_prefix("--delay=") {
-                    debug.enabled = Some(true);
-                    match delay.parse::<u64>() {
-                        Ok(ms) => debug.delay = Some(ms),
-                        Err(_) => {
-                            eprintln!("Invalid delay value: {}. Expected milliseconds.", delay);
-                            std::process::exit(1);
-                        }
+                    } else if let Some(mode) = arg.strip_prefix("--capture=") {
+                        debug.enabled = Some(true);
+                        debug.capture = Some(match mode.to_lowercase().as_str() {
+                            "none" => CaptureMode::None,
+                            "failure" => CaptureMode::Failure,
+                            "before" => CaptureMode::Before,
+                            "after" => CaptureMode::After,
+                            "all" => CaptureMode::All,
+                            _ => {
+                                eprintln!(
+                                    "Invalid capture mode: {}. Use: none, failure, before, after, all",
+                                    mode
+                                );
+                                std::process::exit(1);
+                            }
+                        });
+                    } else if let Some(profile) = arg.strip_prefix("--profile=") {
+                        debug.enabled = Some(true);
+                        let profile_config = match profile.to_lowercase().as_str() {
+                            "minimal" => DebugProfile::Minimal.to_config(),
+                            "verbose" => DebugProfile::Verbose.to_config(),
+                            "ci" => DebugProfile::Ci.to_config(),
+                            "demo" => DebugProfile::Demo.to_config(),
+                            _ => {
+                                eprintln!(
+                                    "Invalid profile: {}. Use: minimal, verbose, ci, demo",
+                                    profile
+                                );
+                                std::process::exit(1);
+                            }
+                        };
+                        // Profile is applied as base, then other CLI flags override
+                        debug = profile_config.merge(&debug);
+                    } else if arg == "--highlight" {
+                        debug.enabled = Some(true);
+                        debug.highlight = Some(true);
+                    } else if arg == "--pause" {
+                        debug.enabled = Some(true);
+                        debug.pause = Some(true);
+                    } else if arg == "--console" {
+                        debug.enabled = Some(true);
+                        debug.console = Some(true);
+                    } else if arg == "--network" {
+                        debug.enabled = Some(true);
+                        debug.network = Some(true);
                     }
-                } else if let Some(mode) = arg.strip_prefix("--capture=") {
-                    debug.enabled = Some(true);
-                    debug.capture = Some(match mode.to_lowercase().as_str() {
-                        "none" => CaptureMode::None,
-                        "failure" => CaptureMode::Failure,
-                        "before" => CaptureMode::Before,
-                        "after" => CaptureMode::After,
-                        "all" => CaptureMode::All,
-                        _ => {
-                            eprintln!(
-                                "Invalid capture mode: {}. Use: none, failure, before, after, all",
-                                mode
-                            );
-                            std::process::exit(1);
-                        }
-                    });
-                } else if let Some(profile) = arg.strip_prefix("--profile=") {
-                    debug.enabled = Some(true);
-                    let profile_config = match profile.to_lowercase().as_str() {
-                        "minimal" => DebugProfile::Minimal.to_config(),
-                        "verbose" => DebugProfile::Verbose.to_config(),
-                        "ci" => DebugProfile::Ci.to_config(),
-                        "demo" => DebugProfile::Demo.to_config(),
-                        _ => {
-                            eprintln!(
-                                "Invalid profile: {}. Use: minimal, verbose, ci, demo",
-                                profile
-                            );
-                            std::process::exit(1);
-                        }
-                    };
-                    // Profile is applied as base, then other CLI flags override
-                    debug = profile_config.merge(&debug);
-                } else if arg == "--highlight" {
-                    debug.enabled = Some(true);
-                    debug.highlight = Some(true);
-                } else if arg == "--pause" {
-                    debug.enabled = Some(true);
-                    debug.pause = Some(true);
-                } else if arg == "--console" {
-                    debug.enabled = Some(true);
-                    debug.console = Some(true);
-                } else if arg == "--network" {
-                    debug.enabled = Some(true);
-                    debug.network = Some(true);
+                } else if let Some((key, value)) = arg.split_once('=') {
+                    // key=value workflow params (e.g. action=check_status)
+                    if !key.is_empty() {
+                        params.insert(key.to_string(), value.to_string());
+                    }
                 }
             }
 
@@ -265,6 +276,7 @@ fn parse_args() -> Command {
                 path: PathBuf::from(&args[2]),
                 keep_open,
                 debug,
+                params,
             }
         }
         "shell" => Command::Shell,
@@ -428,9 +440,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             path,
             keep_open,
             debug,
+            params,
         } => {
             print_banner();
-            run_workflow(&path, keep_open, debug).await?;
+            run_workflow(&path, keep_open, debug, params).await?;
         }
         Command::Shell => {
             print_banner();
@@ -735,6 +748,7 @@ async fn run_workflow(
     path: &std::path::Path,
     keep_open: bool,
     cli_debug: DebugConfig,
+    cli_params: HashMap<String, String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Loading workflow from: {}", path.display());
 
@@ -808,21 +822,39 @@ async fn run_workflow(
     if let Err(e) = adapter.start_crash_listener().await {
         eprintln!("Warning: failed to start crash listener: {}", e);
     }
-    let workflows_dir = path
-        .parent()
-        .unwrap_or(std::path::Path::new("workflows"))
-        .to_path_buf();
+    // Prefer AUTOMODUS_WORKFLOWS for `call` resolution; fall back to the file's directory
+    let workflows_dir = std::env::var("AUTOMODUS_WORKFLOWS")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            path.parent()
+                .unwrap_or(std::path::Path::new("workflows"))
+                .to_path_buf()
+        });
     let loader = Arc::new(WorkflowLoader::new(&workflows_dir));
     let engine = WorkflowEngine::with_resolver(loader);
 
     println!("\n▶ Executing workflow...\n");
 
-    // Build params from workflow defaults
+    // Build params from workflow defaults, then override with CLI key=value params
     let mut params: HashMap<String, serde_json::Value> = HashMap::new();
     for (name, def) in &workflow.params {
         if let Some(default) = &def.default {
             params.insert(name.clone(), yaml_to_json(default));
         }
+    }
+    for (key, value) in cli_params {
+        // Coerce plain numbers/bools so numeric params (user_id, etc.) work
+        let coerced = match value.as_str() {
+            "true" => serde_json::Value::Bool(true),
+            "false" => serde_json::Value::Bool(false),
+            v if v.parse::<i64>().is_ok() => {
+                serde_json::Number::from_str(v)
+                    .map(serde_json::Value::Number)
+                    .unwrap_or_else(|_| serde_json::Value::String(v.to_string()))
+            }
+            v => serde_json::Value::String(v.to_string()),
+        };
+        params.insert(key, coerced);
     }
 
     if !params.is_empty() {
