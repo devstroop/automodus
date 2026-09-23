@@ -16,10 +16,29 @@ pub struct TemplateEngine;
 
 impl TemplateEngine {
     /// Render a template string with context values
+    ///
+    /// Supports an optional filter after `|`:
+    ///   `{{params.message | json}}` → JSON-encoded literal (safe inside JS)
     pub fn render(template: &str, ctx: &ExecutionContext) -> String {
         TEMPLATE_RE
             .replace_all(template, |caps: &regex::Captures| {
-                let key = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+                let raw = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+                let (key, filter) = match raw.split_once('|') {
+                    Some((k, f)) => (k.trim(), f.trim()),
+                    None => (raw, ""),
+                };
+
+                if filter == "json" {
+                    // Missing paths become null so optional params are valid JS/JSON
+                    let value = Self::resolve(key, ctx).unwrap_or(Value::Null);
+                    return serde_json::to_string(&value).unwrap_or_else(|_| "null".into());
+                }
+
+                if !filter.is_empty() {
+                    // Unknown filter: leave the original token untouched
+                    return format!("{{{{{}}}}}", raw);
+                }
+
                 Self::resolve(key, ctx)
                     .map(|v| value_to_string(&v))
                     .unwrap_or_else(|| format!("{{{{{}}}}}", key))
@@ -267,5 +286,41 @@ mod tests {
 
         let result = TemplateEngine::render("Instance: {{instance.id}}", &ctx);
         assert_eq!(result, "Instance: instance-1");
+    }
+
+    #[test]
+    fn test_json_filter_escapes_quotes() {
+        let mut ctx = ExecutionContext::new("test", "instance-1");
+        ctx.params
+            .insert("message".into(), Value::String("It's a \"test\"\nline".into()));
+
+        let result = TemplateEngine::render("var m = {{params.message | json}};", &ctx);
+        assert_eq!(result, r#"var m = "It's a \"test\"\nline";"#);
+    }
+
+    #[test]
+    fn test_json_filter_missing_is_null() {
+        let ctx = ExecutionContext::new("test", "instance-1");
+
+        let result = TemplateEngine::render("var m = {{params.missing | json}};", &ctx);
+        assert_eq!(result, "var m = null;");
+    }
+
+    #[test]
+    fn test_json_filter_bool_number() {
+        let mut ctx = ExecutionContext::new("test", "instance-1");
+        ctx.params.insert("n".into(), Value::Number(42.into()));
+        ctx.params.insert("b".into(), Value::Bool(true));
+
+        let result = TemplateEngine::render("{{params.n | json}} {{params.b | json}}", &ctx);
+        assert_eq!(result, "42 true");
+    }
+
+    #[test]
+    fn test_unknown_filter_preserved() {
+        let ctx = ExecutionContext::new("test", "instance-1");
+
+        let result = TemplateEngine::render("{{params.x | upper}}", &ctx);
+        assert_eq!(result, "{{params.x | upper}}");
     }
 }
