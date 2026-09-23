@@ -6,10 +6,24 @@ use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::LazyLock;
+use tracing::warn;
 
 use super::ExecutionContext;
 
 static TEMPLATE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\{\{([^}]+)\}\}").unwrap());
+
+/// Strict single-template form: exactly one `{{ path | json }}` with no extra
+/// `{{`/`}}` delimiters inside (rejects mixed strings like `{{a}} and {{b | json}}`).
+/// Matched against the *untrimmed* string so padded values fall through.
+static SINGLE_JSON_TEMPLATE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\{\{\s*([^|{}]+?)\s*\|\s*json\s*\}\}$").unwrap());
+
+/// Path roots accepted by `resolve`, with dotted segments allowing any
+/// characters `resolve` can look up (hyphens, digits, etc.) except delimiters.
+static VALID_PATH_ROOT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(params|vars|store|steps|env|instance|timestamp|workflow)(\.[^|{}\s]+)*$")
+        .unwrap()
+});
 
 /// Template engine for variable interpolation
 pub struct TemplateEngine;
@@ -47,9 +61,43 @@ impl TemplateEngine {
     }
 
     /// Render a YAML value, interpolating any template strings
+    ///
+    /// A string that is exactly one unpadded `{{path | json}}` template is
+    /// returned as a typed YAML scalar (number/bool/null/array/object, or the
+    /// bare string value) so types survive into HTTP bodies and `call` params.
+    /// Anything else (mixed templates, padding, missing paths, round-trip
+    /// failure) falls through to [`Self::render`].
     pub fn render_yaml(value: &serde_yaml::Value, ctx: &ExecutionContext) -> serde_yaml::Value {
         match value {
-            serde_yaml::Value::String(s) => serde_yaml::Value::String(Self::render(s, ctx)),
+            serde_yaml::Value::String(s) => {
+                // Match untrimmed: padded `"  {{…}}  "` must keep surrounding spaces
+                if let Some(caps) = SINGLE_JSON_TEMPLATE.captures(s) {
+                    let key = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+                    if VALID_PATH_ROOT.is_match(key) {
+                        match Self::resolve(key, ctx) {
+                            // Missing path: do NOT invent null — fall through so
+                            // typos stay visible (render's | json → "null" string)
+                            None => {}
+                            // Strings: bare value (no JSON re-quote → no double-encoding)
+                            Some(Value::String(st)) => return serde_yaml::Value::String(st),
+                            // Non-string: JSON round-trip to keep number/bool/null type
+                            Some(v) => match serde_json::to_string(&v)
+                                .and_then(|json| serde_json::from_str::<serde_yaml::Value>(&json))
+                            {
+                                Ok(parsed) => return parsed,
+                                Err(e) => {
+                                    warn!(
+                                        key,
+                                        error = %e,
+                                        "template: JSON→YAML round-trip failed; falling back to string render"
+                                    );
+                                }
+                            },
+                        }
+                    }
+                }
+                serde_yaml::Value::String(Self::render(s, ctx))
+            }
             serde_yaml::Value::Sequence(arr) => {
                 serde_yaml::Value::Sequence(arr.iter().map(|v| Self::render_yaml(v, ctx)).collect())
             }
@@ -322,5 +370,116 @@ mod tests {
 
         let result = TemplateEngine::render("{{params.x | upper}}", &ctx);
         assert_eq!(result, "{{params.x | upper}}");
+    }
+
+    #[test]
+    fn test_render_yaml_json_filter_preserves_number_type() {
+        let mut ctx = ExecutionContext::new("test", "instance-1");
+        ctx.params.insert("user_id".into(), Value::Number(7.into()));
+
+        let yaml = serde_yaml::Value::String("{{params.user_id | json}}".into());
+        let rendered = TemplateEngine::render_yaml(&yaml, &ctx);
+        assert_eq!(rendered.as_u64(), Some(7));
+    }
+
+    #[test]
+    fn test_render_yaml_json_filter_preserves_bool_and_null() {
+        let mut ctx = ExecutionContext::new("test", "instance-1");
+        ctx.params.insert("flag".into(), Value::Bool(true));
+
+        let flag = TemplateEngine::render_yaml(
+            &serde_yaml::Value::String("{{params.flag | json}}".into()),
+            &ctx,
+        );
+        assert_eq!(flag.as_bool(), Some(true));
+
+        // Missing path falls through to render's | json → string "null" (visible, not YAML null)
+        let missing = TemplateEngine::render_yaml(
+            &serde_yaml::Value::String("{{params.nope | json}}".into()),
+            &ctx,
+        );
+        assert_eq!(missing.as_str(), Some("null"));
+    }
+
+    #[test]
+    fn test_render_yaml_embedded_json_filter_stays_string() {
+        let mut ctx = ExecutionContext::new("test", "instance-1");
+        ctx.params.insert("name".into(), Value::String("Ada".into()));
+
+        let yaml = serde_yaml::Value::String("hello {{params.name | json}}".into());
+        let rendered = TemplateEngine::render_yaml(&yaml, &ctx);
+        assert_eq!(rendered.as_str(), Some(r#"hello "Ada""#));
+    }
+
+    #[test]
+    fn test_render_yaml_exact_string_json_is_bare() {
+        let mut ctx = ExecutionContext::new("test", "instance-1");
+        ctx.params.insert("name".into(), Value::String("Ada".into()));
+
+        let yaml = serde_yaml::Value::String("{{params.name | json}}".into());
+        let rendered = TemplateEngine::render_yaml(&yaml, &ctx);
+        // Bare string — no JSON re-quote (avoids double-encoding in JSON bodies)
+        assert_eq!(rendered.as_str(), Some("Ada"));
+    }
+
+    #[test]
+    fn test_render_yaml_padded_template_not_coerced() {
+        let mut ctx = ExecutionContext::new("test", "instance-1");
+        ctx.params.insert("n".into(), Value::Number(7.into()));
+
+        let yaml = serde_yaml::Value::String("  {{params.n | json}}  ".into());
+        let rendered = TemplateEngine::render_yaml(&yaml, &ctx);
+        // Surrounding spaces preserved; not silently typed to 7
+        assert_eq!(rendered.as_str(), Some("  7  "));
+    }
+
+    #[test]
+    fn test_render_yaml_hyphenated_key_preserves_type() {
+        let mut ctx = ExecutionContext::new("test", "instance-1");
+        ctx.params.insert("user-id".into(), Value::Number(42.into()));
+
+        let yaml = serde_yaml::Value::String("{{params.user-id | json}}".into());
+        let rendered = TemplateEngine::render_yaml(&yaml, &ctx);
+        assert_eq!(rendered.as_u64(), Some(42));
+    }
+
+    #[test]
+    fn test_render_yaml_mixed_templates_not_coerced_to_null() {
+        let mut ctx = ExecutionContext::new("test", "instance-1");
+        ctx.params.insert("a".into(), Value::String("X".into()));
+        ctx.params.insert("b".into(), Value::Number(2.into()));
+
+        let yaml =
+            serde_yaml::Value::String("{{params.a}} and {{params.b | json}}".into());
+        let rendered = TemplateEngine::render_yaml(&yaml, &ctx);
+        // Must interpolate both; must NOT become Null via bogus single-template match
+        assert_eq!(rendered.as_str(), Some("X and 2"));
+    }
+
+    #[test]
+    fn test_render_yaml_invalid_key_falls_back_not_null() {
+        let ctx = ExecutionContext::new("test", "instance-1");
+
+        // Junk key (contains `}}`) — not a valid path; should not become YAML null
+        let yaml =
+            serde_yaml::Value::String("{{params.a}} and {{params.b | json}}".into());
+        let rendered = TemplateEngine::render_yaml(&yaml, &ctx);
+        assert!(!rendered.is_null());
+
+        // Empty key after filter — also not typed-null
+        let yaml = serde_yaml::Value::String("{{ | json}}".into());
+        let rendered = TemplateEngine::render_yaml(&yaml, &ctx);
+        assert!(!rendered.is_null());
+    }
+
+    #[test]
+    fn test_render_yaml_missing_path_is_string_null_not_yaml_null() {
+        let ctx = ExecutionContext::new("test", "instance-1");
+
+        let yaml = serde_yaml::Value::String("{{params.nope | json}}".into());
+        let rendered = TemplateEngine::render_yaml(&yaml, &ctx);
+        // Falls through to render: JSON null encoded as string "null"
+        assert_eq!(rendered.as_str(), Some("null"));
+        assert!(!rendered.is_null());
     }
 }
