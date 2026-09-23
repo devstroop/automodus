@@ -66,8 +66,8 @@ cd automodus
 # Build
 cargo build --release
 
-# Validate example workflows
-./target/release/automodus validate workflows/examples/
+# Validate example workflows (workspace sibling, see ../examples/README.md)
+./target/release/automodus validate ../examples/
 
 # List available workflows
 ./target/release/automodus list
@@ -75,7 +75,8 @@ cargo build --release
 
 ### Create Your First Workflow
 
-Create `workflows/hello.yaml`:
+Create `workflows/hello.yaml` in your own workflows directory
+(`AUTOMODUS_WORKFLOWS` defaults to `workflows/`; examples live in `../examples/`):
 
 ```yaml
 name: hello_world
@@ -231,14 +232,14 @@ Use `{{...}}` for variable interpolation:
 ## CLI Reference
 
 ```bash
-# Run a specific workflow
-automodus run workflows/example.yaml
+# Run a specific workflow (see ../examples/ for ready-made workflows)
+automodus run ../examples/browser/search_form.yaml
 
 # Start the API server
 automodus serve
 
 # Validate workflow files
-automodus validate workflows/
+automodus validate ../examples/
 
 # List all loaded workflows
 automodus list
@@ -323,8 +324,6 @@ auto_reload = true
 
 ```
 automodus/
-├── workflows/              # YAML workflow definitions
-│   └── examples/           # Example workflows
 ├── src/
 │   ├── api/                # REST API server (axum + utoipa)
 │   │   ├── handlers.rs     # API endpoint handlers
@@ -359,6 +358,11 @@ automodus/
 ├── templates/              # HTML templates (askama)
 └── data/screenshots/       # Default screenshot output
 ```
+
+> Example workflows live outside this repo in the workspace sibling
+> `../examples/` (`browser/`, `http/`, `compose/`, `whatsapp/`) —
+> see `../examples/README.md`. At runtime, point `AUTOMODUS_WORKFLOWS`
+> at that directory or at your own `workflows/` directory.
 
 ## License
 

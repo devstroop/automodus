@@ -21,7 +21,7 @@
 //! ## Quick Start
 //!
 //! ```yaml
-//! # workflows/example.yaml
+//! # ../examples/browser/search_form.yaml
 //! name: search_example
 //! description: Search and extract results
 //!

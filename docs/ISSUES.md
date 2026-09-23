@@ -673,7 +673,7 @@ Final debug features.
 - [x] Wire `WorkflowLoader` as resolver in CLI and shell entry points
 - [x] Thread `cancel_token` through recursive `execute_call_action` calls
 - [x] Add 7 unit tests (basic, nested, no-resolver, not-found, max-depth, params, condition)
-- [x] Add 3 example composition workflows (`workflows/examples/compose/`)
+- [x] Add 3 example composition workflows (`../examples/compose/` — moved out of repo)
 - [x] Add `ARCHITECTURE.md` documentation
 
 **Workflow syntax:**
