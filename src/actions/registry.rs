@@ -279,8 +279,9 @@ impl BrowserCapabilities {
     /// Lightpanda CDP feature set (what `SessionAdapter::Lightpanda` advertises).
     ///
     /// Lightpanda speaks a CDP subset: no `Page.printToPDF`, no file-chooser
-    /// interception, no `DOM.setFileInputFiles`. Console/network event domains
-    /// are present but not fully proven — start conservative and opt in later.
+    /// interception, no `DOM.setFileInputFiles`. Console/network listeners are
+    /// wired through to the Chromium adapter but Lightpanda does not reliably
+    /// emit those events — advertise `false` until proven otherwise.
     pub const LIGHTPANDA: Self = Self {
         pdf: false,
         file_input: false,
