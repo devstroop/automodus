@@ -16,10 +16,11 @@ mod driver;
 pub mod launch;
 pub mod selector;
 
-pub use adapter::{ChromePageAdapter, ConsoleEntry, NetworkEntry};
+pub use adapter::ChromePageAdapter;
+pub use crate::actions::{ConsoleEntry, NetworkEntry};
 pub use driver::{BrowserService, BrowserServiceConfig};
 pub use launch::{
-    build_browser_config, launch_browser, resolve_chrome_path, resolve_chrome_path_with,
-    LaunchOptions,
+    build_browser_config, launch_browser, launch_session, resolve_chrome_path,
+    resolve_chrome_path_with, LaunchOptions,
 };
 pub use selector::{parse_selector, SelectorType};

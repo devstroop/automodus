@@ -13,18 +13,18 @@ use tokio::sync::{broadcast, Mutex, RwLock};
 use tracing::{info, warn};
 
 use crate::actions::BrowserHandle;
-use crate::modules::browser::launch::{launch_browser, get_or_create_page, LaunchOptions};
+use crate::modules::browser::launch::{launch_session, LaunchOptions};
 use crate::modules::ChromePageAdapter;
 use crate::workflow::schema::{DebugConfig, ResolvedDebugConfig, Workflow};
 
 /// Application core - shared state for all daemon operations
 pub struct AppCore {
-    /// Browser instance (lazily initialized, Arc-shared with adapters for tab support)
-    browser: Arc<Mutex<Option<chromiumoxide::browser::Browser>>>,
-    /// Current page adapter
+    /// Current page adapter (lazily launched; chromiumoxide stays inside modules/browser)
     page_adapter: Mutex<Option<ChromePageAdapter>>,
     /// Whether to run browser headless
     headless: bool,
+    /// Browser engine backend (only chromium is implemented today)
+    engine: crate::config::BrowserEngine,
     /// Session manager for browser lifecycle
     sessions: Arc<RwLock<SessionStore>>,
     /// Global debug configuration
@@ -47,9 +47,9 @@ impl AppCore {
         let (event_tx, _) = broadcast::channel(256);
 
         Self {
-            browser: Arc::new(Mutex::new(None)),
             page_adapter: Mutex::new(None),
             headless: true,
+            engine: crate::config::BrowserEngine::default(),
             sessions: Arc::new(RwLock::new(SessionStore::new())),
             debug_config: Arc::new(RwLock::new(ResolvedDebugConfig::default())),
             workflows: Arc::new(RwLock::new(HashMap::new())),
@@ -85,36 +85,38 @@ impl AppCore {
         self.headless = headless;
     }
 
+    /// Set browser engine backend
+    pub fn set_engine(&mut self, engine: crate::config::BrowserEngine) {
+        self.engine = engine;
+    }
+
     // --- Browser Lifecycle ---
 
     /// Get or create browser page adapter
     ///
     /// Lazily launches the browser on first call. Returns an existing valid
-    /// adapter if available.
+    /// adapter if available. Chromiumoxide types never leave `modules/browser`.
+    ///
+    /// Single-flight: the adapter lock is held across check → close → launch →
+    /// store so concurrent callers cannot launch duplicate Chromium processes
+    /// on the same profile directory. A stale adapter is closed before
+    /// relaunch so the next launch does not contend on a live profile lock.
     pub async fn get_page(&self) -> Result<ChromePageAdapter, String> {
-        // Check if we have a valid cached adapter
-        {
-            let page_guard = self.page_adapter.lock().await;
-            if let Some(ref adapter) = *page_guard {
-                if adapter.current_url().await.is_ok() {
-                    return Ok(adapter.clone());
-                }
+        let mut guard = self.page_adapter.lock().await;
+
+        if let Some(adapter) = guard.take() {
+            if adapter.current_url().await.is_ok() {
+                *guard = Some(adapter.clone());
+                return Ok(adapter);
             }
+            warn!("AppCore: cached browser adapter is stale; closing and relaunching");
+            adapter.close_browser().await;
         }
 
-        // Need to create browser and page
-        let page = {
-            let mut browser_guard = self.browser.lock().await;
-            if browser_guard.is_none() {
-                info!("AppCore: launching browser...");
-                let options = LaunchOptions::for_server(self.headless);
-                let browser = launch_browser(&options).await?;
-                *browser_guard = Some(browser);
-            }
-            get_or_create_page(browser_guard.as_ref().unwrap(), None).await?
-        };
+        info!("AppCore: launching browser...");
+        let options = LaunchOptions::for_server(self.headless).engine(self.engine);
+        let adapter = launch_session(&options).await?;
 
-        let adapter = ChromePageAdapter::with_browser(page, self.browser.clone());
         if let Err(e) = adapter.start_console_listener().await {
             warn!("Failed to start console listener: {}", e);
         }
@@ -124,14 +126,14 @@ impl AppCore {
         if let Err(e) = adapter.start_crash_listener().await {
             warn!("Failed to start crash listener: {}", e);
         }
-        *self.page_adapter.lock().await = Some(adapter.clone());
+        *guard = Some(adapter.clone());
 
         Ok(adapter)
     }
 
     /// Check if browser is currently running
     pub async fn has_browser(&self) -> bool {
-        self.browser.lock().await.is_some()
+        self.page_adapter.lock().await.is_some()
     }
 
     // --- Debug Configuration ---

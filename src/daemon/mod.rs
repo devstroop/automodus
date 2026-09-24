@@ -129,8 +129,15 @@ impl Daemon {
     /// Create a new daemon instance
     pub fn new(config: DaemonConfig) -> Self {
         let (shutdown_tx, _) = broadcast::channel(1);
+        let mut core = AppCore::new(&config);
+        // Apply browser settings from AppConfig when available (engine, headless).
+        // Launch still fails fast if engine is unsupported.
+        if let Ok(app_cfg) = crate::config::AppConfig::load() {
+            core.set_headless(app_cfg.browser.headless);
+            core.set_engine(app_cfg.browser.engine);
+        }
         Self {
-            core: Arc::new(AppCore::new(&config)),
+            core: Arc::new(core),
             config,
             socket_listener: None,
             shutdown_tx,

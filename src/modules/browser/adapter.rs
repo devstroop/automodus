@@ -24,49 +24,9 @@ use super::selector::{
     parse_selector, selector_click_js, selector_exists_js, selector_get_attribute_js,
     selector_get_text_js, selector_type_js,
 };
-use crate::actions::{ActionError, BrowserHandle, TabInfo};
-
-/// Console log entry captured from the browser
-#[derive(Debug, Clone)]
-pub struct ConsoleEntry {
-    pub timestamp: chrono::DateTime<chrono::Utc>,
-    pub level: String,
-    pub message: String,
-}
-
-impl ConsoleEntry {
-    /// Format as log line: [CONSOLE] 14:32:01.123 LOG: message
-    pub fn format(&self) -> String {
-        format!(
-            "[CONSOLE] {} {}: {}",
-            self.timestamp.format("%H:%M:%S%.3f"),
-            self.level.to_uppercase(),
-            self.message
-        )
-    }
-}
-
-/// Network request entry captured from the browser
-#[derive(Debug, Clone)]
-pub struct NetworkEntry {
-    pub timestamp: chrono::DateTime<chrono::Utc>,
-    pub method: String,
-    pub url: String,
-    pub status: Option<u32>,
-    pub duration_ms: Option<u64>,
-}
-
-impl NetworkEntry {
-    /// Format as log line: [NETWORK] GET https://... → 200 (45ms)
-    pub fn format(&self) -> String {
-        let status = self.status.map(|s| s.to_string()).unwrap_or_else(|| "?".to_string());
-        let timing = self.duration_ms.map(|d| format!(" ({}ms)", d)).unwrap_or_default();
-        format!(
-            "[NETWORK] {} {} → {}{}",
-            self.method, self.url, status, timing
-        )
-    }
-}
+use crate::actions::{
+    ActionError, BrowserHandle, ConsoleEntry, NetworkEntry, TabInfo,
+};
 
 /// Adapter that implements BrowserHandle for chromiumoxide Page
 #[derive(Clone)]
@@ -159,6 +119,25 @@ impl ChromePageAdapter {
     /// Clear captured network logs
     pub async fn clear_network_logs(&self) {
         self.network_logs.lock().await.clear();
+    }
+
+    /// Close the underlying browser if this adapter still owns it.
+    ///
+    /// Used when recovering from a stale/hung adapter so the next launch
+    /// does not contend on a live profile directory. Safe to call multiple
+    /// times; subsequent calls are no-ops if the browser was already taken.
+    pub async fn close_browser(&self) {
+        let Some(browser_arc) = self.browser.as_ref() else {
+            return;
+        };
+        let mut guard = browser_arc.lock().await;
+        if let Some(mut browser) = guard.take() {
+            if let Err(e) = browser.close().await {
+                debug!("close_browser: {}", e);
+            } else {
+                debug!("close_browser: browser closed");
+            }
+        }
     }
 
     /// Start the native CDP console listener.
@@ -1169,5 +1148,47 @@ impl BrowserHandle for ChromePageAdapter {
                 last_error
             )))
         }
+    }
+
+    // --- Observability: forward to the inherent CDP implementations ---
+
+    async fn start_console_listener(&self) -> Result<(), ActionError> {
+        ChromePageAdapter::start_console_listener(self).await
+    }
+
+    async fn start_network_listener(&self) -> Result<(), ActionError> {
+        ChromePageAdapter::start_network_listener(self).await
+    }
+
+    async fn start_crash_listener(&self) -> Result<(), ActionError> {
+        ChromePageAdapter::start_crash_listener(self).await
+    }
+
+    async fn get_console_logs(&self) -> Vec<ConsoleEntry> {
+        ChromePageAdapter::get_console_logs(self).await
+    }
+
+    async fn get_network_logs(&self) -> Vec<NetworkEntry> {
+        ChromePageAdapter::get_network_logs(self).await
+    }
+
+    async fn capture_console_logs(&self) -> Result<Vec<ConsoleEntry>, ActionError> {
+        ChromePageAdapter::capture_console_logs(self).await
+    }
+
+    async fn capture_network_logs(&self) -> Result<Vec<NetworkEntry>, ActionError> {
+        ChromePageAdapter::capture_network_logs(self).await
+    }
+
+    async fn clear_console_logs(&self) {
+        ChromePageAdapter::clear_console_logs(self).await
+    }
+
+    async fn clear_network_logs(&self) {
+        ChromePageAdapter::clear_network_logs(self).await
+    }
+
+    fn is_browser_alive(&self) -> bool {
+        ChromePageAdapter::is_browser_alive(self)
     }
 }

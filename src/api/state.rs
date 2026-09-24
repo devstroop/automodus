@@ -73,6 +73,7 @@ impl ServerState {
         let daemon_config = crate::daemon::DaemonConfig::default();
         let mut core = AppCore::new(&daemon_config);
         core.set_headless(config.browser.headless);
+        core.set_engine(config.browser.engine);
         Self::with_core(config, Arc::new(core))
     }
 

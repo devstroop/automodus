@@ -21,6 +21,9 @@ pub struct LaunchOptions {
     /// - `None`: auto-detect via [`resolve_chrome_path`] at launch time
     /// - `Some(path)`: must exist; missing path is a hard error (no silent fallback)
     pub chrome_path: Option<PathBuf>,
+    /// Browser engine backend. Only `chromium` is implemented; `firefox`
+    /// fails fast in [`build_browser_config`] / [`launch_browser`].
+    pub engine: crate::config::BrowserEngine,
 }
 
 impl Default for LaunchOptions {
@@ -30,6 +33,7 @@ impl Default for LaunchOptions {
             user_data_dir: std::env::temp_dir().join("automodus-browser"),
             extra_args: vec![],
             chrome_path: None,
+            engine: crate::config::BrowserEngine::default(),
         }
     }
 }
@@ -43,6 +47,7 @@ impl LaunchOptions {
                 .join(format!("automodus-workflow-{}", std::process::id())),
             extra_args: vec![],
             chrome_path: None,
+            engine: crate::config::BrowserEngine::default(),
         }
     }
 
@@ -54,6 +59,7 @@ impl LaunchOptions {
                 .join(format!("automodus-shell-{}", std::process::id())),
             extra_args: vec![],
             chrome_path: None,
+            engine: crate::config::BrowserEngine::default(),
         }
     }
 
@@ -64,12 +70,19 @@ impl LaunchOptions {
             user_data_dir: std::env::temp_dir().join("automodus-server"),
             extra_args: vec![],
             chrome_path: None,
+            engine: crate::config::BrowserEngine::default(),
         }
     }
 
     /// Set headless mode
     pub fn headless(mut self, headless: bool) -> Self {
         self.headless = headless;
+        self
+    }
+
+    /// Set browser engine backend
+    pub fn engine(mut self, engine: crate::config::BrowserEngine) -> Self {
+        self.engine = engine;
         self
     }
 
@@ -354,6 +367,16 @@ pub(crate) fn dynamic_chrome_args() -> Vec<String> {
 
 /// Build a browser configuration from launch options
 pub fn build_browser_config(options: &LaunchOptions) -> Result<BrowserConfig, String> {
+    // Fail fast for engines other than chromium (firefox is reserved for a
+    // future WebDriver BiDi backend and must not silently launch Chrome).
+    if options.engine != crate::config::BrowserEngine::Chromium {
+        return Err(format!(
+            "browser engine '{}' is not implemented yet (only 'chromium'); \
+             set browser.engine = \"chromium\" in config or remove the setting",
+            options.engine
+        ));
+    }
+
     // Ensure user data directory exists
     std::fs::create_dir_all(&options.user_data_dir)
         .map_err(|e| format!("Failed to create user data dir: {}", e))?;
@@ -464,6 +487,24 @@ pub async fn get_or_create_page(
     }
 }
 
+/// Launch a browser session and return a ready [`ChromePageAdapter`].
+///
+/// This is the preferred entry point for callers outside `modules/browser` —
+/// it encapsulates chromiumoxide types so the rest of the crate only sees
+/// the adapter (which implements [`BrowserHandle`](crate::actions::BrowserHandle)).
+///
+/// Does **not** start console/network/crash listeners; call those on the
+/// returned adapter (via the trait or inherent methods) if needed.
+pub async fn launch_session(options: &LaunchOptions) -> Result<super::ChromePageAdapter, String> {
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    let browser = launch_browser(options).await?;
+    let page = get_or_create_page(&browser, None).await?;
+    let browser_ref = Arc::new(Mutex::new(Some(browser)));
+    Ok(super::ChromePageAdapter::with_browser(page, browser_ref))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,6 +552,28 @@ mod tests {
         let opts = LaunchOptions::for_workflow().chrome_path("/definitely/not/a/chrome/binary");
         let err = build_browser_config(&opts).unwrap_err();
         assert!(err.contains("does not exist"), "unexpected err: {}", err);
+    }
+
+    #[test]
+    fn firefox_engine_fails_fast_in_build_browser_config() {
+        let opts =
+            LaunchOptions::for_workflow().engine(crate::config::BrowserEngine::Firefox);
+        let err = build_browser_config(&opts).unwrap_err();
+        assert!(
+            err.contains("not implemented") && err.contains("firefox"),
+            "unexpected err: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn chromium_engine_builds_config() {
+        let opts =
+            LaunchOptions::for_workflow().engine(crate::config::BrowserEngine::Chromium);
+        // May still fail on missing chrome_path elsewhere, but not on engine
+        if let Err(e) = build_browser_config(&opts) {
+            assert!(!e.contains("engine"), "must not fail on chromium engine: {}", e);
+        }
     }
 
     #[test]
