@@ -14,16 +14,16 @@ use tracing::{info, warn};
 
 use crate::actions::BrowserHandle;
 use crate::modules::browser::launch::{launch_session, LaunchOptions};
-use crate::modules::ChromePageAdapter;
+use crate::modules::SessionAdapter;
 use crate::workflow::schema::{DebugConfig, ResolvedDebugConfig, Workflow};
 
 /// Application core - shared state for all daemon operations
 pub struct AppCore {
-    /// Current page adapter (lazily launched; chromiumoxide stays inside modules/browser)
-    page_adapter: Mutex<Option<ChromePageAdapter>>,
+    /// Current session adapter (lazily launched; backends stay inside modules/browser)
+    page_adapter: Mutex<Option<SessionAdapter>>,
     /// Whether to run browser headless
     headless: bool,
-    /// Browser engine backend (only chromium is implemented today)
+    /// Browser engine backend (chromium or firefox; see launch_session)
     engine: crate::config::BrowserEngine,
     /// Session manager for browser lifecycle
     sessions: Arc<RwLock<SessionStore>>,
@@ -101,7 +101,7 @@ impl AppCore {
     /// store so concurrent callers cannot launch duplicate Chromium processes
     /// on the same profile directory. A stale adapter is closed before
     /// relaunch so the next launch does not contend on a live profile lock.
-    pub async fn get_page(&self) -> Result<ChromePageAdapter, String> {
+    pub async fn get_page(&self) -> Result<SessionAdapter, String> {
         let mut guard = self.page_adapter.lock().await;
 
         if let Some(adapter) = guard.take() {

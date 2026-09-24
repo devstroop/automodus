@@ -107,6 +107,8 @@ utoipa-swagger-ui = { version = "7.0", features = ["axum"] }
 # Async streaming (MCP SSE) - optional
 async-stream = { version = "0.3", optional = true }
 libc = "0.2.182"
+rustenium = "1.1.14"
+rustenium-bidi-definitions = "0.1.1"
 
 [dev-dependencies]
 tower-test = "0.4"

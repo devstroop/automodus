@@ -25,7 +25,7 @@ use automodus::{
     actions::BrowserHandle,
     core::{AppCore, ShellPauseHandler, WorkflowEngine},
     daemon::{Daemon, DaemonConfig, DaemonStatus},
-    modules::ChromePageAdapter,
+    modules::SessionAdapter,
     shell::{ShellClient, ShellCommand, ShellConfig},
     utils::{logging, yaml_to_json},
     workflow::{
@@ -801,9 +801,12 @@ async fn run_workflow(
 
     let headless = workflow.browser.headless;
     let mut options = LaunchOptions::for_workflow().headless(headless);
-    // Respect browser.engine from config; unsupported engines fail fast in launch_session.
+    // Respect browser.engine from config; launch_session dispatches engines.
     if let Ok(cfg) = automodus::config::AppConfig::load() {
         options = options.engine(cfg.browser.engine);
+        if let Some(fp) = cfg.browser.firefox_path {
+            options = options.firefox_path(fp);
+        }
     }
     let adapter = launch_session(&options)
         .await
@@ -941,9 +944,12 @@ async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Launching browser (headless: false)...");
     let mut options = LaunchOptions::for_shell();
-    // Respect browser.engine from config; unsupported engines fail fast in launch_session.
+    // Respect browser.engine from config; launch_session dispatches engines.
     if let Ok(cfg) = automodus::config::AppConfig::load() {
         options = options.engine(cfg.browser.engine);
+        if let Some(fp) = cfg.browser.firefox_path {
+            options = options.firefox_path(fp);
+        }
     }
     let adapter = launch_session(&options)
         .await
@@ -2184,7 +2190,7 @@ fn format_duration(d: chrono::Duration) -> String {
 /// Run a workflow using an existing adapter (for shell mode)
 async fn run_workflow_with_adapter(
     path: &std::path::Path,
-    adapter: &ChromePageAdapter,
+    adapter: &SessionAdapter,
     engine: &WorkflowEngine,
     extra_params: HashMap<String, serde_json::Value>,
 ) -> Result<(), Box<dyn std::error::Error>> {
