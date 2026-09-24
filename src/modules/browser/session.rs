@@ -23,13 +23,44 @@ pub enum SessionAdapter {
     /// Lightpanda via CDP (spawned `lightpanda serve` + chromiumoxide connect).
     ///
     /// Reuses the Chromium page adapter for DOM/CDP work; keeps the child
-    /// process so `close_browser` can kill `lightpanda serve` (connect-mode
-    /// `Browser` does not own a child process).
+    /// process in a [`KillOnDrop`] guard so `lightpanda serve` is killed by
+    /// `close_browser` **or** by dropping the last adapter clone (connect-mode
+    /// `Browser` does not own a child process, unlike chromiumoxide).
     Lightpanda {
         page: ChromePageAdapter,
-        child: Arc<Mutex<Option<std::process::Child>>>,
+        child: Arc<Mutex<KillOnDrop>>,
         port: u16,
     },
+}
+
+/// Owns the spawned `lightpanda serve` child and kills it on drop unless
+/// taken by `close_browser`.
+///
+/// The `Drop` runs when the last `SessionAdapter` clone releases its `Arc`,
+/// so normal CLI exits, errors, and panics never orphan the process.
+pub struct KillOnDrop(Option<std::process::Child>);
+
+impl KillOnDrop {
+    pub(crate) fn new(child: std::process::Child) -> Self {
+        Self(Some(child))
+    }
+
+    fn take(&mut self) -> Option<std::process::Child> {
+        self.0.take()
+    }
+
+    fn as_mut(&mut self) -> Option<&mut std::process::Child> {
+        self.0.as_mut()
+    }
+}
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 impl SessionAdapter {
@@ -40,12 +71,13 @@ impl SessionAdapter {
         match self {
             SessionAdapter::Chrome(c) => c.close_browser().await,
             SessionAdapter::Firefox(f) => f.close_browser().await,
-            SessionAdapter::Lightpanda { page, child, .. } => {
+            SessionAdapter::Lightpanda { page, child, port } => {
                 page.close_browser().await;
                 let mut guard = child.lock().await;
                 if let Some(mut proc) = guard.take() {
                     let _ = proc.kill();
                     let _ = proc.wait();
+                    tracing::debug!(port = *port, "Lightpanda serve stopped");
                 }
             }
         }
@@ -60,9 +92,13 @@ impl SessionAdapter {
                 if !page.is_browser_alive() {
                     return false;
                 }
-                // Best-effort: if the child was reaped, treat as dead.
+                // Poll the child: Ok(None) = still running, Ok(Some) = exited
+                // (already reaped by try_wait), None = taken by close_browser.
                 match child.try_lock() {
-                    Ok(guard) => guard.is_some(),
+                    Ok(mut guard) => match guard.as_mut() {
+                        Some(proc) => matches!(proc.try_wait(), Ok(None)),
+                        None => false,
+                    },
                     Err(_) => true, // lock contended — assume alive
                 }
             }

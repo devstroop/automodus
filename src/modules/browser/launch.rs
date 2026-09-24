@@ -766,14 +766,7 @@ async fn launch_lightpanda_session(
     let explicit = options.lightpanda_path.as_ref().or(config_lp.as_ref());
     let lightpanda = resolve_lightpanda_path(explicit)?;
 
-    let port = {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0")
-            .map_err(|e| format!("Failed to bind free port: {}", e))?;
-        listener
-            .local_addr()
-            .map(|a| a.port())
-            .map_err(|e| format!("Failed to read local port: {}", e))?
-    };
+    let port = super::firefox::free_port()?;
 
     let mut cmd = std::process::Command::new(&lightpanda);
     cmd.arg("serve")
@@ -803,16 +796,36 @@ async fn launch_lightpanda_session(
     // We parse `webSocketDebuggerUrl` ourselves: Lightpanda omits Chromium-only
     // fields (`V8-Version`, `WebKit-Version`) that chromiumoxide's
     // `Browser::connect(http_url)` requires when deserializing `/json/version`.
+    //
+    // The client has a per-request timeout so the 15s deadline holds even if
+    // the endpoint accepts TCP but stalls mid-response.
     let http = format!("http://127.0.0.1:{}/json/version", port);
+    let http_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .map_err(|e| {
+            let _ = child.kill();
+            let _ = child.wait();
+            format!("Failed to build Lightpanda HTTP client: {}", e)
+        })?;
     let deadline = Instant::now() + Duration::from_secs(15);
     let ws_url = loop {
-        if let Some(status) = child.try_wait().map_err(|e| format!("wait: {}", e))? {
-            return Err(format!(
-                "Lightpanda exited early with status {} (port {})",
-                status, port
-            ));
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                // try_wait already reaped the child — just report the exit.
+                return Err(format!(
+                    "Lightpanda exited early with status {} (port {})",
+                    status, port
+                ));
+            }
+            Ok(None) => {}
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("Lightpanda wait failed: {}", e));
+            }
         }
-        match reqwest::Client::new().get(&http).send().await {
+        match http_client.get(&http).send().await {
             Ok(resp) if resp.status().is_success() => {
                 let body = resp.text().await.unwrap_or_default();
                 match serde_json::from_str::<serde_json::Value>(&body)
@@ -869,6 +882,7 @@ async fn launch_lightpanda_session(
 
     let (browser, mut handler) = Browser::connect(&ws_url).await.map_err(|e| {
         let _ = child.kill();
+        let _ = child.wait();
         format!("Failed to connect to Lightpanda CDP {}: {}", ws_url, e)
     })?;
 
@@ -885,12 +899,13 @@ async fn launch_lightpanda_session(
 
     let page = get_or_create_page(&browser, None).await.map_err(|e| {
         let _ = child.kill();
+        let _ = child.wait();
         format!("Failed to get Lightpanda page: {}", e)
     })?;
 
     let browser_ref = Arc::new(Mutex::new(Some(browser)));
     let page_adapter = super::ChromePageAdapter::with_browser(page, browser_ref);
-    let child = Arc::new(Mutex::new(Some(child)));
+    let child = Arc::new(Mutex::new(super::session::KillOnDrop::new(child)));
 
     info!("Lightpanda launched successfully");
     Ok(SessionAdapter::Lightpanda {
