@@ -807,6 +807,9 @@ async fn run_workflow(
         if let Some(fp) = cfg.browser.firefox_path {
             options = options.firefox_path(fp);
         }
+        if let Some(lp) = cfg.browser.lightpanda_path {
+            options = options.lightpanda_path(lp);
+        }
     }
     let adapter = launch_session(&options)
         .await
@@ -949,6 +952,9 @@ async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
         options = options.engine(cfg.browser.engine);
         if let Some(fp) = cfg.browser.firefox_path {
             options = options.firefox_path(fp);
+        }
+        if let Some(lp) = cfg.browser.lightpanda_path {
+            options = options.lightpanda_path(lp);
         }
     }
     let adapter = launch_session(&options)

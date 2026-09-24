@@ -23,7 +23,7 @@ pub struct AppCore {
     page_adapter: Mutex<Option<SessionAdapter>>,
     /// Whether to run browser headless
     headless: bool,
-    /// Browser engine backend (chromium or firefox; see launch_session)
+    /// Browser engine backend (chromium | firefox | lightpanda; see launch_session)
     engine: crate::config::BrowserEngine,
     /// Session manager for browser lifecycle
     sessions: Arc<RwLock<SessionStore>>,
