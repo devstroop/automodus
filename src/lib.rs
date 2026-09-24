@@ -121,7 +121,7 @@ pub use core::{AppCore, CoreEvent, ExecutionContext, Session, SessionError, Sess
 pub use daemon::{Daemon, DaemonClient, DaemonConfig, DaemonError, DaemonEvent, DaemonStatus};
 
 // Browser types
-pub use modules::{BrowserService, ChromePageAdapter};
+pub use modules::{BrowserService, ChromePageAdapter, FirefoxPageAdapter, SessionAdapter};
 
 // Configuration
 pub use config::{AppConfig, BrowserEngine};

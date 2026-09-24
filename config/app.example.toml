@@ -3,10 +3,13 @@ host = "0.0.0.0"
 port = 3000
 
 [browser]
-# Browser engine backend: "chromium" (default) or "firefox" (reserved, not yet implemented)
+# Browser engine backend: "chromium" (CDP) or "firefox" (WebDriver BiDi, no geckodriver)
 engine = "chromium"
 headless = true
 timeout_ms = 30000
+# Optional: explicit browser binary paths (omit to auto-detect)
+# chrome_path = "/usr/bin/google-chrome"
+# firefox_path = "/usr/bin/firefox"
 # Browser arguments for better performance and compatibility
 args = [
     "--disable-blink-features=AutomationControlled",

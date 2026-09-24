@@ -95,15 +95,15 @@ fn default_port() -> u16 {
 
 /// Browser engine backend.
 ///
-/// Only `chromium` is implemented today. `firefox` is reserved for a future
-/// WebDriver BiDi backend and will fail fast at launch until implemented.
+/// `chromium` uses CDP (chromiumoxide). `firefox` uses WebDriver BiDi via
+/// rustenium (no geckodriver); `launch_session` dispatches on this.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum BrowserEngine {
     /// Chromium / Chrome via CDP (chromiumoxide)
     #[default]
     Chromium,
-    /// Firefox via WebDriver BiDi (not yet implemented)
+    /// Firefox via WebDriver BiDi (rustenium; no geckodriver)
     Firefox,
 }
 
@@ -134,6 +134,9 @@ pub struct BrowserConfig {
     /// Chrome executable path (auto-detected if not set)
     pub chrome_path: Option<PathBuf>,
 
+    /// Firefox executable path (auto-detected if not set; used when engine = firefox)
+    pub firefox_path: Option<PathBuf>,
+
     /// User data directory for browser profile
     pub user_data_dir: Option<PathBuf>,
 
@@ -149,6 +152,7 @@ impl Default for BrowserConfig {
             headless: false,
             timeout_ms: default_timeout(),
             chrome_path: None,
+            firefox_path: None,
             user_data_dir: None,
             args: vec![],
         }

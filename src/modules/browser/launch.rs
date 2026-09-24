@@ -14,15 +14,22 @@ pub struct LaunchOptions {
     pub headless: bool,
     /// User data directory for browser profile
     pub user_data_dir: PathBuf,
-    /// Additional Chrome arguments
+    /// Additional Chrome arguments (Chromium) / Firefox browser flags
     pub extra_args: Vec<String>,
-    /// Chrome/Chromium executable path.
+    /// Chrome/Chromium executable path (ignored when engine is firefox).
     ///
     /// - `None`: auto-detect via [`resolve_chrome_path`] at launch time
     /// - `Some(path)`: must exist; missing path is a hard error (no silent fallback)
     pub chrome_path: Option<PathBuf>,
-    /// Browser engine backend. Only `chromium` is implemented; `firefox`
-    /// fails fast in [`build_browser_config`] / [`launch_browser`].
+    /// Firefox executable path (ignored when engine is chromium).
+    ///
+    /// - `None`: auto-detect via [`resolve_firefox_path`] at launch time
+    /// - `Some(path)`: must exist; missing path is a hard error
+    pub firefox_path: Option<PathBuf>,
+    /// Browser engine backend: `chromium` (CDP) or `firefox` (WebDriver BiDi).
+    ///
+    /// [`launch_session`] dispatches on this; [`build_browser_config`] only
+    /// builds a Chromium [`BrowserConfig`] and fails fast for other engines.
     pub engine: crate::config::BrowserEngine,
 }
 
@@ -33,6 +40,7 @@ impl Default for LaunchOptions {
             user_data_dir: std::env::temp_dir().join("automodus-browser"),
             extra_args: vec![],
             chrome_path: None,
+            firefox_path: None,
             engine: crate::config::BrowserEngine::default(),
         }
     }
@@ -47,6 +55,7 @@ impl LaunchOptions {
                 .join(format!("automodus-workflow-{}", std::process::id())),
             extra_args: vec![],
             chrome_path: None,
+            firefox_path: None,
             engine: crate::config::BrowserEngine::default(),
         }
     }
@@ -59,6 +68,7 @@ impl LaunchOptions {
                 .join(format!("automodus-shell-{}", std::process::id())),
             extra_args: vec![],
             chrome_path: None,
+            firefox_path: None,
             engine: crate::config::BrowserEngine::default(),
         }
     }
@@ -70,6 +80,7 @@ impl LaunchOptions {
             user_data_dir: std::env::temp_dir().join("automodus-server"),
             extra_args: vec![],
             chrome_path: None,
+            firefox_path: None,
             engine: crate::config::BrowserEngine::default(),
         }
     }
@@ -101,6 +112,12 @@ impl LaunchOptions {
     /// Set Chrome executable path
     pub fn chrome_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.chrome_path = Some(path.into());
+        self
+    }
+
+    /// Set Firefox executable path
+    pub fn firefox_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.firefox_path = Some(path.into());
         self
     }
 }
@@ -365,14 +382,97 @@ pub(crate) fn dynamic_chrome_args() -> Vec<String> {
     args
 }
 
-/// Build a browser configuration from launch options
+/// Resolve Firefox path from config, env, or common install locations.
+///
+/// Priority: explicit `LaunchOptions.firefox_path` (checked by caller) →
+/// `AUTOMODUS_FIREFOX_PATH` → `FIREFOX` → system paths.
+///
+/// Returns `Err` when an **explicitly configured** path is set but missing —
+/// never silently substitutes another binary for a bad explicit config.
+pub fn resolve_firefox_path(explicit: Option<&PathBuf>) -> Result<PathBuf, String> {
+    fn explicit_check(path: &str, source: &str) -> Result<Option<PathBuf>, String> {
+        if path.is_empty() {
+            return Ok(None);
+        }
+        let p = PathBuf::from(path);
+        if p.exists() {
+            Ok(Some(p))
+        } else {
+            Err(format!(
+                "{} is set to '{}' but that path does not exist",
+                source, path
+            ))
+        }
+    }
+
+    if let Some(p) = explicit {
+        if p.exists() {
+            return Ok(p.clone());
+        }
+        return Err(format!(
+            "firefox_path is set to '{}' but that path does not exist",
+            p.display()
+        ));
+    }
+
+    if let Some(p) = explicit_check(
+        &std::env::var("AUTOMODUS_FIREFOX_PATH").unwrap_or_default(),
+        "AUTOMODUS_FIREFOX_PATH",
+    )? {
+        return Ok(p);
+    }
+    if let Some(p) = explicit_check(&std::env::var("FIREFOX").unwrap_or_default(), "FIREFOX")? {
+        return Ok(p);
+    }
+
+    #[cfg(target_os = "macos")]
+    let candidates: [Option<PathBuf>; 3] = [
+        Some(PathBuf::from(
+            "/Applications/Firefox.app/Contents/MacOS/firefox",
+        )),
+        Some(PathBuf::from("/usr/local/bin/firefox")),
+        Some(PathBuf::from("/opt/homebrew/bin/firefox")),
+    ];
+    #[cfg(target_os = "windows")]
+    let candidates: [Option<PathBuf>; 3] = [
+        Some(PathBuf::from(
+            r"C:\Program Files\Mozilla Firefox\firefox.exe",
+        )),
+        Some(PathBuf::from(
+            r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
+        )),
+        None,
+    ];
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let candidates: [Option<PathBuf>; 5] = [
+        Some(PathBuf::from("/usr/bin/firefox")),
+        Some(PathBuf::from("/usr/local/bin/firefox")),
+        Some(PathBuf::from("/snap/bin/firefox")),
+        Some(PathBuf::from("/usr/lib/firefox/firefox")),
+        Some(PathBuf::from("/opt/firefox/firefox")),
+    ];
+
+    for c in candidates.into_iter().flatten() {
+        if c.exists() {
+            return Ok(c);
+        }
+    }
+    Err(
+        "Firefox executable not found; set browser.firefox_path, AUTOMODUS_FIREFOX_PATH, or FIREFOX"
+            .into(),
+    )
+}
+
+/// Build a browser configuration from launch options (Chromium only).
+///
+/// Firefox does not use this path — see [`launch_session`].
 pub fn build_browser_config(options: &LaunchOptions) -> Result<BrowserConfig, String> {
-    // Fail fast for engines other than chromium (firefox is reserved for a
-    // future WebDriver BiDi backend and must not silently launch Chrome).
+    // Fail fast for engines other than chromium (firefox is launched via
+    // launch_session / WebDriver BiDi and must not silently launch Chrome).
     if options.engine != crate::config::BrowserEngine::Chromium {
         return Err(format!(
-            "browser engine '{}' is not implemented yet (only 'chromium'); \
-             set browser.engine = \"chromium\" in config or remove the setting",
+            "build_browser_config only builds Chromium BrowserConfig (engine='{}'); \
+             use launch_session for engine dispatch",
             options.engine
         ));
     }
@@ -487,22 +587,49 @@ pub async fn get_or_create_page(
     }
 }
 
-/// Launch a browser session and return a ready [`ChromePageAdapter`].
+/// Launch a browser session and return a ready [`SessionAdapter`].
 ///
 /// This is the preferred entry point for callers outside `modules/browser` —
-/// it encapsulates chromiumoxide types so the rest of the crate only sees
+/// it encapsulates engine-specific types so the rest of the crate only sees
 /// the adapter (which implements [`BrowserHandle`](crate::actions::BrowserHandle)).
+///
+/// Dispatches on [`LaunchOptions::engine`]:
+/// - `chromium` → [`ChromePageAdapter`](super::ChromePageAdapter)
+/// - `firefox` → [`FirefoxPageAdapter`](super::FirefoxPageAdapter)
 ///
 /// Does **not** start console/network/crash listeners; call those on the
 /// returned adapter (via the trait or inherent methods) if needed.
-pub async fn launch_session(options: &LaunchOptions) -> Result<super::ChromePageAdapter, String> {
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
+pub async fn launch_session(options: &LaunchOptions) -> Result<super::SessionAdapter, String> {
+    use super::SessionAdapter;
 
-    let browser = launch_browser(options).await?;
-    let page = get_or_create_page(&browser, None).await?;
-    let browser_ref = Arc::new(Mutex::new(Some(browser)));
-    Ok(super::ChromePageAdapter::with_browser(page, browser_ref))
+    match options.engine {
+        crate::config::BrowserEngine::Chromium => {
+            use std::sync::Arc;
+            use tokio::sync::Mutex;
+
+            let browser = launch_browser(options).await?;
+            let page = get_or_create_page(&browser, None).await?;
+            let browser_ref = Arc::new(Mutex::new(Some(browser)));
+            Ok(SessionAdapter::Chrome(super::ChromePageAdapter::with_browser(
+                page, browser_ref,
+            )))
+        }
+        crate::config::BrowserEngine::Firefox => {
+            let config_ff = crate::config::AppConfig::load()
+                .ok()
+                .and_then(|c| c.browser.firefox_path);
+            let explicit = options.firefox_path.as_ref().or(config_ff.as_ref());
+            let firefox = resolve_firefox_path(explicit)?;
+            let adapter = super::FirefoxPageAdapter::launch(
+                firefox,
+                options.user_data_dir.clone(),
+                options.headless,
+                &options.extra_args,
+            )
+            .await?;
+            Ok(SessionAdapter::Firefox(adapter))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -555,15 +682,32 @@ mod tests {
     }
 
     #[test]
-    fn firefox_engine_fails_fast_in_build_browser_config() {
+    fn build_browser_config_rejects_non_chromium_engine() {
         let opts =
             LaunchOptions::for_workflow().engine(crate::config::BrowserEngine::Firefox);
         let err = build_browser_config(&opts).unwrap_err();
         assert!(
-            err.contains("not implemented") && err.contains("firefox"),
+            err.contains("only builds Chromium") && err.contains("firefox"),
             "unexpected err: {}",
             err
         );
+    }
+
+    #[test]
+    fn resolve_firefox_path_rejects_missing_explicit() {
+        let err = resolve_firefox_path(Some(&PathBuf::from("/definitely/not/firefox"))).unwrap_err();
+        assert!(err.contains("does not exist"), "unexpected err: {}", err);
+    }
+
+    #[test]
+    fn resolve_firefox_path_rejects_missing_env() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("AUTOMODUS_FIREFOX_PATH", "/no/such/firefox-xyz");
+        let result = resolve_firefox_path(None);
+        std::env::remove_var("AUTOMODUS_FIREFOX_PATH");
+        let err = result.unwrap_err();
+        assert!(err.contains("AUTOMODUS_FIREFOX_PATH"));
+        assert!(err.contains("does not exist"));
     }
 
     #[test]

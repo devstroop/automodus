@@ -12,7 +12,7 @@ use tracing::{info, warn};
 use crate::config::AppConfig;
 use crate::core::{AppCore, CoreEvent, Session, SessionInfo as CoreSessionInfo, WorkflowEngine};
 use crate::core::engine::PauseResponse;
-use crate::modules::ChromePageAdapter;
+use crate::modules::SessionAdapter;
 use crate::workflow::{Workflow, WorkflowParser};
 use crate::api::schemas::ExecutionStatus;
 use crate::api::ws::ServerEvent;
@@ -157,7 +157,7 @@ impl ServerState {
     }
 
     /// Get or create browser and page (delegates to AppCore)
-    pub async fn get_page(&self) -> Result<ChromePageAdapter, String> {
+    pub async fn get_page(&self) -> Result<SessionAdapter, String> {
         self.core.get_page().await
     }
 

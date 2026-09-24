@@ -13,14 +13,18 @@
 pub mod actions;
 mod adapter;
 mod driver;
+pub mod firefox;
 pub mod launch;
 pub mod selector;
+mod session;
 
 pub use adapter::ChromePageAdapter;
 pub use crate::actions::{ConsoleEntry, NetworkEntry};
 pub use driver::{BrowserService, BrowserServiceConfig};
+pub use firefox::FirefoxPageAdapter;
 pub use launch::{
     build_browser_config, launch_browser, launch_session, resolve_chrome_path,
-    resolve_chrome_path_with, LaunchOptions,
+    resolve_chrome_path_with, resolve_firefox_path, LaunchOptions,
 };
 pub use selector::{parse_selector, SelectorType};
+pub use session::SessionAdapter;

@@ -131,7 +131,7 @@ impl Daemon {
         let (shutdown_tx, _) = broadcast::channel(1);
         let mut core = AppCore::new(&config);
         // Apply browser settings from AppConfig when available (engine, headless).
-        // Launch still fails fast if engine is unsupported.
+        // launch_session dispatches on engine (chromium | firefox).
         if let Ok(app_cfg) = crate::config::AppConfig::load() {
             core.set_headless(app_cfg.browser.headless);
             core.set_engine(app_cfg.browser.engine);
