@@ -4,6 +4,7 @@
 //! Handles browser launch, page management, and session persistence.
 
 use crate::config::AppConfig;
+use crate::modules::browser::launch::resolve_chrome_path_with;
 use anyhow::Result;
 use chromiumoxide::browser::{Browser, BrowserConfig};
 use chromiumoxide::page::Page;
@@ -14,6 +15,16 @@ use tokio::sync::Mutex;
 use tracing::{debug, info};
 
 /// Browser service configuration
+///
+/// Chrome executable resolution (aligned with [`LaunchOptions`]):
+/// - `chrome_path: Some(path)` — **explicit programmatic** override; must exist
+/// - `chrome_path: None` — [`resolve_chrome_path_with`] using the service's
+///   held `AppConfig` (`AUTOMODUS_CHROME_PATH` → `CHROME` env →
+///   `AppConfig.chrome_path` → Playwright/system auto-detect)
+///
+/// Note: this is the BrowserService path (daemon/shell). The workflow CLI uses
+/// [`crate::modules::browser::LaunchOptions::chrome_path`] via `launch_browser`.
+/// Both entry points share the same priority: explicit option → env → config → auto.
 #[derive(Debug, Clone)]
 pub struct BrowserServiceConfig {
     /// User data directory for Chrome profile
@@ -24,10 +35,20 @@ pub struct BrowserServiceConfig {
     pub timeout_ms: u64,
     /// Additional browser arguments
     pub args: Vec<String>,
+    /// Explicit Chrome/Chromium executable path (programmatic override only;
+    /// `AppConfig.browser.chrome_path` is resolved inside
+    /// [`resolve_chrome_path_with`] **after** env vars, using the service's
+    /// held AppConfig instance — no re-load from disk).
+    pub chrome_path: Option<PathBuf>,
 }
 
 impl BrowserServiceConfig {
     /// Create config from AppConfig (legacy single-account mode)
+    ///
+    /// `chrome_path` is intentionally left as `None` here so env vars correctly
+    /// take precedence over config-file values. The passed AppConfig's
+    /// `browser.chrome_path` is preserved on `BrowserService.config` and
+    /// consulted via [`resolve_chrome_path_with`] — no global re-load.
     pub fn from_app_config(config: &AppConfig) -> Self {
         let base_dir = if cfg!(target_os = "windows") {
             std::env::var("LOCALAPPDATA").unwrap_or_else(|_| {
@@ -42,6 +63,10 @@ impl BrowserServiceConfig {
             headless: config.browser.headless,
             timeout_ms: config.browser.timeout_ms,
             args: config.browser.args.clone(),
+            // Do NOT copy AppConfig.browser.chrome_path into the explicit slot —
+            // that would make config beat env. The held AppConfig is passed to
+            // resolve_chrome_path_with at initialize time instead.
+            chrome_path: None,
         }
     }
 
@@ -61,6 +86,7 @@ impl BrowserServiceConfig {
                 "--disable-gpu".to_string(),
                 "--disable-software-rasterizer".to_string(),
             ],
+            chrome_path: None,
         }
     }
 }
@@ -113,6 +139,32 @@ impl BrowserService {
         // Create browser config
         let mut browser_config = BrowserConfig::builder();
 
+        // Chrome executable: explicit programmatic option → env → held AppConfig → auto.
+        // Err = explicit path configured but missing — fail loudly, don't fall back.
+        // Uses resolve_chrome_path_with(&self.config) so a programmatically-built
+        // or custom-path AppConfig is preserved without re-loading from disk.
+        match &self.browser_config.chrome_path {
+            Some(chrome) => {
+                if chrome.exists() {
+                    browser_config = browser_config.chrome_executable(chrome.as_path());
+                } else {
+                    return Err(anyhow::anyhow!(
+                        "browser chrome_path is set to '{}' but that path does not exist",
+                        chrome.display()
+                    ));
+                }
+            }
+            None => match resolve_chrome_path_with(Some(&self.config)) {
+                Ok(Some(chrome)) => {
+                    browser_config = browser_config.chrome_executable(chrome.as_path());
+                }
+                Ok(None) => {
+                    debug!("No Chrome path configured or auto-detected; using chromiumoxide defaults");
+                }
+                Err(e) => return Err(anyhow::anyhow!(e)),
+            },
+        }
+
         // Set headless mode
         if !self.browser_config.headless {
             browser_config = browser_config.with_head();
@@ -120,6 +172,12 @@ impl BrowserService {
 
         // Add Chrome args from config
         for arg in &self.browser_config.args {
+            browser_config = browser_config.arg(arg);
+        }
+
+        // Dynamic opt-in args (AUTOMODUS_NO_PROXY, AUTOMODUS_DISABLE_IPV6) —
+        // same set applied by build_browser_config on the LaunchOptions path.
+        for arg in crate::modules::browser::launch::dynamic_chrome_args() {
             browser_config = browser_config.arg(arg);
         }
 

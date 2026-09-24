@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 use tracing::warn;
 
+use super::json_path::get_json_path;
 use super::ExecutionContext;
 
 static TEMPLATE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\{\{([^}]+)\}\}").unwrap());
@@ -244,24 +245,9 @@ fn resolve_path(map: &HashMap<String, Value>, path: &str) -> Option<Value> {
 }
 
 /// Resolve a path like "foo.bar.0.baz" in a JSON value
+/// (delegates to shared [`get_json_path`] so semantics match execution context)
 fn resolve_json_path(value: &Value, path: &str) -> Option<Value> {
-    let parts: Vec<&str> = path.split('.').collect();
-    let mut current = value;
-
-    for part in parts {
-        match current {
-            Value::Object(map) => {
-                current = map.get(part)?;
-            }
-            Value::Array(arr) => {
-                let index: usize = part.parse().ok()?;
-                current = arr.get(index)?;
-            }
-            _ => return None,
-        }
-    }
-
-    Some(current.clone())
+    get_json_path(value, path)
 }
 
 /// Convert a JSON value to a string for interpolation
@@ -481,5 +467,59 @@ mod tests {
         // Falls through to render: JSON null encoded as string "null"
         assert_eq!(rendered.as_str(), Some("null"));
         assert!(!rendered.is_null());
+    }
+
+    #[test]
+    fn test_render_array_length_path() {
+        let mut ctx = ExecutionContext::new("test", "instance-1");
+        let arr = serde_json::json!([{"id": 1}, {"id": 2}, {"id": 3}]);
+        ctx.store.insert("items".into(), arr);
+
+        let yaml = serde_yaml::Value::String("count={{store.items.length}}".into());
+        let rendered = TemplateEngine::render_yaml(&yaml, &ctx);
+        assert_eq!(rendered.as_str(), Some("count=3"));
+    }
+
+    #[test]
+    fn test_render_string_length_path() {
+        let mut ctx = ExecutionContext::new("test", "instance-1");
+        ctx.store.insert("s".into(), serde_json::json!("hello"));
+
+        let yaml = serde_yaml::Value::String("{{store.s.length}}".into());
+        let rendered = TemplateEngine::render_yaml(&yaml, &ctx);
+        assert_eq!(rendered.as_str(), Some("5"));
+    }
+
+    #[test]
+    fn test_render_string_length_is_char_count_not_bytes() {
+        let mut ctx = ExecutionContext::new("test", "instance-1");
+        // "日本語😀" = 4 chars, 13 UTF-8 bytes — length must report chars
+        ctx.store.insert("s".into(), serde_json::json!("日本語😀"));
+
+        let yaml = serde_yaml::Value::String("{{store.s.length}}".into());
+        let rendered = TemplateEngine::render_yaml(&yaml, &ctx);
+        assert_eq!(rendered.as_str(), Some("4"));
+    }
+
+    #[test]
+    fn test_length_with_trailing_segment_is_none() {
+        let mut ctx = ExecutionContext::new("test", "instance-1");
+        ctx.store.insert("items".into(), serde_json::json!([1, 2, 3]));
+        ctx.store.insert("s".into(), serde_json::json!("hi"));
+
+        // length only valid as final segment — trailing .foo must not yield a number.
+        // Without | json, missing paths preserve the token (typo visibility).
+        let yaml = serde_yaml::Value::String("{{store.items.length.foo}}".into());
+        let rendered = TemplateEngine::render_yaml(&yaml, &ctx);
+        assert_eq!(rendered.as_str(), Some("{{store.items.length.foo}}"));
+
+        // With | json, missing → string "null" (never "3")
+        let yaml = serde_yaml::Value::String("{{store.items.length.foo | json}}".into());
+        let rendered = TemplateEngine::render_yaml(&yaml, &ctx);
+        assert_eq!(rendered.as_str(), Some("null"));
+
+        let yaml = serde_yaml::Value::String("{{store.s.length.foo | json}}".into());
+        let rendered = TemplateEngine::render_yaml(&yaml, &ctx);
+        assert_eq!(rendered.as_str(), Some("null"));
     }
 }

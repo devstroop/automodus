@@ -5,6 +5,7 @@
 use serde_json::Value;
 use std::collections::HashMap;
 
+use crate::core::json_path::get_json_path as get_nested_value;
 use crate::workflow::schema::ResolvedDebugConfig;
 
 /// Execution context for a workflow run
@@ -273,25 +274,4 @@ impl ExecutionContext {
             self.get_stored(key).cloned()
         }
     }
-}
-
-/// Get a nested value from a JSON value using dot notation
-fn get_nested_value(value: &Value, path: &str) -> Option<Value> {
-    let parts: Vec<&str> = path.split('.').collect();
-    let mut current = value;
-
-    for part in parts {
-        match current {
-            Value::Object(map) => {
-                current = map.get(part)?;
-            }
-            Value::Array(arr) => {
-                let index: usize = part.parse().ok()?;
-                current = arr.get(index)?;
-            }
-            _ => return None,
-        }
-    }
-
-    Some(current.clone())
 }
