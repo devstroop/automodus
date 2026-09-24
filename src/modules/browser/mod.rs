@@ -24,7 +24,7 @@ pub use driver::{BrowserService, BrowserServiceConfig};
 pub use firefox::FirefoxPageAdapter;
 pub use launch::{
     build_browser_config, launch_browser, launch_session, resolve_chrome_path,
-    resolve_chrome_path_with, resolve_firefox_path, LaunchOptions,
+    resolve_chrome_path_with, resolve_firefox_path, resolve_lightpanda_path, LaunchOptions,
 };
 pub use selector::{parse_selector, SelectorType};
 pub use session::SessionAdapter;

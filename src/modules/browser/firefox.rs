@@ -40,7 +40,7 @@ use crate::actions::{
 type BidiContext = rustenium_bidi_definitions::browsing_context::types::BrowsingContext;
 
 /// Pick a free TCP port on 127.0.0.1.
-fn free_port() -> Result<u16, String> {
+pub(crate) fn free_port() -> Result<u16, String> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0")
         .map_err(|e| format!("Failed to bind free port: {}", e))?;
     listener

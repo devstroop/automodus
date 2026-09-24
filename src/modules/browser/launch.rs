@@ -26,7 +26,13 @@ pub struct LaunchOptions {
     /// - `None`: auto-detect via [`resolve_firefox_path`] at launch time
     /// - `Some(path)`: must exist; missing path is a hard error
     pub firefox_path: Option<PathBuf>,
-    /// Browser engine backend: `chromium` (CDP) or `firefox` (WebDriver BiDi).
+    /// Lightpanda executable path (ignored unless engine is lightpanda).
+    ///
+    /// - `None`: auto-detect via [`resolve_lightpanda_path`] at launch time
+    /// - `Some(path)`: must exist; missing path is a hard error
+    pub lightpanda_path: Option<PathBuf>,
+    /// Browser engine backend: `chromium` (CDP), `firefox` (WebDriver BiDi),
+    /// or `lightpanda` (CDP attach to spawned `lightpanda serve`).
     ///
     /// [`launch_session`] dispatches on this; [`build_browser_config`] only
     /// builds a Chromium [`BrowserConfig`] and fails fast for other engines.
@@ -41,6 +47,7 @@ impl Default for LaunchOptions {
             extra_args: vec![],
             chrome_path: None,
             firefox_path: None,
+            lightpanda_path: None,
             engine: crate::config::BrowserEngine::default(),
         }
     }
@@ -56,6 +63,7 @@ impl LaunchOptions {
             extra_args: vec![],
             chrome_path: None,
             firefox_path: None,
+            lightpanda_path: None,
             engine: crate::config::BrowserEngine::default(),
         }
     }
@@ -69,6 +77,7 @@ impl LaunchOptions {
             extra_args: vec![],
             chrome_path: None,
             firefox_path: None,
+            lightpanda_path: None,
             engine: crate::config::BrowserEngine::default(),
         }
     }
@@ -81,6 +90,7 @@ impl LaunchOptions {
             extra_args: vec![],
             chrome_path: None,
             firefox_path: None,
+            lightpanda_path: None,
             engine: crate::config::BrowserEngine::default(),
         }
     }
@@ -118,6 +128,12 @@ impl LaunchOptions {
     /// Set Firefox executable path
     pub fn firefox_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.firefox_path = Some(path.into());
+        self
+    }
+
+    /// Set Lightpanda executable path
+    pub fn lightpanda_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.lightpanda_path = Some(path.into());
         self
     }
 }
@@ -463,6 +479,101 @@ pub fn resolve_firefox_path(explicit: Option<&PathBuf>) -> Result<PathBuf, Strin
     )
 }
 
+/// Resolve Lightpanda path from config, env, or common install locations.
+///
+/// Priority: explicit `LaunchOptions.lightpanda_path` →
+/// `AUTOMODUS_LIGHTPANDA_PATH` → `LIGHTPANDA` → system paths.
+///
+/// Returns `Err` when an **explicitly configured** path is set but missing —
+/// never silently substitutes another binary for a bad explicit config.
+pub fn resolve_lightpanda_path(explicit: Option<&PathBuf>) -> Result<PathBuf, String> {
+    fn explicit_check(path: &str, source: &str) -> Result<Option<PathBuf>, String> {
+        if path.is_empty() {
+            return Ok(None);
+        }
+        let p = PathBuf::from(path);
+        if p.exists() {
+            Ok(Some(p))
+        } else {
+            Err(format!(
+                "{} is set to '{}' but that path does not exist",
+                source, path
+            ))
+        }
+    }
+
+    if let Some(p) = explicit {
+        if p.exists() {
+            return Ok(p.clone());
+        }
+        return Err(format!(
+            "lightpanda_path is set to '{}' but that path does not exist",
+            p.display()
+        ));
+    }
+
+    if let Some(p) = explicit_check(
+        &std::env::var("AUTOMODUS_LIGHTPANDA_PATH").unwrap_or_default(),
+        "AUTOMODUS_LIGHTPANDA_PATH",
+    )? {
+        return Ok(p);
+    }
+    if let Some(p) = explicit_check(
+        &std::env::var("LIGHTPANDA").unwrap_or_default(),
+        "LIGHTPANDA",
+    )? {
+        return Ok(p);
+    }
+
+    #[cfg(target_os = "macos")]
+    let candidates: [Option<PathBuf>; 4] = [
+        Some(PathBuf::from("/opt/homebrew/bin/lightpanda")),
+        Some(PathBuf::from("/usr/local/bin/lightpanda")),
+        dirs::home_dir().map(|h| h.join(".local/bin/lightpanda")),
+        which_binary("lightpanda"),
+    ];
+    #[cfg(target_os = "windows")]
+    let candidates: [Option<PathBuf>; 3] = [
+        Some(PathBuf::from(
+            r"C:\Program Files\Lightpanda\lightpanda.exe",
+        )),
+        dirs::home_dir().map(|h| h.join(".local/bin/lightpanda.exe")),
+        which_binary("lightpanda.exe"),
+    ];
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let candidates: [Option<PathBuf>; 6] = [
+        Some(PathBuf::from("/usr/local/bin/lightpanda")),
+        Some(PathBuf::from("/usr/bin/lightpanda")),
+        Some(PathBuf::from("/opt/homebrew/bin/lightpanda")),
+        dirs::home_dir().map(|h| h.join(".local/bin/lightpanda")),
+        dirs::home_dir().map(|h| h.join(".cargo/bin/lightpanda")),
+        which_binary("lightpanda"),
+    ];
+
+    for c in candidates.into_iter().flatten() {
+        if c.exists() {
+            return Ok(c);
+        }
+    }
+    Err(
+        "Lightpanda executable not found; set browser.lightpanda_path, \
+         AUTOMODUS_LIGHTPANDA_PATH, LIGHTPANDA, or install lightpanda on PATH"
+            .into(),
+    )
+}
+
+/// Look up a binary on PATH (returns absolute path when found).
+fn which_binary(name: &str) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 /// Build a browser configuration from launch options (Chromium only).
 ///
 /// Firefox does not use this path — see [`launch_session`].
@@ -596,6 +707,7 @@ pub async fn get_or_create_page(
 /// Dispatches on [`LaunchOptions::engine`]:
 /// - `chromium` → [`ChromePageAdapter`](super::ChromePageAdapter)
 /// - `firefox` → [`FirefoxPageAdapter`](super::FirefoxPageAdapter)
+/// - `lightpanda` → spawn `lightpanda serve`, CDP attach via chromiumoxide
 ///
 /// Does **not** start console/network/crash listeners; call those on the
 /// returned adapter (via the trait or inherent methods) if needed.
@@ -629,7 +741,178 @@ pub async fn launch_session(options: &LaunchOptions) -> Result<super::SessionAda
             .await?;
             Ok(SessionAdapter::Firefox(adapter))
         }
+        crate::config::BrowserEngine::Lightpanda => {
+            launch_lightpanda_session(options).await
+        }
     }
+}
+
+/// Spawn `lightpanda serve` on a free port, wait for the CDP HTTP endpoint,
+/// then attach chromiumoxide via [`Browser::connect`].
+///
+/// Lightpanda implements `/json/version` with `webSocketDebuggerUrl`, so
+/// connect-mode discovery works without launching Chromium.
+async fn launch_lightpanda_session(
+    options: &LaunchOptions,
+) -> Result<super::SessionAdapter, String> {
+    use super::SessionAdapter;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    use tokio::sync::Mutex;
+
+    let config_lp = crate::config::AppConfig::load()
+        .ok()
+        .and_then(|c| c.browser.lightpanda_path);
+    let explicit = options.lightpanda_path.as_ref().or(config_lp.as_ref());
+    let lightpanda = resolve_lightpanda_path(explicit)?;
+
+    let port = super::firefox::free_port()?;
+
+    let mut cmd = std::process::Command::new(&lightpanda);
+    cmd.arg("serve")
+        .arg("--host")
+        .arg("127.0.0.1")
+        .arg("--port")
+        .arg(port.to_string())
+        // Never send usage telemetry from automation runs
+        .env("LIGHTPANDA_DISABLE_TELEMETRY", "true")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    for arg in &options.extra_args {
+        cmd.arg(arg);
+    }
+
+    info!(
+        path = %lightpanda.display(),
+        port,
+        "Launching Lightpanda (CDP serve)"
+    );
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to spawn Lightpanda at {}: {}", lightpanda.display(), e))?;
+
+    // Wait until /json/version returns the browser WebSocket URL.
+    // We parse `webSocketDebuggerUrl` ourselves: Lightpanda omits Chromium-only
+    // fields (`V8-Version`, `WebKit-Version`) that chromiumoxide's
+    // `Browser::connect(http_url)` requires when deserializing `/json/version`.
+    //
+    // The client has a per-request timeout so the 15s deadline holds even if
+    // the endpoint accepts TCP but stalls mid-response.
+    let http = format!("http://127.0.0.1:{}/json/version", port);
+    let http_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .map_err(|e| {
+            let _ = child.kill();
+            let _ = child.wait();
+            format!("Failed to build Lightpanda HTTP client: {}", e)
+        })?;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let ws_url = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                // try_wait already reaped the child — just report the exit.
+                return Err(format!(
+                    "Lightpanda exited early with status {} (port {})",
+                    status, port
+                ));
+            }
+            Ok(None) => {}
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("Lightpanda wait failed: {}", e));
+            }
+        }
+        match http_client.get(&http).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                let body = resp.text().await.unwrap_or_default();
+                match serde_json::from_str::<serde_json::Value>(&body)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("webSocketDebuggerUrl")
+                            .and_then(|u| u.as_str())
+                            .map(str::to_owned)
+                    }) {
+                    Some(ws) if ws.starts_with("ws") => break ws,
+                    other => {
+                        if Instant::now() < deadline {
+                            tracing::debug!(
+                                "Lightpanda /json/version missing ws url: {:?}",
+                                other
+                            );
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        } else {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            return Err(format!(
+                                "Lightpanda /json/version has no webSocketDebuggerUrl: {}",
+                                body
+                            ));
+                        }
+                    }
+                }
+            }
+            Ok(resp) if Instant::now() < deadline => {
+                tracing::debug!("Lightpanda /json/version not ready: {}", resp.status());
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Ok(resp) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "Lightpanda CDP endpoint {} returned {}",
+                    http, resp.status()
+                ));
+            }
+            Err(_) if Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "Lightpanda CDP endpoint {} did not open within 15s: {}",
+                    http, e
+                ));
+            }
+        }
+    };
+
+    let (browser, mut handler) = Browser::connect(&ws_url).await.map_err(|e| {
+        let _ = child.kill();
+        let _ = child.wait();
+        format!("Failed to connect to Lightpanda CDP {}: {}", ws_url, e)
+    })?;
+
+    tokio::spawn(async move {
+        while let Some(event) = handler.next().await {
+            if let Err(e) = event {
+                debug!("Lightpanda browser event: {:?}", e);
+                if e.to_string().contains("connection closed") {
+                    break;
+                }
+            }
+        }
+    });
+
+    let page = get_or_create_page(&browser, None).await.map_err(|e| {
+        let _ = child.kill();
+        let _ = child.wait();
+        format!("Failed to get Lightpanda page: {}", e)
+    })?;
+
+    let browser_ref = Arc::new(Mutex::new(Some(browser)));
+    let page_adapter = super::ChromePageAdapter::with_browser(page, browser_ref);
+    let child = Arc::new(Mutex::new(super::session::KillOnDrop::new(child)));
+
+    info!("Lightpanda launched successfully");
+    Ok(SessionAdapter::Lightpanda {
+        page: page_adapter,
+        child,
+        port,
+    })
 }
 
 #[cfg(test)]
@@ -691,6 +974,36 @@ mod tests {
             "unexpected err: {}",
             err
         );
+    }
+
+    #[test]
+    fn build_browser_config_rejects_lightpanda_engine() {
+        let opts =
+            LaunchOptions::for_workflow().engine(crate::config::BrowserEngine::Lightpanda);
+        let err = build_browser_config(&opts).unwrap_err();
+        assert!(
+            err.contains("only builds Chromium") && err.contains("lightpanda"),
+            "unexpected err: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn resolve_lightpanda_path_rejects_missing_explicit() {
+        let err =
+            resolve_lightpanda_path(Some(&PathBuf::from("/definitely/not/lightpanda"))).unwrap_err();
+        assert!(err.contains("does not exist"), "unexpected err: {}", err);
+    }
+
+    #[test]
+    fn resolve_lightpanda_path_rejects_missing_env() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("AUTOMODUS_LIGHTPANDA_PATH", "/no/such/lightpanda-xyz");
+        let result = resolve_lightpanda_path(None);
+        std::env::remove_var("AUTOMODUS_LIGHTPANDA_PATH");
+        let err = result.unwrap_err();
+        assert!(err.contains("AUTOMODUS_LIGHTPANDA_PATH"));
+        assert!(err.contains("does not exist"));
     }
 
     #[test]
