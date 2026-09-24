@@ -5,6 +5,7 @@
 pub mod app;
 pub mod context;
 pub mod engine;
+pub mod json_path;
 pub mod template;
 
 pub use app::{AppCore, CoreEvent, Session, SessionError, SessionInfo};

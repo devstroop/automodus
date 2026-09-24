@@ -18,5 +18,8 @@ pub mod selector;
 
 pub use adapter::{ChromePageAdapter, ConsoleEntry, NetworkEntry};
 pub use driver::{BrowserService, BrowserServiceConfig};
-pub use launch::{build_browser_config, launch_browser, LaunchOptions};
+pub use launch::{
+    build_browser_config, launch_browser, resolve_chrome_path, resolve_chrome_path_with,
+    LaunchOptions,
+};
 pub use selector::{parse_selector, SelectorType};
