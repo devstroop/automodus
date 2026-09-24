@@ -219,6 +219,50 @@ impl NetworkEntry {
     }
 }
 
+/// Runtime capability flags for a browser backend.
+///
+/// Actions and callers use this to fail fast with
+/// [`ActionError::Unsupported`] before invoking Chromium-only methods.
+/// Defaults are intentionally empty (no optional features) so a new
+/// backend only advertises what it actually implements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BrowserCapabilities {
+    /// CDP `Page.printToPDF` (and equivalents)
+    pub pdf: bool,
+    /// Programmatic file-input population (`DOM.setFileInputFiles`)
+    pub file_input: bool,
+    /// File-chooser interception (`Page.setInterceptFileChooserDialog`)
+    pub file_chooser: bool,
+    /// Live console event stream
+    pub console_events: bool,
+    /// Live network request/response event stream
+    pub network_events: bool,
+    /// Target crash detection listener
+    pub crash_events: bool,
+}
+
+impl BrowserCapabilities {
+    /// Full Chromium/CDP feature set (what `ChromePageAdapter` advertises).
+    pub const CHROMIUM: Self = Self {
+        pdf: true,
+        file_input: true,
+        file_chooser: true,
+        console_events: true,
+        network_events: true,
+        crash_events: true,
+    };
+
+    /// No optional features (safe default for mocks and future backends).
+    pub const NONE: Self = Self {
+        pdf: false,
+        file_input: false,
+        file_chooser: false,
+        console_events: false,
+        network_events: false,
+        crash_events: false,
+    };
+}
+
 /// Browser handle passed to actions
 ///
 /// This is the sole browser-agnostic contract between the workflow engine and
@@ -227,11 +271,19 @@ impl NetworkEntry {
 /// # Capability gates
 ///
 /// Methods documented as **Chromium-only** may return
-/// `ActionError::Unsupported` on non-Chromium backends. Callers that need
-/// those features should check engine capability or treat the error as
-/// "feature unavailable" rather than a hard failure.
+/// `ActionError::Unsupported` on non-Chromium backends. Callers should check
+/// [`BrowserHandle::capabilities`] first (or treat `Unsupported` as
+/// "feature unavailable" rather than a hard failure).
 #[async_trait]
 pub trait BrowserHandle: Send + Sync {
+    /// Runtime feature flags for this backend.
+    ///
+    /// Default is [`BrowserCapabilities::NONE`] — backends must opt in to
+    /// Chromium-only features by overriding this.
+    fn capabilities(&self) -> BrowserCapabilities {
+        BrowserCapabilities::NONE
+    }
+
     /// Navigate to URL
     async fn goto(&self, url: &str) -> Result<(), ActionError>;
 
@@ -502,5 +554,26 @@ impl ActionRegistry {
 impl Default for ActionRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::*;
+
+    #[test]
+    fn default_browser_capabilities_are_none() {
+        assert_eq!(BrowserCapabilities::default(), BrowserCapabilities::NONE);
+        assert!(!BrowserCapabilities::NONE.pdf);
+        assert!(!BrowserCapabilities::NONE.file_input);
+        assert!(!BrowserCapabilities::NONE.file_chooser);
+        assert!(!BrowserCapabilities::NONE.console_events);
+    }
+
+    #[test]
+    fn chromium_capabilities_enable_optional_features() {
+        let c = BrowserCapabilities::CHROMIUM;
+        assert!(c.pdf && c.file_input && c.file_chooser);
+        assert!(c.console_events && c.network_events && c.crash_events);
     }
 }

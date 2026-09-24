@@ -110,8 +110,8 @@ pub use workflow::{Step, Workflow, WorkflowLoader, WorkflowParser};
 
 // Action types
 pub use actions::{
-    Action, ActionContext, ActionError, ActionOutput, ActionRegistry, BrowserHandle, ConsoleEntry,
-    NetworkEntry,
+    Action, ActionContext, ActionError, ActionOutput, ActionRegistry, BrowserCapabilities,
+    BrowserHandle, ConsoleEntry, NetworkEntry,
 };
 
 // Engine types

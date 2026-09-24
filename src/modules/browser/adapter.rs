@@ -25,7 +25,7 @@ use super::selector::{
     selector_get_text_js, selector_type_js,
 };
 use crate::actions::{
-    ActionError, BrowserHandle, ConsoleEntry, NetworkEntry, TabInfo,
+    ActionError, BrowserCapabilities, BrowserHandle, ConsoleEntry, NetworkEntry, TabInfo,
 };
 
 /// Adapter that implements BrowserHandle for chromiumoxide Page
@@ -349,6 +349,10 @@ impl ChromePageAdapter {
 
 #[async_trait]
 impl BrowserHandle for ChromePageAdapter {
+    fn capabilities(&self) -> BrowserCapabilities {
+        BrowserCapabilities::CHROMIUM
+    }
+
     async fn goto(&self, url: &str) -> Result<(), ActionError> {
         self.check_browser_health()?;
         debug!("Navigating to: {}", url);

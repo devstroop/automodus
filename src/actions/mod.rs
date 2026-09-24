@@ -9,8 +9,8 @@ pub mod control;
 pub mod registry;
 
 pub use registry::{
-    Action, ActionContext, ActionError, ActionOutput, ActionRegistry, BrowserHandle, ConsoleEntry,
-    NetworkEntry, TabInfo,
+    Action, ActionContext, ActionError, ActionOutput, ActionRegistry, BrowserCapabilities,
+    BrowserHandle, ConsoleEntry, NetworkEntry, TabInfo,
 };
 
 // Core actions (module-agnostic)
