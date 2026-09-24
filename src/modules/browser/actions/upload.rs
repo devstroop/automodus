@@ -8,7 +8,27 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::actions::registry::{Action, ActionContext, ActionError, ActionOutput, BrowserHandle};
+use crate::actions::registry::{
+    Action, ActionContext, ActionError, ActionOutput, BrowserHandle,
+};
+
+fn require_file_input(browser: &dyn BrowserHandle) -> Result<(), ActionError> {
+    if !browser.capabilities().file_input {
+        return Err(ActionError::Unsupported(
+            "file input upload requires a backend with file_input capability".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn require_file_chooser(browser: &dyn BrowserHandle) -> Result<(), ActionError> {
+    if !browser.capabilities().file_chooser {
+        return Err(ActionError::Unsupported(
+            "file chooser interception requires a backend with file_chooser capability".into(),
+        ));
+    }
+    Ok(())
+}
 
 /// Upload file(s) to a file input element (selector-based approach)
 pub struct UploadAction;
@@ -53,6 +73,7 @@ impl Action for UploadAction {
 
         // Support both single file (file_path) and multiple files (files)
         let file_paths = get_file_paths(params)?;
+        require_file_input(browser)?;
 
         // Try each selector until one works
         let mut last_error = None;
@@ -113,6 +134,7 @@ impl Action for WaitUploadAction {
         browser: &dyn BrowserHandle,
     ) -> Result<ActionOutput, ActionError> {
         let file_paths = get_file_paths(params)?;
+        require_file_chooser(browser)?;
 
         // Get optional trigger selector - if provided, will click before waiting
         let trigger_selector = params
@@ -161,6 +183,7 @@ impl Action for FileChooserAction {
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
 
+        require_file_chooser(browser)?;
         browser.set_file_chooser_intercept(enabled).await?;
 
         Ok(ActionOutput::with_data(json!({
