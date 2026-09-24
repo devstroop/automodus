@@ -110,7 +110,8 @@ pub use workflow::{Step, Workflow, WorkflowLoader, WorkflowParser};
 
 // Action types
 pub use actions::{
-    Action, ActionContext, ActionError, ActionOutput, ActionRegistry, BrowserHandle,
+    Action, ActionContext, ActionError, ActionOutput, ActionRegistry, BrowserHandle, ConsoleEntry,
+    NetworkEntry,
 };
 
 // Engine types
@@ -123,7 +124,7 @@ pub use daemon::{Daemon, DaemonClient, DaemonConfig, DaemonError, DaemonEvent, D
 pub use modules::{BrowserService, ChromePageAdapter};
 
 // Configuration
-pub use config::AppConfig;
+pub use config::{AppConfig, BrowserEngine};
 
 // Errors
 pub use error::{AppError, AutomodusError, ErrorCode, Result};

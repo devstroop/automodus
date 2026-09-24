@@ -41,6 +41,7 @@ impl AppConfig {
             // Start with defaults
             .set_default("server.host", "127.0.0.1")?
             .set_default("server.port", 3000)?
+            .set_default("browser.engine", "chromium")?
             .set_default("browser.headless", false)?
             .set_default("browser.timeout_ms", 30000)?
             .set_default("workflows.directory", "workflows")?;
@@ -92,9 +93,36 @@ fn default_port() -> u16 {
     3000
 }
 
+/// Browser engine backend.
+///
+/// Only `chromium` is implemented today. `firefox` is reserved for a future
+/// WebDriver BiDi backend and will fail fast at launch until implemented.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum BrowserEngine {
+    /// Chromium / Chrome via CDP (chromiumoxide)
+    #[default]
+    Chromium,
+    /// Firefox via WebDriver BiDi (not yet implemented)
+    Firefox,
+}
+
+impl std::fmt::Display for BrowserEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BrowserEngine::Chromium => write!(f, "chromium"),
+            BrowserEngine::Firefox => write!(f, "firefox"),
+        }
+    }
+}
+
 /// Browser configuration
 #[derive(Debug, Clone, Deserialize)]
 pub struct BrowserConfig {
+    /// Browser engine backend (chromium | firefox)
+    #[serde(default)]
+    pub engine: BrowserEngine,
+
     /// Run browser in headless mode
     #[serde(default)]
     pub headless: bool,
@@ -117,6 +145,7 @@ pub struct BrowserConfig {
 impl Default for BrowserConfig {
     fn default() -> Self {
         Self {
+            engine: BrowserEngine::default(),
             headless: false,
             timeout_ms: default_timeout(),
             chrome_path: None,
@@ -153,4 +182,18 @@ impl Default for WorkflowsConfig {
 
 fn default_workflows_dir() -> String {
     "workflows".to_string()
+}
+
+#[cfg(test)]
+mod engine_load_tests {
+    #[test]
+    fn loads_firefox_engine_from_config_file() {
+        let path = std::env::temp_dir().join("automodus_firefox_test.toml");
+        std::fs::write(&path, "[browser]\nengine = \"firefox\"\nheadless = true\n").unwrap();
+        std::env::set_var("AUTOMODUS_CONFIG", &path);
+        let cfg = super::AppConfig::load().expect("load");
+        std::env::remove_var("AUTOMODUS_CONFIG");
+        assert_eq!(cfg.browser.engine, super::BrowserEngine::Firefox, "engine={:?}", cfg.browser.engine);
+        assert!(cfg.browser.headless);
+    }
 }

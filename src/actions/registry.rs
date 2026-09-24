@@ -34,6 +34,9 @@ pub enum ActionError {
 
     #[error("Internal error: {0}")]
     Internal(String),
+
+    #[error("Unsupported by this browser engine: {0}")]
+    Unsupported(String),
 }
 
 /// Result of an action execution
@@ -168,7 +171,65 @@ pub struct TabInfo {
     pub active: bool,
 }
 
+/// Console log entry captured from the browser
+#[derive(Debug, Clone)]
+pub struct ConsoleEntry {
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub level: String,
+    pub message: String,
+}
+
+impl ConsoleEntry {
+    /// Format as log line: [CONSOLE] 14:32:01.123 LOG: message
+    pub fn format(&self) -> String {
+        format!(
+            "[CONSOLE] {} {}: {}",
+            self.timestamp.format("%H:%M:%S%.3f"),
+            self.level.to_uppercase(),
+            self.message
+        )
+    }
+}
+
+/// Network request entry captured from the browser
+#[derive(Debug, Clone)]
+pub struct NetworkEntry {
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub method: String,
+    pub url: String,
+    pub status: Option<u32>,
+    pub duration_ms: Option<u64>,
+}
+
+impl NetworkEntry {
+    /// Format as log line: [NETWORK] GET https://... → 200 (45ms)
+    pub fn format(&self) -> String {
+        let status = self
+            .status
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "?".to_string());
+        let timing = self
+            .duration_ms
+            .map(|d| format!(" ({}ms)", d))
+            .unwrap_or_default();
+        format!(
+            "[NETWORK] {} {} → {}{}",
+            self.method, self.url, status, timing
+        )
+    }
+}
+
 /// Browser handle passed to actions
+///
+/// This is the sole browser-agnostic contract between the workflow engine and
+/// any browser backend (Chromium via CDP today; Firefox via WebDriver BiDi later).
+///
+/// # Capability gates
+///
+/// Methods documented as **Chromium-only** may return
+/// `ActionError::Unsupported` on non-Chromium backends. Callers that need
+/// those features should check engine capability or treat the error as
+/// "feature unavailable" rather than a hard failure.
 #[async_trait]
 pub trait BrowserHandle: Send + Sync {
     /// Navigate to URL
@@ -233,10 +294,15 @@ pub trait BrowserHandle: Send + Sync {
     async fn list_tabs(&self) -> Result<Vec<TabInfo>, ActionError>;
 
     /// Print page to PDF and return the bytes
+    ///
+    /// **Chromium-only** (CDP `Page.printToPDF`). Non-Chromium backends
+    /// should return `ActionError::Unsupported`.
     async fn pdf(&self) -> Result<Vec<u8>, ActionError>;
 
-    /// Set file(s) on a file input element via CDP
-    /// This is the only way to programmatically set files on file inputs
+    /// Set file(s) on a file input element
+    ///
+    /// **Chromium-only** (CDP `DOM.setFileInputFiles`). Non-Chromium backends
+    /// should return `ActionError::Unsupported`.
     async fn set_file_input_files(
         &self,
         selector: &str,
@@ -244,11 +310,14 @@ pub trait BrowserHandle: Send + Sync {
     ) -> Result<(), ActionError>;
 
     /// Enable/disable file chooser interception to prevent native dialog
+    ///
+    /// **Chromium-only** (CDP `Page.setInterceptFileChooserDialog`).
     async fn set_file_chooser_intercept(&self, enabled: bool) -> Result<(), ActionError>;
 
     /// Upload files via file chooser event handling
-    /// Subscribes to fileChooserOpened event, optionally clicks a trigger element,
-    /// then waits for the event and sets files using backend_node_id
+    ///
+    /// **Chromium-only** — subscribes to `fileChooserOpened`, optionally clicks
+    /// a trigger element, then sets files via CDP.
     /// * trigger_selector: Optional selector to click that triggers file input
     /// * file_paths: Files to upload
     /// * timeout_ms: Timeout in milliseconds for waiting for event
@@ -258,6 +327,57 @@ pub trait BrowserHandle: Send + Sync {
         file_paths: Vec<String>,
         timeout_ms: u64,
     ) -> Result<(), ActionError>;
+
+    // --- Observability (console / network / crash listeners) ---
+    //
+    // Default no-ops so backends without event streams (or test mocks) can
+    // omit them. Chromium CDP overrides these with real listeners.
+
+    /// Start capturing console logs (idempotent).
+    async fn start_console_listener(&self) -> Result<(), ActionError> {
+        Ok(())
+    }
+
+    /// Start capturing network request/response logs (idempotent).
+    async fn start_network_listener(&self) -> Result<(), ActionError> {
+        Ok(())
+    }
+
+    /// Start crash detection (idempotent).
+    async fn start_crash_listener(&self) -> Result<(), ActionError> {
+        Ok(())
+    }
+
+    /// Snapshot of captured console logs (does not clear).
+    async fn get_console_logs(&self) -> Vec<ConsoleEntry> {
+        Vec::new()
+    }
+
+    /// Snapshot of captured network logs (does not clear).
+    async fn get_network_logs(&self) -> Vec<NetworkEntry> {
+        Vec::new()
+    }
+
+    /// Drain captured console logs (clears the buffer).
+    async fn capture_console_logs(&self) -> Result<Vec<ConsoleEntry>, ActionError> {
+        Ok(Vec::new())
+    }
+
+    /// Drain captured network logs (clears the buffer).
+    async fn capture_network_logs(&self) -> Result<Vec<NetworkEntry>, ActionError> {
+        Ok(Vec::new())
+    }
+
+    /// Clear buffered console logs.
+    async fn clear_console_logs(&self) {}
+
+    /// Clear buffered network logs.
+    async fn clear_network_logs(&self) {}
+
+    /// Whether the underlying browser target is still alive (not crashed).
+    fn is_browser_alive(&self) -> bool {
+        true
+    }
 }
 
 /// Action trait that all actions implement

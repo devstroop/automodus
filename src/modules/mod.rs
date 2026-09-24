@@ -14,6 +14,6 @@
 pub mod browser;
 pub mod http;
 
-pub use browser::launch::{build_browser_config, launch_browser, LaunchOptions};
+pub use browser::launch::{build_browser_config, launch_browser, launch_session, LaunchOptions};
 pub use browser::{BrowserService, BrowserServiceConfig, ChromePageAdapter};
 pub use http::{HttpClient, HttpConfig};

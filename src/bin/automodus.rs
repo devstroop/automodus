@@ -796,27 +796,22 @@ async fn run_workflow(
     println!("\n🚀 Launching browser...");
 
     // Launch browser using shared launch helper
-    use automodus::modules::browser::launch::{launch_browser, get_or_create_page, LaunchOptions};
+    use automodus::modules::browser::launch::{launch_session, LaunchOptions};
     use std::sync::Arc;
 
     let headless = workflow.browser.headless;
-    let options = LaunchOptions::for_workflow().headless(headless);
-    let browser = launch_browser(&options)
+    let mut options = LaunchOptions::for_workflow().headless(headless);
+    // Respect browser.engine from config; unsupported engines fail fast in launch_session.
+    if let Ok(cfg) = automodus::config::AppConfig::load() {
+        options = options.engine(cfg.browser.engine);
+    }
+    let adapter = launch_session(&options)
         .await
         .map_err(|e| format!("Failed to launch browser: {}", e))?;
 
     println!("✓ Browser launched");
-
-    // Get a page
-    let page = get_or_create_page(&browser, None)
-        .await
-        .map_err(|e| format!("Failed to get page: {}", e))?;
-
     println!("✓ Browser page ready");
 
-    // Create adapter and engine with workflow resolver for `call` actions
-    let browser_ref = Arc::new(tokio::sync::Mutex::new(Some(browser)));
-    let adapter = ChromePageAdapter::with_browser(page, browser_ref);
     if let Err(e) = adapter.start_console_listener().await {
         eprintln!("Warning: failed to start console listener: {}", e);
     }
@@ -941,25 +936,21 @@ async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
     println!("ℹ️  No daemon running. Starting standalone mode.");
     println!("   (Start daemon with 'automodus daemon start' for shared sessions)\n");
 
-    use automodus::modules::browser::launch::{launch_browser, get_or_create_page, LaunchOptions};
+    use automodus::modules::browser::launch::{launch_session, LaunchOptions};
     use std::sync::{Arc, RwLock};
 
     println!("Launching browser (headless: false)...");
-    let options = LaunchOptions::for_shell();
-    let browser = launch_browser(&options)
+    let mut options = LaunchOptions::for_shell();
+    // Respect browser.engine from config; unsupported engines fail fast in launch_session.
+    if let Ok(cfg) = automodus::config::AppConfig::load() {
+        options = options.engine(cfg.browser.engine);
+    }
+    let adapter = launch_session(&options)
         .await
         .map_err(|e| format!("Failed to launch browser: {}", e))?;
 
-    // Get initial page
-    let page = get_or_create_page(&browser, None)
-        .await
-        .map_err(|e| format!("Failed to get page: {}", e))?;
-
     println!("✓ Browser ready!\n");
 
-    // Create adapter and engine with workflow resolver for `call` actions
-    let browser_ref = Arc::new(tokio::sync::Mutex::new(Some(browser)));
-    let adapter = ChromePageAdapter::with_browser(page, browser_ref);
     if let Err(e) = adapter.start_console_listener().await {
         eprintln!("Warning: failed to start console listener: {}", e);
     }
