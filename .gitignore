@@ -54,6 +54,7 @@ config/local.toml
 # shared examples live in the workspace sibling ../examples/)
 workflows/
 
+# Runtime artifacts (screenshots, debug captures from example/workflow runs)
+/data/
 
-/data/*.db
 .playwright-mcp
