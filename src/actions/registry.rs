@@ -275,6 +275,20 @@ impl BrowserCapabilities {
         network_events: false,
         crash_events: false,
     };
+
+    /// Lightpanda CDP feature set (what `SessionAdapter::Lightpanda` advertises).
+    ///
+    /// Lightpanda speaks a CDP subset: no `Page.printToPDF`, no file-chooser
+    /// interception, no `DOM.setFileInputFiles`. Console/network event domains
+    /// are present but not fully proven — start conservative and opt in later.
+    pub const LIGHTPANDA: Self = Self {
+        pdf: false,
+        file_input: false,
+        file_chooser: false,
+        console_events: false,
+        network_events: false,
+        crash_events: false,
+    };
 }
 
 /// Browser handle passed to actions
@@ -594,5 +608,14 @@ mod capability_tests {
     #[test]
     fn firefox_capabilities_match_none() {
         assert_eq!(BrowserCapabilities::FIREFOX, BrowserCapabilities::NONE);
+    }
+
+    #[test]
+    fn lightpanda_capabilities_are_conservative() {
+        let c = BrowserCapabilities::LIGHTPANDA;
+        assert_eq!(c, BrowserCapabilities::NONE);
+        assert!(!c.pdf && !c.file_input && !c.file_chooser);
+        assert!(!c.console_events && !c.network_events && !c.crash_events);
+        assert_ne!(c, BrowserCapabilities::CHROMIUM);
     }
 }
