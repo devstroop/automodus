@@ -7,17 +7,19 @@ We welcome contributions to Automodus! This document provides guidelines for con
 ### Prerequisites
 
 - **Rust 1.70+** (latest stable recommended)
-- **Chrome/Chromium browser** (for browser automation)
 - **Git** for version control
+- A browser for the smoke suite: **Chrome/Chromium**, **Firefox**, or
+  **Lightpanda** (CI's engine matrix runs all three; any one is enough locally)
 - **Docker** (optional, for containerized development)
 
 ### Fork and Clone
 
 1. Fork the repository on GitHub
-2. Clone your fork locally:
+2. Clone your fork locally (the examples live in a git submodule):
    ```bash
-   git clone https://github.com/YOUR_USERNAME/automodus.git
+   git clone --recurse-submodules https://github.com/YOUR_USERNAME/automodus.git
    cd automodus
+   # (already cloned without submodules? run: git submodule update --init)
    ```
 
 3. Add the upstream remote:
@@ -36,10 +38,16 @@ cargo build
 # Run tests
 cargo test
 
-# Run a workflow (examples live in the workspace sibling ../examples/)
-cargo run -- run ../examples/browser/search_form.yaml
+# Run a workflow (examples live in the examples/ submodule)
+cargo run -- run examples/browser/search_form.yaml
 
-# Start server mode
+# Validate all example workflows (this is also a CI gate)
+cargo run -- validate examples/
+
+# Run the engine smoke suite locally (chromium | firefox | lightpanda)
+scripts/smoke.sh chromium
+
+# Start server mode (foreground; prefer 'daemon start' in production)
 cargo run -- serve
 
 # Generate documentation
@@ -62,60 +70,63 @@ docker run -v $(pwd):/app -p 3000:3000 automodus-dev
 src/
 ├── lib.rs              # Library entry point
 ├── error.rs            # Error types
-├── config.rs           # Configuration management
+├── config.rs           # AppConfig (config/app.toml) loader
 ├── bin/
 │   └── automodus.rs    # CLI binary
-├── browser/            # Browser automation
-│   ├── adapter.rs      # Chrome page adapter
-│   └── driver.rs       # Browser service
+├── actions/            # Action registry, aliases, capabilities
+├── api/                # REST API (axum): handlers, schemas, server, ws
 ├── core/               # Core engine
 │   ├── engine.rs       # Workflow execution engine
-│   └── context.rs      # Execution context
+│   ├── app.rs          # AppCore (shared daemon/shell state)
+│   ├── context.rs      # Execution context
+│   ├── template.rs     # {{...}} interpolation
+│   └── json_path.rs    # JSONPath-style extraction
+├── daemon/             # Daemon process (mod, config, protocol)
+├── shell/              # Interactive shell client
+├── modules/
+│   ├── browser/        # Browser automation
+│   │   ├── session.rs  # SessionAdapter (engine dispatch)
+│   │   ├── adapter.rs  # Chromium CDP page adapter
+│   │   ├── firefox.rs  # Firefox BiDi backend
+│   │   ├── driver.rs   # Browser service
+│   │   └── actions/    # Browser-specific actions
+│   └── http/           # HTTP client module (reqwest)
 ├── workflow/           # Workflow definitions
-│   ├── parser.rs       # YAML parser
-│   └── types.rs        # Workflow types
-├── actions/            # Built-in actions
-├── triggers/           # Workflow triggers
-├── utils/              # Utilities
-└── web/                # Web UI (server mode)
+│   ├── parser.rs       # Registry-backed validation
+│   └── schema.rs       # Workflow types
+├── triggers/           # Trigger types (schema-only today)
+└── utils/              # Utilities (logging, debug cleanup, trace, ...)
 
-../examples/            # Example workflow definitions (workspace sibling, outside this repo)
-config/                 # Configuration files
-templates/              # HTML templates
-tests/                  # Integration tests
+examples/               # Example workflows (git submodule)
+scripts/smoke.sh        # Engine-matrix smoke runner (keep docs in sync)
+config/                 # Configuration templates
+tests/                  # Integration/session/shell/daemon tests
+.github/workflows/      # CI (fmt, clippy, tests, smoke matrix)
 ```
 
 ## Development Workflow
 
 ### Branch Strategy
 
-- **main** - Stable, production-ready code
-- **develop** - Integration branch for features
-- **feature/feature-name** - Feature development
-- **bugfix/bug-description** - Bug fixes
+- **main** - Stable, production-ready code (protected; PRs merge into it)
+- **develop** - Integration branch — open PRs against `develop`
+- **feat/…**, **fix/…** - Feature/bugfix branches cut from `develop`
 
 ### Commit Message Convention
 
-Follow Conventional Commits:
+Imperative subject line, body explains *why* (not a diff rehash):
 
 ```
-<type>[optional scope]: <description>
+Fix race in selector wait after back-navigation
+
+Back to the real URL before waiting on the new h1; the old check could
+match the stale document.
+
+Co-Authored-By: opencode <noreply@opencode.ai>
 ```
 
-**Types:**
-- feat: New feature
-- fix: Bug fix
-- docs: Documentation changes
-- refactor: Code refactoring
-- test: Adding or updating tests
-- chore: Build process or auxiliary tool changes
-
-**Examples:**
-```
-feat(actions): add file download action
-fix(browser): resolve connection timeout issues
-docs(readme): update workflow examples
-```
+Subject prefixes like `Fix`, `Add`, `Remove`, `Bump`, `Document` are typical;
+scope in parentheses (`fix(browser): …`) is fine but not required.
 
 ## Testing Guidelines
 
@@ -130,35 +141,45 @@ cargo test test_workflow_parsing
 
 # With output
 cargo test -- --nocapture
+
+# Example validation gate (what CI runs)
+cargo run -- validate examples/
+
+# Engine smoke suite (what CI runs per engine)
+scripts/smoke.sh chromium
 ```
 
 ## Code Style
 
-Follow the official Rust Style Guide:
+Follow the official Rust Style Gate (same as CI):
 
 ```bash
-# Format code
-cargo fmt
+# Check formatting (CI runs the check, not a rewrite)
+cargo fmt --all -- --check
 
-# Lint code
-cargo clippy
+# Lint with warnings denied, mcp feature enabled
+cargo clippy --features mcp -- -D warnings
+
+# Build the way CI does
+cargo build --features mcp
 ```
 
 ## Pull Request Process
 
 ### Before Submitting
 
-- [ ] Code follows style guidelines (cargo fmt and cargo clippy pass)
-- [ ] Tests are written and passing (cargo test)
-- [ ] Documentation is updated
-- [ ] Branch is up-to-date with main
+- [ ] `cargo fmt --all -- --check` passes
+- [ ] `cargo clippy --features mcp -- -D warnings` passes
+- [ ] `cargo test` passes
+- [ ] `cargo run -- validate examples/` passes (if workflow examples changed)
+- [ ] Documentation is updated (README/docs match the code)
+- [ ] Branch is up-to-date with `develop`
 
 ### Review Process
 
-1. **Automated Checks**: All CI checks must pass
+1. **Automated Checks**: All CI checks must pass (fmt, clippy, tests, 3-engine smoke matrix)
 2. **Code Review**: At least one maintainer approval required
-3. **Testing**: All tests must pass
-4. **Merge**: Squash and merge to main
+3. **Merge**: PRs target `develop`; `main` receives the release merges
 
 ## Issue Reporting
 
@@ -168,7 +189,7 @@ Include:
 - Clear description of the bug
 - Steps to reproduce
 - Expected vs actual behavior
-- Environment (OS, Rust version, Chrome version)
+- Environment (OS, Rust version, browser + engine, e.g. Chrome 130 / chromiumoxide / firefox)
 - Relevant logs or screenshots
 
 ### Feature Requests
