@@ -1,4 +1,4 @@
 [submodule "examples"]
 	path = examples
-	url = https://github.com/automodus/examples.git
+	url = https://github.com/devstroop/automodus-examples.git
 	branch = master

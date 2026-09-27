@@ -45,7 +45,12 @@ impl KillOnDrop {
         Self(Some(child))
     }
 
-    fn take(&mut self) -> Option<std::process::Child> {
+    /// Guard without a child process (e.g. tests or adapters that spawn later).
+    pub(crate) fn empty() -> Self {
+        Self(None)
+    }
+
+    pub(crate) fn take(&mut self) -> Option<std::process::Child> {
         self.0.take()
     }
 
@@ -200,7 +205,9 @@ impl BrowserHandle for SessionAdapter {
         match self {
             SessionAdapter::Chrome(c) => c.wait_for_hidden(selector, timeout_ms).await,
             SessionAdapter::Firefox(f) => f.wait_for_hidden(selector, timeout_ms).await,
-            SessionAdapter::Lightpanda { page, .. } => page.wait_for_hidden(selector, timeout_ms).await,
+            SessionAdapter::Lightpanda { page, .. } => {
+                page.wait_for_hidden(selector, timeout_ms).await
+            }
         }
     }
 

@@ -6,7 +6,7 @@ use serde::Deserialize;
 use std::path::PathBuf;
 
 /// Application configuration
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct AppConfig {
     /// Server configuration
     #[serde(default)]
@@ -19,16 +19,6 @@ pub struct AppConfig {
     /// Workflows configuration
     #[serde(default)]
     pub workflows: WorkflowsConfig,
-}
-
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            server: ServerConfig::default(),
-            browser: BrowserConfig::default(),
-            workflows: WorkflowsConfig::default(),
-        }
-    }
 }
 
 impl AppConfig {
@@ -211,7 +201,12 @@ mod engine_load_tests {
         std::env::set_var("AUTOMODUS_CONFIG", &path);
         let cfg = super::AppConfig::load().expect("load");
         std::env::remove_var("AUTOMODUS_CONFIG");
-        assert_eq!(cfg.browser.engine, super::BrowserEngine::Firefox, "engine={:?}", cfg.browser.engine);
+        assert_eq!(
+            cfg.browser.engine,
+            super::BrowserEngine::Firefox,
+            "engine={:?}",
+            cfg.browser.engine
+        );
         assert!(cfg.browser.headless);
         let _ = std::fs::remove_file(&path);
     }
@@ -220,7 +215,11 @@ mod engine_load_tests {
     fn loads_lightpanda_engine_from_config_file() {
         let _guard = CONFIG_ENV_LOCK.lock().unwrap();
         let path = std::env::temp_dir().join("automodus_lightpanda_test.toml");
-        std::fs::write(&path, "[browser]\nengine = \"lightpanda\"\nheadless = true\n").unwrap();
+        std::fs::write(
+            &path,
+            "[browser]\nengine = \"lightpanda\"\nheadless = true\n",
+        )
+        .unwrap();
         std::env::set_var("AUTOMODUS_CONFIG", &path);
         let cfg = super::AppConfig::load().expect("load");
         std::env::remove_var("AUTOMODUS_CONFIG");

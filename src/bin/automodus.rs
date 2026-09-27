@@ -206,7 +206,10 @@ fn parse_args() -> Command {
                             "debug" => LogLevel::Debug,
                             "trace" => LogLevel::Trace,
                             _ => {
-                                eprintln!("Invalid debug level: {}. Use: info, debug, trace", level);
+                                eprintln!(
+                                    "Invalid debug level: {}. Use: info, debug, trace",
+                                    level
+                                );
                                 std::process::exit(1);
                             }
                         });
@@ -459,15 +462,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("⚠️  DEPRECATED: 'automodus serve' is deprecated.");
             println!("   Use 'automodus daemon start' instead for background operation,");
             println!("   or the daemon will now start in foreground mode.\n");
-            
+
             // Start daemon in foreground with HTTP enabled
             let config = DaemonConfig {
                 enable_http: true,
                 ..DaemonConfig::default()
             };
-            
+
             let mut daemon = Daemon::new(config.clone());
-            
+
             // Check if daemon is already running
             if daemon.is_running() {
                 println!("❌ Daemon is already running");
@@ -477,14 +480,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("\nUse 'automodus daemon stop' to stop it first.");
                 std::process::exit(1);
             }
-            
+
             println!("🚀 Starting server (foreground mode)...");
             println!("   HTTP: http://{}:{}", config.http_host, config.http_port);
             println!("   Press Ctrl+C to stop\n");
-            
+
             // Route through daemon architecture (foreground)
-            daemon.start().await.map_err(|e| format!("Failed to start daemon: {}", e))?;
-            daemon.run().await.map_err(|e| format!("Daemon error: {}", e))?;
+            daemon
+                .start()
+                .await
+                .map_err(|e| format!("Failed to start daemon: {}", e))?;
+            daemon
+                .run()
+                .await
+                .map_err(|e| format!("Daemon error: {}", e))?;
         }
         Command::Validate { path } => {
             validate_workflows(&path)?;
@@ -687,8 +696,14 @@ async fn handle_daemon_command(op: DaemonOp) -> Result<(), Box<dyn std::error::E
         DaemonOp::Run => {
             // Internal: run daemon in foreground (spawned by `daemon start`)
             let mut daemon = Daemon::new(config.clone());
-            daemon.start().await.map_err(|e| format!("Failed to start daemon: {}", e))?;
-            daemon.run().await.map_err(|e| format!("Daemon error: {}", e))?;
+            daemon
+                .start()
+                .await
+                .map_err(|e| format!("Failed to start daemon: {}", e))?;
+            daemon
+                .run()
+                .await
+                .map_err(|e| format!("Daemon error: {}", e))?;
         }
 
         DaemonOp::Logs { follow, lines } => {
@@ -746,6 +761,19 @@ async fn handle_daemon_command(op: DaemonOp) -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
+/// Removes a per-run temp browser profile dir on drop (best-effort).
+///
+/// Workflow runs get a fresh `/tmp/automodus-workflow-<pid>` profile that
+/// nothing cleaned up before — dozens of runs fill tmpfs. Only wrapped for
+/// the temp-dir run path; persistent profiles (shell/server) are untouched.
+struct TempProfile(std::path::PathBuf);
+
+impl Drop for TempProfile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 async fn run_workflow(
     path: &std::path::Path,
     keep_open: bool,
@@ -762,10 +790,7 @@ async fn run_workflow(
     // Note: workflow.debug.profile is not applied here (run path skips with_profile);
     // use CLI --profile= instead.
     let env_debug = debug_config_from_env();
-    let resolved_debug = env_debug
-        .merge(&workflow.debug)
-        .merge(&cli_debug)
-        .resolve();
+    let resolved_debug = env_debug.merge(&workflow.debug).merge(&cli_debug).resolve();
 
     if resolved_debug.enabled {
         println!("🔍 Debug mode enabled (level: {:?})", resolved_debug.level);
@@ -811,6 +836,11 @@ async fn run_workflow(
             options = options.lightpanda_path(lp);
         }
     }
+
+    // Declared before the adapter: locals drop in reverse order, so the
+    // adapter (browser kill + wait) always runs before the profile removal.
+    let _profile = TempProfile(options.user_data_dir.clone());
+
     let adapter = launch_session(&options)
         .await
         .map_err(|e| format!("Failed to launch browser: {}", e))?;
@@ -852,11 +882,9 @@ async fn run_workflow(
         let coerced = match value.as_str() {
             "true" => serde_json::Value::Bool(true),
             "false" => serde_json::Value::Bool(false),
-            v if v.parse::<i64>().is_ok() => {
-                serde_json::Number::from_str(v)
-                    .map(serde_json::Value::Number)
-                    .unwrap_or_else(|_| serde_json::Value::String(v.to_string()))
-            }
+            v if v.parse::<i64>().is_ok() => serde_json::Number::from_str(v)
+                .map(serde_json::Value::Number)
+                .unwrap_or_else(|_| serde_json::Value::String(v.to_string())),
             v => serde_json::Value::String(v.to_string()),
         };
         params.insert(key, coerced);
@@ -866,7 +894,14 @@ async fn run_workflow(
         println!("  Params: {:?}", params.keys().collect::<Vec<_>>());
     }
     let result = engine
-        .execute_with_pause_handler(&workflow, &adapter, params, resolved_debug, &ShellPauseHandler, None)
+        .execute_with_pause_handler(
+            &workflow,
+            &adapter,
+            params,
+            resolved_debug,
+            &ShellPauseHandler,
+            None,
+        )
         .await
         .map_err(|e| format!("Workflow execution failed: {}", e))?;
 
@@ -918,6 +953,16 @@ async fn run_workflow(
     } else {
         println!("\nBrowser will close in 5 seconds...");
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    }
+
+    // Non-zero exit on workflow failure so scripts/CI can gate on it.
+    // Drop the adapter first: process::exit skips destructors, which would
+    // orphan the browser child (chromiumoxide kill_on_drop / KillOnDrop);
+    // then drop the profile guard (also skipped by process::exit).
+    if !result.success {
+        drop(adapter);
+        drop(_profile);
+        std::process::exit(1);
     }
 
     Ok(())
@@ -972,8 +1017,8 @@ async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
     if let Err(e) = adapter.start_crash_listener().await {
         eprintln!("Warning: failed to start crash listener: {}", e);
     }
-    let workflows_dir = std::env::var("AUTOMODUS_WORKFLOWS")
-        .unwrap_or_else(|_| "workflows".to_string());
+    let workflows_dir =
+        std::env::var("AUTOMODUS_WORKFLOWS").unwrap_or_else(|_| "workflows".to_string());
     let loader = Arc::new(WorkflowLoader::new(&workflows_dir));
     let engine = WorkflowEngine::with_resolver(loader);
 
@@ -989,7 +1034,8 @@ async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
     let mut current_session_id = initial_session_id;
 
     // Shared session names for completer
-    let session_names: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(vec!["default".to_string()]));
+    let session_names: Arc<RwLock<Vec<String>>> =
+        Arc::new(RwLock::new(vec!["default".to_string()]));
 
     // Create ShellClient with rustyline (history, completion, line editing)
     let shell_config = ShellConfig::default();
@@ -1019,9 +1065,7 @@ async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
         let session_id = session_id.to_string();
         async move {
             if let Some(session) = core.get_session(&session_id).await {
-                let label = session
-                    .name
-                    .unwrap_or_else(|| session_id[..8].to_string());
+                let label = session.name.unwrap_or_else(|| session_id[..8].to_string());
                 format!("automodus [{}]> ", label)
             } else {
                 "automodus> ".to_string()
@@ -1081,10 +1125,23 @@ async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
                 if sessions.is_empty() {
                     println!("  (no sessions)");
                 } else {
-                    println!("  {:>8}  {:<16}  {:<10}  {}", "ID", "Name", "Keep-Alive", "Last Activity");
-                    println!("  {}  {}  {}  {}", "─".repeat(8), "─".repeat(16), "─".repeat(10), "─".repeat(20));
+                    println!(
+                        "  {:>8}  {:<16}  {:<10}  Last Activity",
+                        "ID", "Name", "Keep-Alive"
+                    );
+                    println!(
+                        "  {}  {}  {}  {}",
+                        "─".repeat(8),
+                        "─".repeat(16),
+                        "─".repeat(10),
+                        "─".repeat(20)
+                    );
                     for s in &sessions {
-                        let marker = if s.id == current_session_id { "→ " } else { "  " };
+                        let marker = if s.id == current_session_id {
+                            "→ "
+                        } else {
+                            "  "
+                        };
                         let name = s.name.as_deref().unwrap_or("-");
                         let ka = if s.keep_alive { "yes" } else { "no" };
                         let age = chrono::Utc::now() - s.last_activity;
@@ -1095,7 +1152,14 @@ async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
                         } else {
                             format!("{}h ago", age.num_hours())
                         };
-                        println!("{}{:>8}  {:<16}  {:<10}  {}", marker, &s.id[..8], name, ka, age_str);
+                        println!(
+                            "{}{:>8}  {:<16}  {:<10}  {}",
+                            marker,
+                            &s.id[..8],
+                            name,
+                            ka,
+                            age_str
+                        );
                     }
                 }
             }
@@ -1109,15 +1173,22 @@ async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
                     None => {
                         // Try prefix match on ID
                         let sessions = core.list_sessions().await;
-                        let matches: Vec<_> = sessions.iter().filter(|s| s.id.starts_with(&target)).collect();
+                        let matches: Vec<_> = sessions
+                            .iter()
+                            .filter(|s| s.id.starts_with(&target))
+                            .collect();
                         match matches.len() {
                             1 => {
                                 current_session_id = matches[0].id.clone();
-                                let label = matches[0].name.as_deref().unwrap_or(&matches[0].id[..8]);
+                                let label =
+                                    matches[0].name.as_deref().unwrap_or(&matches[0].id[..8]);
                                 println!("✓ Switched to session: {}", label);
                             }
                             0 => println!("❌ No session found matching '{}'", target),
-                            n => println!("❌ Ambiguous: {} sessions match '{}'. Be more specific.", n, target),
+                            n => println!(
+                                "❌ Ambiguous: {} sessions match '{}'. Be more specific.",
+                                n, target
+                            ),
                         }
                     }
                 }
@@ -1129,7 +1200,8 @@ async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
                         None => {
                             // Try prefix match
                             let sessions = core.list_sessions().await;
-                            let matches: Vec<_> = sessions.iter().filter(|s| s.id.starts_with(t)).collect();
+                            let matches: Vec<_> =
+                                sessions.iter().filter(|s| s.id.starts_with(t)).collect();
                             if matches.len() == 1 {
                                 matches[0].id.clone()
                             } else {
@@ -1165,20 +1237,29 @@ async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
                     Err(e) => println!("❌ Failed to close session: {}", e),
                 }
             }
-            ShellCommand::SessionInfo => {
-                match core.get_session(&current_session_id).await {
-                    Some(session) => {
-                        let age = chrono::Utc::now() - session.created_at;
-                        let idle = chrono::Utc::now() - session.last_activity;
-                        println!("  Session ID:   {}", session.id);
-                        println!("  Name:         {}", session.name.as_deref().unwrap_or("-"));
-                        println!("  Keep-Alive:   {}", if session.keep_alive { "yes" } else { "no" });
-                        println!("  Created:      {} ({} ago)", session.created_at.format("%H:%M:%S"), format_duration(age));
-                        println!("  Last Active:  {} ({} ago)", session.last_activity.format("%H:%M:%S"), format_duration(idle));
-                    }
-                    None => println!("❌ Current session not found (stale)"),
+            ShellCommand::SessionInfo => match core.get_session(&current_session_id).await {
+                Some(session) => {
+                    let age = chrono::Utc::now() - session.created_at;
+                    let idle = chrono::Utc::now() - session.last_activity;
+                    println!("  Session ID:   {}", session.id);
+                    println!("  Name:         {}", session.name.as_deref().unwrap_or("-"));
+                    println!(
+                        "  Keep-Alive:   {}",
+                        if session.keep_alive { "yes" } else { "no" }
+                    );
+                    println!(
+                        "  Created:      {} ({} ago)",
+                        session.created_at.format("%H:%M:%S"),
+                        format_duration(age)
+                    );
+                    println!(
+                        "  Last Active:  {} ({} ago)",
+                        session.last_activity.format("%H:%M:%S"),
+                        format_duration(idle)
+                    );
                 }
-            }
+                None => println!("❌ Current session not found (stale)"),
+            },
             ShellCommand::SessionKeepAlive { target, toggle } => {
                 let target_id = if let Some(ref t) = target {
                     match core.find_session(t).await {
@@ -1206,7 +1287,11 @@ async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
                 };
 
                 match core.set_session_keep_alive(&target_id, new_val).await {
-                    Ok(_) => println!("✓ Keep-alive {}: {}", if new_val { "enabled" } else { "disabled" }, &target_id[..8]),
+                    Ok(_) => println!(
+                        "✓ Keep-alive {}: {}",
+                        if new_val { "enabled" } else { "disabled" },
+                        &target_id[..8]
+                    ),
                     Err(e) => println!("❌ Failed: {}", e),
                 }
             }
@@ -1257,57 +1342,51 @@ async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
                     Err(e) => println!("❌ Text extraction failed: {}", e),
                 }
             }
-            ShellCommand::Screenshot { path } => {
-                match adapter.screenshot(false).await {
-                    Ok(data) => {
-                        let path = path.unwrap_or_else(|| {
-                            PathBuf::from(format!(
-                                "screenshot_{}.png",
-                                chrono::Utc::now().format("%Y%m%d_%H%M%S")
-                            ))
-                        });
-                        match std::fs::write(&path, &data) {
-                            Ok(_) => println!("✓ Screenshot saved to {}", path.display()),
-                            Err(e) => println!("❌ Failed to save screenshot: {}", e),
-                        }
+            ShellCommand::Screenshot { path } => match adapter.screenshot(false).await {
+                Ok(data) => {
+                    let path = path.unwrap_or_else(|| {
+                        PathBuf::from(format!(
+                            "screenshot_{}.png",
+                            chrono::Utc::now().format("%Y%m%d_%H%M%S")
+                        ))
+                    });
+                    match std::fs::write(&path, &data) {
+                        Ok(_) => println!("✓ Screenshot saved to {}", path.display()),
+                        Err(e) => println!("❌ Failed to save screenshot: {}", e),
                     }
-                    Err(e) => println!("❌ Screenshot failed: {}", e),
                 }
-            }
+                Err(e) => println!("❌ Screenshot failed: {}", e),
+            },
             ShellCommand::Eval { script } => {
                 if script.is_empty() {
                     println!("Usage: eval <javascript>");
                     continue;
                 }
                 match adapter.eval(&script).await {
-                    Ok(result) => println!("{}", serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string())),
+                    Ok(result) => println!(
+                        "{}",
+                        serde_json::to_string_pretty(&result)
+                            .unwrap_or_else(|_| result.to_string())
+                    ),
                     Err(e) => println!("❌ Eval failed: {}", e),
                 }
             }
-            ShellCommand::Status => {
-                match adapter.current_url().await {
-                    Ok(url) => println!("  URL: {}", url),
-                    Err(e) => println!("  URL: (error: {})", e),
-                }
-            }
-            ShellCommand::Back => {
-                match adapter.back().await {
-                    Ok(_) => println!("✓ Navigated back"),
-                    Err(e) => println!("❌ Back failed: {}", e),
-                }
-            }
-            ShellCommand::Forward => {
-                match adapter.forward().await {
-                    Ok(_) => println!("✓ Navigated forward"),
-                    Err(e) => println!("❌ Forward failed: {}", e),
-                }
-            }
-            ShellCommand::Refresh => {
-                match adapter.reload().await {
-                    Ok(_) => println!("✓ Page refreshed"),
-                    Err(e) => println!("❌ Refresh failed: {}", e),
-                }
-            }
+            ShellCommand::Status => match adapter.current_url().await {
+                Ok(url) => println!("  URL: {}", url),
+                Err(e) => println!("  URL: (error: {})", e),
+            },
+            ShellCommand::Back => match adapter.back().await {
+                Ok(_) => println!("✓ Navigated back"),
+                Err(e) => println!("❌ Back failed: {}", e),
+            },
+            ShellCommand::Forward => match adapter.forward().await {
+                Ok(_) => println!("✓ Navigated forward"),
+                Err(e) => println!("❌ Forward failed: {}", e),
+            },
+            ShellCommand::Refresh => match adapter.reload().await {
+                Ok(_) => println!("✓ Page refreshed"),
+                Err(e) => println!("❌ Refresh failed: {}", e),
+            },
             ShellCommand::Highlight { selector } => {
                 if selector.is_empty() {
                     println!("Usage: highlight <selector>");
@@ -1369,12 +1448,16 @@ async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
                                 if count == 0 {
                                     println!("  No elements found matching '{}'", selector);
                                 } else {
-                                    println!("  Found {} element(s) matching '{}'", count, selector);
+                                    println!(
+                                        "  Found {} element(s) matching '{}'",
+                                        count, selector
+                                    );
                                     if let Some(matches) = data["matches"].as_array() {
                                         for (i, m) in matches.iter().enumerate() {
                                             let tag = m["tag"].as_str().unwrap_or("?");
                                             let id = m["id"].as_str().filter(|s| !s.is_empty());
-                                            let classes = m["classes"].as_str().filter(|s| !s.is_empty());
+                                            let classes =
+                                                m["classes"].as_str().filter(|s| !s.is_empty());
                                             let text = m["text"].as_str().unwrap_or("");
                                             let mut desc = format!("<{}", tag);
                                             if let Some(id) = id {
@@ -1454,35 +1537,27 @@ async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
                     Err(e) => println!("❌ Cleanup failed: {}", e),
                 }
             }
-            ShellCommand::Tabs => {
-                match adapter.list_tabs().await {
-                    Ok(tabs) => {
-                        println!("Open tabs ({}):", tabs.len());
-                        for tab in &tabs {
-                            let marker = if tab.active { " *" } else { "  " };
-                            println!("{} [{}] {}", marker, tab.index, tab.url);
-                        }
+            ShellCommand::Tabs => match adapter.list_tabs().await {
+                Ok(tabs) => {
+                    println!("Open tabs ({}):", tabs.len());
+                    for tab in &tabs {
+                        let marker = if tab.active { " *" } else { "  " };
+                        println!("{} [{}] {}", marker, tab.index, tab.url);
                     }
-                    Err(e) => println!("❌ Failed to list tabs: {}", e),
                 }
-            }
-            ShellCommand::TabNew { url } => {
-                match adapter.new_tab(url.as_deref()).await {
-                    Ok(index) => println!("✓ Opened new tab {}", index),
-                    Err(e) => println!("❌ Failed to open tab: {}", e),
-                }
-            }
-            ShellCommand::TabSwitch { index } => {
-                match adapter.switch_tab(index).await {
-                    Ok(()) => println!("✓ Switched to tab {}", index),
-                    Err(e) => println!("❌ Failed to switch tab: {}", e),
-                }
-            }
+                Err(e) => println!("❌ Failed to list tabs: {}", e),
+            },
+            ShellCommand::TabNew { url } => match adapter.new_tab(url.as_deref()).await {
+                Ok(index) => println!("✓ Opened new tab {}", index),
+                Err(e) => println!("❌ Failed to open tab: {}", e),
+            },
+            ShellCommand::TabSwitch { index } => match adapter.switch_tab(index).await {
+                Ok(()) => println!("✓ Switched to tab {}", index),
+                Err(e) => println!("❌ Failed to switch tab: {}", e),
+            },
             ShellCommand::TabClose { index } => {
-                let tab_index = index.unwrap_or_else(|| {
-                    // Will be resolved to current tab
-                    0 // fallback
-                });
+                // Missing index resolves to the current tab (fallback 0)
+                let tab_index = index.unwrap_or(0);
                 let tab_index = if index.is_some() {
                     tab_index
                 } else {
@@ -1496,23 +1571,21 @@ async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
                     Err(e) => println!("❌ Failed to close tab: {}", e),
                 }
             }
-            ShellCommand::Pdf { path } => {
-                match adapter.pdf().await {
-                    Ok(data) => {
-                        let path = path.unwrap_or_else(|| {
-                            PathBuf::from(format!(
-                                "page_{}.pdf",
-                                chrono::Utc::now().format("%Y%m%d_%H%M%S")
-                            ))
-                        });
-                        match std::fs::write(&path, &data) {
-                            Ok(_) => println!("✓ PDF saved to {}", path.display()),
-                            Err(e) => println!("❌ Failed to save PDF: {}", e),
-                        }
+            ShellCommand::Pdf { path } => match adapter.pdf().await {
+                Ok(data) => {
+                    let path = path.unwrap_or_else(|| {
+                        PathBuf::from(format!(
+                            "page_{}.pdf",
+                            chrono::Utc::now().format("%Y%m%d_%H%M%S")
+                        ))
+                    });
+                    match std::fs::write(&path, &data) {
+                        Ok(_) => println!("✓ PDF saved to {}", path.display()),
+                        Err(e) => println!("❌ Failed to save PDF: {}", e),
                     }
-                    Err(e) => println!("❌ PDF export failed: {}", e),
                 }
-            }
+                Err(e) => println!("❌ PDF export failed: {}", e),
+            },
             ShellCommand::Unknown { command } => {
                 if !command.is_empty() {
                     println!("Unknown command: '{}'. Type 'help' for commands.", command);
@@ -1546,7 +1619,8 @@ async fn run_shell_daemon(
     let mut current_session_id = initial_id;
 
     // Session names for tab completion
-    let session_names: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(vec!["default".to_string()]));
+    let session_names: Arc<RwLock<Vec<String>>> =
+        Arc::new(RwLock::new(vec!["default".to_string()]));
 
     let shell_config = ShellConfig::default();
     let mut shell = ShellClient::with_session_names(shell_config, session_names.clone())
@@ -1565,9 +1639,7 @@ async fn run_shell_daemon(
     loop {
         // Build prompt with session name
         let prompt = if let Ok(session) = client.session_get(&current_session_id).await {
-            let label = session["name"]
-                .as_str()
-                .unwrap_or(&current_session_id[..8]);
+            let label = session["name"].as_str().unwrap_or(&current_session_id[..8]);
             format!("automodus [{}]> ", label)
         } else {
             "automodus> ".to_string()
@@ -1602,19 +1674,21 @@ async fn run_shell_daemon(
 
             // --- Session commands ---
             ShellCommand::SessionNew { name, keep_alive } => {
-                match client
-                    .session_create(name.clone(), keep_alive)
-                    .await
-                {
+                match client.session_create(name.clone(), keep_alive).await {
                     Ok(id) => {
                         let label = name.as_deref().unwrap_or(&id[..8]);
                         println!("✓ Session created: {} ({})", label, &id[..8]);
                         current_session_id = id;
                         if let Ok(sessions) = client.session_list().await {
-                            let new_names: Vec<String> = sessions.iter().filter_map(|s| {
-                                s["name"].as_str().map(String::from)
-                                    .or_else(|| s["id"].as_str().map(|id| id[..8].to_string()))
-                            }).collect();
+                            let new_names: Vec<String> = sessions
+                                .iter()
+                                .filter_map(|s| {
+                                    s["name"]
+                                        .as_str()
+                                        .map(String::from)
+                                        .or_else(|| s["id"].as_str().map(|id| id[..8].to_string()))
+                                })
+                                .collect();
                             if let Ok(mut guard) = session_names.write() {
                                 *guard = new_names;
                             }
@@ -1623,59 +1697,54 @@ async fn run_shell_daemon(
                     Err(e) => println!("❌ Failed to create session: {}", e),
                 }
             }
-            ShellCommand::SessionList => {
-                match client.session_list().await {
-                    Ok(sessions) => {
-                        if sessions.is_empty() {
-                            println!("  (no sessions)");
-                        } else {
+            ShellCommand::SessionList => match client.session_list().await {
+                Ok(sessions) => {
+                    if sessions.is_empty() {
+                        println!("  (no sessions)");
+                    } else {
+                        println!(
+                            "  {:>8}  {:<16}  {:<10}  Last Activity",
+                            "ID", "Name", "Keep-Alive"
+                        );
+                        println!(
+                            "  {}  {}  {}  {}",
+                            "─".repeat(8),
+                            "─".repeat(16),
+                            "─".repeat(10),
+                            "─".repeat(20)
+                        );
+                        for s in &sessions {
+                            let id = s["id"].as_str().unwrap_or("");
+                            let marker = if id == current_session_id {
+                                "→ "
+                            } else {
+                                "  "
+                            };
+                            let name = s["name"].as_str().unwrap_or("-");
+                            let ka = if s["keep_alive"].as_bool().unwrap_or(false) {
+                                "yes"
+                            } else {
+                                "no"
+                            };
+                            let activity = s["last_activity"].as_str().unwrap_or("unknown");
                             println!(
-                                "  {:>8}  {:<16}  {:<10}  {}",
-                                "ID", "Name", "Keep-Alive", "Last Activity"
+                                "{}{:>8}  {:<16}  {:<10}  {}",
+                                marker,
+                                &id[..id.len().min(8)],
+                                name,
+                                ka,
+                                activity
                             );
-                            println!(
-                                "  {}  {}  {}  {}",
-                                "─".repeat(8),
-                                "─".repeat(16),
-                                "─".repeat(10),
-                                "─".repeat(20)
-                            );
-                            for s in &sessions {
-                                let id = s["id"].as_str().unwrap_or("");
-                                let marker = if id == current_session_id {
-                                    "→ "
-                                } else {
-                                    "  "
-                                };
-                                let name = s["name"].as_str().unwrap_or("-");
-                                let ka = if s["keep_alive"].as_bool().unwrap_or(false) {
-                                    "yes"
-                                } else {
-                                    "no"
-                                };
-                                let activity =
-                                    s["last_activity"].as_str().unwrap_or("unknown");
-                                println!(
-                                    "{}{:>8}  {:<16}  {:<10}  {}",
-                                    marker,
-                                    &id[..id.len().min(8)],
-                                    name,
-                                    ka,
-                                    activity
-                                );
-                            }
                         }
                     }
-                    Err(e) => println!("❌ Failed to list sessions: {}", e),
                 }
-            }
+                Err(e) => println!("❌ Failed to list sessions: {}", e),
+            },
             ShellCommand::SessionSwitch { target } => {
                 match client.session_find(&target).await {
                     Ok(session) => {
                         let id = session["id"].as_str().unwrap_or("").to_string();
-                        let label = session["name"]
-                            .as_str()
-                            .unwrap_or(&id[..id.len().min(8)]);
+                        let label = session["name"].as_str().unwrap_or(&id[..id.len().min(8)]);
                         println!("✓ Switched to session: {}", label);
                         current_session_id = id;
                     }
@@ -1693,16 +1762,12 @@ async fn run_shell_daemon(
                                 .collect();
                             match matches.len() {
                                 1 => {
-                                    let id =
-                                        matches[0]["id"].as_str().unwrap_or("").to_string();
+                                    let id = matches[0]["id"].as_str().unwrap_or("").to_string();
                                     let label = session_label(&sessions, &id);
                                     println!("✓ Switched to session: {}", label);
                                     current_session_id = id;
                                 }
-                                0 => println!(
-                                    "❌ No session found matching '{}'",
-                                    target
-                                ),
+                                0 => println!("❌ No session found matching '{}'", target),
                                 n => println!(
                                     "❌ Ambiguous: {} sessions match '{}'. Be more specific.",
                                     n, target
@@ -1730,15 +1795,9 @@ async fn run_shell_daemon(
                                     })
                                     .collect();
                                 if matches.len() == 1 {
-                                    matches[0]["id"]
-                                        .as_str()
-                                        .unwrap_or("")
-                                        .to_string()
+                                    matches[0]["id"].as_str().unwrap_or("").to_string()
                                 } else {
-                                    println!(
-                                        "❌ No session found matching '{}'",
-                                        t
-                                    );
+                                    println!("❌ No session found matching '{}'", t);
                                     continue;
                                 }
                             } else {
@@ -1753,31 +1812,20 @@ async fn run_shell_daemon(
 
                 match client.session_close(&close_id).await {
                     Ok(_) => {
-                        println!(
-                            "✓ Session closed: {}",
-                            &close_id[..close_id.len().min(8)]
-                        );
+                        println!("✓ Session closed: {}", &close_id[..close_id.len().min(8)]);
                         if close_id == current_session_id {
                             if let Ok(sessions) = client.session_list().await {
                                 if let Some(next) = sessions.first() {
-                                    current_session_id = next["id"]
-                                        .as_str()
-                                        .unwrap_or("")
-                                        .to_string();
+                                    current_session_id =
+                                        next["id"].as_str().unwrap_or("").to_string();
                                 } else {
                                     match client
-                                        .session_create(
-                                            Some("default".to_string()),
-                                            true,
-                                        )
+                                        .session_create(Some("default".to_string()), true)
                                         .await
                                     {
                                         Ok(id) => current_session_id = id,
                                         Err(e) => {
-                                            eprintln!(
-                                                "Failed to create fallback session: {}",
-                                                e
-                                            );
+                                            eprintln!("Failed to create fallback session: {}", e);
                                             break;
                                         }
                                     }
@@ -1785,10 +1833,15 @@ async fn run_shell_daemon(
                             }
                         }
                         if let Ok(sessions) = client.session_list().await {
-                            let new_names: Vec<String> = sessions.iter().filter_map(|s| {
-                                s["name"].as_str().map(String::from)
-                                    .or_else(|| s["id"].as_str().map(|id| id[..8].to_string()))
-                            }).collect();
+                            let new_names: Vec<String> = sessions
+                                .iter()
+                                .filter_map(|s| {
+                                    s["name"]
+                                        .as_str()
+                                        .map(String::from)
+                                        .or_else(|| s["id"].as_str().map(|id| id[..8].to_string()))
+                                })
+                                .collect();
                             if let Ok(mut guard) = session_names.write() {
                                 *guard = new_names;
                             }
@@ -1797,31 +1850,29 @@ async fn run_shell_daemon(
                     Err(e) => println!("❌ Failed to close session: {}", e),
                 }
             }
-            ShellCommand::SessionInfo => {
-                match client.session_get(&current_session_id).await {
-                    Ok(s) => {
-                        println!("  Session ID:   {}", s["id"].as_str().unwrap_or(""));
-                        println!("  Name:         {}", s["name"].as_str().unwrap_or("-"));
-                        println!(
-                            "  Keep-Alive:   {}",
-                            if s["keep_alive"].as_bool().unwrap_or(false) {
-                                "yes"
-                            } else {
-                                "no"
-                            }
-                        );
-                        println!(
-                            "  Created:      {}",
-                            s["created_at"].as_str().unwrap_or("?")
-                        );
-                        println!(
-                            "  Last Active:  {}",
-                            s["last_activity"].as_str().unwrap_or("?")
-                        );
-                    }
-                    Err(e) => println!("❌ {}", e),
+            ShellCommand::SessionInfo => match client.session_get(&current_session_id).await {
+                Ok(s) => {
+                    println!("  Session ID:   {}", s["id"].as_str().unwrap_or(""));
+                    println!("  Name:         {}", s["name"].as_str().unwrap_or("-"));
+                    println!(
+                        "  Keep-Alive:   {}",
+                        if s["keep_alive"].as_bool().unwrap_or(false) {
+                            "yes"
+                        } else {
+                            "no"
+                        }
+                    );
+                    println!(
+                        "  Created:      {}",
+                        s["created_at"].as_str().unwrap_or("?")
+                    );
+                    println!(
+                        "  Last Active:  {}",
+                        s["last_activity"].as_str().unwrap_or("?")
+                    );
                 }
-            }
+                Err(e) => println!("❌ {}", e),
+            },
             ShellCommand::SessionKeepAlive { target, toggle } => {
                 let target_id = if let Some(ref t) = target {
                     match client.session_find(t).await {
@@ -1847,10 +1898,7 @@ async fn run_shell_daemon(
                     }
                 };
 
-                match client
-                    .session_set_keep_alive(&target_id, new_val)
-                    .await
-                {
+                match client.session_set_keep_alive(&target_id, new_val).await {
                     Ok(_) => println!(
                         "✓ Keep-alive {}: {}",
                         if new_val { "enabled" } else { "disabled" },
@@ -1892,10 +1940,7 @@ async fn run_shell_daemon(
                     println!("Usage: wait <selector> [timeout_ms]");
                     continue;
                 }
-                match client
-                    .browser_wait(&selector, timeout)
-                    .await
-                {
+                match client.browser_wait(&selector, timeout).await {
                     Ok(_) => println!("✓ Element found: {}", selector),
                     Err(e) => println!("❌ Wait failed: {}", e),
                 }
@@ -1910,27 +1955,25 @@ async fn run_shell_daemon(
                     Err(e) => println!("❌ Text extraction failed: {}", e),
                 }
             }
-            ShellCommand::Screenshot { path } => {
-                match client.browser_screenshot().await {
-                    Ok(data) => {
-                        let path = path.unwrap_or_else(|| {
-                            PathBuf::from(format!(
-                                "screenshot_{}.png",
-                                chrono::Utc::now().format("%Y%m%d_%H%M%S")
-                            ))
-                        });
-                        match std::fs::write(&path, &data) {
-                            Ok(_) => {
-                                println!("✓ Screenshot saved to {}", path.display())
-                            }
-                            Err(e) => {
-                                println!("❌ Failed to save screenshot: {}", e)
-                            }
+            ShellCommand::Screenshot { path } => match client.browser_screenshot().await {
+                Ok(data) => {
+                    let path = path.unwrap_or_else(|| {
+                        PathBuf::from(format!(
+                            "screenshot_{}.png",
+                            chrono::Utc::now().format("%Y%m%d_%H%M%S")
+                        ))
+                    });
+                    match std::fs::write(&path, &data) {
+                        Ok(_) => {
+                            println!("✓ Screenshot saved to {}", path.display())
+                        }
+                        Err(e) => {
+                            println!("❌ Failed to save screenshot: {}", e)
                         }
                     }
-                    Err(e) => println!("❌ Screenshot failed: {}", e),
                 }
-            }
+                Err(e) => println!("❌ Screenshot failed: {}", e),
+            },
             ShellCommand::Eval { script } => {
                 if script.is_empty() {
                     println!("Usage: eval <javascript>");
@@ -1945,25 +1988,19 @@ async fn run_shell_daemon(
                     Err(e) => println!("❌ Eval failed: {}", e),
                 }
             }
-            ShellCommand::Status => {
-                match client.status().await {
-                    Ok(data) => {
-                        let browser =
-                            data["browser_running"].as_bool().unwrap_or(false);
-                        let sessions = data["sessions"].as_u64().unwrap_or(0);
-                        println!("  Mode: daemon");
-                        println!(
-                            "  Browser: {}",
-                            if browser { "running" } else { "stopped" }
-                        );
-                        println!("  Sessions: {}", sessions);
-                        if let Ok(url) = client.browser_get_url().await {
-                            println!("  URL: {}", url);
-                        }
+            ShellCommand::Status => match client.status().await {
+                Ok(data) => {
+                    let browser = data["browser_running"].as_bool().unwrap_or(false);
+                    let sessions = data["sessions"].as_u64().unwrap_or(0);
+                    println!("  Mode: daemon");
+                    println!("  Browser: {}", if browser { "running" } else { "stopped" });
+                    println!("  Sessions: {}", sessions);
+                    if let Ok(url) = client.browser_get_url().await {
+                        println!("  URL: {}", url);
                     }
-                    Err(e) => println!("❌ Status error: {}", e),
                 }
-            }
+                Err(e) => println!("❌ Status error: {}", e),
+            },
             ShellCommand::Back => match client.browser_back().await {
                 Ok(_) => println!("✓ Navigated back"),
                 Err(e) => println!("❌ Back failed: {}", e),
@@ -2030,7 +2067,10 @@ async fn run_shell_daemon(
             // --- Workflow commands ---
             ShellCommand::Run { path, params } => {
                 let hash_params: HashMap<String, String> = params.into_iter().collect();
-                match client.workflow_run(path.to_str().unwrap_or(""), hash_params).await {
+                match client
+                    .workflow_run(path.to_str().unwrap_or(""), hash_params)
+                    .await
+                {
                     Ok(result) => {
                         if result["success"].as_bool().unwrap_or(false) {
                             println!("✅ Workflow completed!");
@@ -2050,7 +2090,10 @@ async fn run_shell_daemon(
             ShellCommand::Trace { path, params } => {
                 println!("🔍 Running with trace logging...");
                 let hash_params: HashMap<String, String> = params.into_iter().collect();
-                match client.workflow_run(path.to_str().unwrap_or(""), hash_params).await {
+                match client
+                    .workflow_run(path.to_str().unwrap_or(""), hash_params)
+                    .await
+                {
                     Ok(_) => {}
                     Err(e) => println!("❌ Trace error: {}", e),
                 }
@@ -2083,58 +2126,54 @@ async fn run_shell_daemon(
                 println!("  Debug: off (toggle with 'debug on')");
                 println!("  Mode: daemon-connected");
             }
-            ShellCommand::DebugClean => {
-                match client.debug_clean().await {
-                    Ok(data) => {
-                        let removed = data["files_removed"].as_u64().unwrap_or(0);
-                        let freed = data["bytes_freed"].as_u64().unwrap_or(0);
-                        let remaining = data["files_remaining"].as_u64().unwrap_or(0);
-                        let freed_str = if freed >= 1_048_576 {
-                            format!("{:.1} MB", freed as f64 / 1_048_576.0)
-                        } else if freed >= 1024 {
-                            format!("{:.1} KB", freed as f64 / 1024.0)
-                        } else {
-                            format!("{} bytes", freed)
-                        };
-                        println!("✓ Removed {} files ({}), {} remaining", removed, freed_str, remaining);
+            ShellCommand::DebugClean => match client.debug_clean().await {
+                Ok(data) => {
+                    let removed = data["files_removed"].as_u64().unwrap_or(0);
+                    let freed = data["bytes_freed"].as_u64().unwrap_or(0);
+                    let remaining = data["files_remaining"].as_u64().unwrap_or(0);
+                    let freed_str = if freed >= 1_048_576 {
+                        format!("{:.1} MB", freed as f64 / 1_048_576.0)
+                    } else if freed >= 1024 {
+                        format!("{:.1} KB", freed as f64 / 1024.0)
+                    } else {
+                        format!("{} bytes", freed)
+                    };
+                    println!(
+                        "✓ Removed {} files ({}), {} remaining",
+                        removed, freed_str, remaining
+                    );
+                }
+                Err(e) => println!("❌ Cleanup failed: {}", e),
+            },
+            ShellCommand::Tabs => match client.browser_tab_list().await {
+                Ok(tabs) => {
+                    println!("Open tabs ({}):", tabs.len());
+                    for tab in &tabs {
+                        let active = tab["active"].as_bool().unwrap_or(false);
+                        let marker = if active { " *" } else { "  " };
+                        let index = tab["index"].as_u64().unwrap_or(0);
+                        let url = tab["url"].as_str().unwrap_or("about:blank");
+                        println!("{} [{}] {}", marker, index, url);
                     }
-                    Err(e) => println!("❌ Cleanup failed: {}", e),
                 }
-            }
-            ShellCommand::Tabs => {
-                match client.browser_tab_list().await {
-                    Ok(tabs) => {
-                        println!("Open tabs ({}):", tabs.len());
-                        for tab in &tabs {
-                            let active = tab["active"].as_bool().unwrap_or(false);
-                            let marker = if active { " *" } else { "  " };
-                            let index = tab["index"].as_u64().unwrap_or(0);
-                            let url = tab["url"].as_str().unwrap_or("about:blank");
-                            println!("{} [{}] {}", marker, index, url);
-                        }
-                    }
-                    Err(e) => println!("❌ Failed to list tabs: {}", e),
-                }
-            }
-            ShellCommand::TabNew { url } => {
-                match client.browser_tab_new(url.as_deref()).await {
-                    Ok(index) => println!("✓ Opened new tab {}", index),
-                    Err(e) => println!("❌ Failed to open tab: {}", e),
-                }
-            }
-            ShellCommand::TabSwitch { index } => {
-                match client.browser_tab_switch(index).await {
-                    Ok(()) => println!("✓ Switched to tab {}", index),
-                    Err(e) => println!("❌ Failed to switch tab: {}", e),
-                }
-            }
+                Err(e) => println!("❌ Failed to list tabs: {}", e),
+            },
+            ShellCommand::TabNew { url } => match client.browser_tab_new(url.as_deref()).await {
+                Ok(index) => println!("✓ Opened new tab {}", index),
+                Err(e) => println!("❌ Failed to open tab: {}", e),
+            },
+            ShellCommand::TabSwitch { index } => match client.browser_tab_switch(index).await {
+                Ok(()) => println!("✓ Switched to tab {}", index),
+                Err(e) => println!("❌ Failed to switch tab: {}", e),
+            },
             ShellCommand::TabClose { index } => {
                 let tab_index = if let Some(idx) = index {
                     idx
                 } else {
                     // Close the current/active tab
                     match client.browser_tab_list().await {
-                        Ok(tabs) => tabs.iter()
+                        Ok(tabs) => tabs
+                            .iter()
                             .find(|t| t["active"].as_bool().unwrap_or(false))
                             .and_then(|t| t["index"].as_u64())
                             .unwrap_or(0) as usize,
@@ -2146,29 +2185,24 @@ async fn run_shell_daemon(
                     Err(e) => println!("❌ Failed to close tab: {}", e),
                 }
             }
-            ShellCommand::Pdf { path } => {
-                match client.browser_pdf().await {
-                    Ok(data) => {
-                        let path = path.unwrap_or_else(|| {
-                            PathBuf::from(format!(
-                                "page_{}.pdf",
-                                chrono::Utc::now().format("%Y%m%d_%H%M%S")
-                            ))
-                        });
-                        match std::fs::write(&path, &data) {
-                            Ok(_) => println!("✓ PDF saved to {}", path.display()),
-                            Err(e) => println!("❌ Failed to save PDF: {}", e),
-                        }
+            ShellCommand::Pdf { path } => match client.browser_pdf().await {
+                Ok(data) => {
+                    let path = path.unwrap_or_else(|| {
+                        PathBuf::from(format!(
+                            "page_{}.pdf",
+                            chrono::Utc::now().format("%Y%m%d_%H%M%S")
+                        ))
+                    });
+                    match std::fs::write(&path, &data) {
+                        Ok(_) => println!("✓ PDF saved to {}", path.display()),
+                        Err(e) => println!("❌ Failed to save PDF: {}", e),
                     }
-                    Err(e) => println!("❌ PDF export failed: {}", e),
                 }
-            }
+                Err(e) => println!("❌ PDF export failed: {}", e),
+            },
             ShellCommand::Unknown { command } => {
                 if !command.is_empty() {
-                    println!(
-                        "Unknown command: '{}'. Type 'help' for commands.",
-                        command
-                    );
+                    println!("Unknown command: '{}'. Type 'help' for commands.", command);
                 }
             }
         }
@@ -2223,7 +2257,14 @@ async fn run_workflow_with_adapter(
     params.extend(extra_params);
 
     let result = engine
-        .execute_with_pause_handler(&workflow, adapter, params, ResolvedDebugConfig::default(), &ShellPauseHandler, None)
+        .execute_with_pause_handler(
+            &workflow,
+            adapter,
+            params,
+            ResolvedDebugConfig::default(),
+            &ShellPauseHandler,
+            None,
+        )
         .await
         .map_err(|e| format!("Workflow execution failed: {}", e))?;
 
@@ -2289,17 +2330,15 @@ fn validate_workflows(path: &std::path::Path) -> Result<(), Box<dyn std::error::
             }
         }
 
-        for entry in glob::glob(&format!("{}/**/*.yml", path.display()))? {
-            if let Ok(file_path) = entry {
-                match validate_single_workflow(&file_path) {
-                    Ok(_) => {
-                        println!("  ✓ {}", file_path.display());
-                        valid += 1;
-                    }
-                    Err(e) => {
-                        println!("  ✗ {}: {}", file_path.display(), e);
-                        invalid += 1;
-                    }
+        for file_path in glob::glob(&format!("{}/**/*.yml", path.display()))?.flatten() {
+            match validate_single_workflow(&file_path) {
+                Ok(_) => {
+                    println!("  ✓ {}", file_path.display());
+                    valid += 1;
+                }
+                Err(e) => {
+                    println!("  ✗ {}: {}", file_path.display(), e);
+                    invalid += 1;
                 }
             }
         }

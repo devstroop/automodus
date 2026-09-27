@@ -191,9 +191,7 @@ impl std::error::Error for AppError {}
 impl From<AutomodusError> for AppError {
     fn from(err: AutomodusError) -> Self {
         match err {
-            AutomodusError::BrowserInit(msg) => {
-                AppError::new(ErrorCode::BrowserLaunchFailed, msg)
-            }
+            AutomodusError::BrowserInit(msg) => AppError::new(ErrorCode::BrowserLaunchFailed, msg),
             AutomodusError::BrowserNavigation(msg) => {
                 AppError::new(ErrorCode::NavigationFailed, msg)
             }
@@ -203,55 +201,32 @@ impl From<AutomodusError> for AppError {
             AutomodusError::WorkflowExecution(msg) => {
                 AppError::new(ErrorCode::ExecutionFailed, msg)
             }
-            AutomodusError::ActionFailed(msg) => {
-                AppError::new(ErrorCode::StepFailed, msg)
-            }
-            AutomodusError::Config(msg) => {
-                AppError::new(ErrorCode::InvalidRequest, msg)
-            }
-            AutomodusError::Io(err) => {
-                AppError::new(ErrorCode::InternalError, err.to_string())
-            }
-            AutomodusError::Serialization(msg) => {
-                AppError::new(ErrorCode::InvalidRequest, msg)
-            }
-            AutomodusError::Internal(msg) => {
-                AppError::new(ErrorCode::InternalError, msg)
-            }
-            AutomodusError::DaemonNotRunning => {
-                AppError::daemon_not_running()
-            }
-            AutomodusError::DaemonAlreadyRunning(pid) => {
-                AppError::daemon_already_running(pid)
-            }
+            AutomodusError::ActionFailed(msg) => AppError::new(ErrorCode::StepFailed, msg),
+            AutomodusError::Config(msg) => AppError::new(ErrorCode::InvalidRequest, msg),
+            AutomodusError::Io(err) => AppError::new(ErrorCode::InternalError, err.to_string()),
+            AutomodusError::Serialization(msg) => AppError::new(ErrorCode::InvalidRequest, msg),
+            AutomodusError::Internal(msg) => AppError::new(ErrorCode::InternalError, msg),
+            AutomodusError::DaemonNotRunning => AppError::daemon_not_running(),
+            AutomodusError::DaemonAlreadyRunning(pid) => AppError::daemon_already_running(pid),
             AutomodusError::DaemonConnectionFailed(msg) => {
                 AppError::new(ErrorCode::DaemonConnectionFailed, msg)
             }
-            AutomodusError::SessionNotFound(id) => {
-                AppError::session_not_found(&id)
-            }
-            AutomodusError::SessionLimitReached => {
-                AppError::new(ErrorCode::SessionLimitReached, "Maximum session limit reached")
-            }
-            AutomodusError::WorkflowNotFound(name) => {
-                AppError::workflow_not_found(&name)
-            }
-            AutomodusError::WorkflowInvalid(msg) => {
-                AppError::new(ErrorCode::WorkflowInvalid, msg)
-            }
-            AutomodusError::WorkflowTimeout(ms) => {
-                AppError::with_details(
-                    ErrorCode::WorkflowTimeout,
-                    format!("Workflow timed out after {}ms", ms),
-                    json!({ "timeout_ms": ms }),
-                )
-            }
+            AutomodusError::SessionNotFound(id) => AppError::session_not_found(&id),
+            AutomodusError::SessionLimitReached => AppError::new(
+                ErrorCode::SessionLimitReached,
+                "Maximum session limit reached",
+            ),
+            AutomodusError::WorkflowNotFound(name) => AppError::workflow_not_found(&name),
+            AutomodusError::WorkflowInvalid(msg) => AppError::new(ErrorCode::WorkflowInvalid, msg),
+            AutomodusError::WorkflowTimeout(ms) => AppError::with_details(
+                ErrorCode::WorkflowTimeout,
+                format!("Workflow timed out after {}ms", ms),
+                json!({ "timeout_ms": ms }),
+            ),
             AutomodusError::SelectorNotFound(selector) => {
                 AppError::selector_not_found(&selector, 0)
             }
-            AutomodusError::SelectorTimeout(msg) => {
-                AppError::new(ErrorCode::SelectorTimeout, msg)
-            }
+            AutomodusError::SelectorTimeout(msg) => AppError::new(ErrorCode::SelectorTimeout, msg),
         }
     }
 }

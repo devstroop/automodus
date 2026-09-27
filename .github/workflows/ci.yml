@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master, dev]
+    branches: [main, develop]
   pull_request:
-    branches: [master, dev]
+    branches: [main, develop]
 
 env:
   CARGO_TERM_COLOR: always
@@ -65,3 +65,50 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all -- --check
+
+  smoke:
+    name: "Examples (${{ matrix.engine }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, firefox, lightpanda]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "ci"
+
+      - name: Build
+        run: cargo build
+
+      - name: Install Lightpanda
+        if: matrix.engine == 'lightpanda'
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL -o "$HOME/.local/bin/lightpanda" \
+            https://github.com/lightpanda-io/browser/releases/download/nightly/lightpanda-x86_64-linux
+          chmod +x "$HOME/.local/bin/lightpanda"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Check browsers
+        run: |
+          if [ "${{ matrix.engine }}" = "chromium" ]; then
+            command -v google-chrome || command -v google-chrome-stable || command -v chromium || { echo "no Chromium-family browser on runner"; exit 1; }
+          fi
+          if [ "${{ matrix.engine }}" = "firefox" ]; then
+            command -v firefox || { echo "no firefox on runner"; exit 1; }
+          fi
+
+      - name: "Ensure Xvfb (examples set headless: false)"
+        run: command -v xvfb-run || (sudo apt-get update && sudo apt-get install -y xvfb)
+
+      - name: Run example smoke suite
+        run: scripts/smoke.sh "${{ matrix.engine }}"

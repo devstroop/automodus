@@ -159,9 +159,12 @@ impl ChromePageAdapter {
         })?;
 
         // Subscribe to console events
-        let mut event_stream = page.event_listener::<EventConsoleApiCalled>().await.map_err(|e| {
-            ActionError::BrowserError(format!("Failed to subscribe to console events: {}", e))
-        })?;
+        let mut event_stream = page
+            .event_listener::<EventConsoleApiCalled>()
+            .await
+            .map_err(|e| {
+                ActionError::BrowserError(format!("Failed to subscribe to console events: {}", e))
+            })?;
         drop(page); // release lock before spawning
 
         let logs = Arc::clone(&self.console_logs);
@@ -234,12 +237,18 @@ impl ChromePageAdapter {
         })?;
 
         // Subscribe to request and response events
-        let mut req_stream = page.event_listener::<EventRequestWillBeSent>().await.map_err(|e| {
-            ActionError::BrowserError(format!("Failed to subscribe to request events: {}", e))
-        })?;
-        let mut resp_stream = page.event_listener::<EventResponseReceived>().await.map_err(|e| {
-            ActionError::BrowserError(format!("Failed to subscribe to response events: {}", e))
-        })?;
+        let mut req_stream = page
+            .event_listener::<EventRequestWillBeSent>()
+            .await
+            .map_err(|e| {
+                ActionError::BrowserError(format!("Failed to subscribe to request events: {}", e))
+            })?;
+        let mut resp_stream = page
+            .event_listener::<EventResponseReceived>()
+            .await
+            .map_err(|e| {
+                ActionError::BrowserError(format!("Failed to subscribe to response events: {}", e))
+            })?;
         drop(page);
 
         // Spawn request tracker
@@ -313,9 +322,12 @@ impl ChromePageAdapter {
         }
 
         let page = self.page.lock().await;
-        let mut crash_stream = page.event_listener::<EventTargetCrashed>().await.map_err(|e| {
-            ActionError::BrowserError(format!("Failed to subscribe to crash events: {}", e))
-        })?;
+        let mut crash_stream = page
+            .event_listener::<EventTargetCrashed>()
+            .await
+            .map_err(|e| {
+                ActionError::BrowserError(format!("Failed to subscribe to crash events: {}", e))
+            })?;
         drop(page);
 
         let crashed = Arc::clone(&self.browser_crashed);
@@ -628,12 +640,12 @@ impl BrowserHandle for ChromePageAdapter {
                 .unwrap_or_default();
 
             // Check if URL matches condition (contains, starts with, etc.)
-            let matches = if condition.starts_with("contains:") {
-                current_url.contains(&condition[9..])
-            } else if condition.starts_with("starts:") {
-                current_url.starts_with(&condition[7..])
-            } else if condition.starts_with("ends:") {
-                current_url.ends_with(&condition[5..])
+            let matches = if let Some(rest) = condition.strip_prefix("contains:") {
+                current_url.contains(rest)
+            } else if let Some(rest) = condition.strip_prefix("starts:") {
+                current_url.starts_with(rest)
+            } else if let Some(rest) = condition.strip_prefix("ends:") {
+                current_url.ends_with(rest)
             } else {
                 current_url.contains(condition) || current_url == condition
             };
@@ -746,17 +758,20 @@ impl BrowserHandle for ChromePageAdapter {
 
     async fn new_tab(&self, url: Option<&str>) -> Result<usize, ActionError> {
         let browser_ref = self.browser.as_ref().ok_or_else(|| {
-            ActionError::Internal("Multi-tab requires browser reference. Use with_browser() constructor.".into())
+            ActionError::Internal(
+                "Multi-tab requires browser reference. Use with_browser() constructor.".into(),
+            )
         })?;
         let browser_guard = browser_ref.lock().await;
-        let browser = browser_guard.as_ref().ok_or_else(|| {
-            ActionError::Internal("Browser not running".into())
-        })?;
+        let browser = browser_guard
+            .as_ref()
+            .ok_or_else(|| ActionError::Internal("Browser not running".into()))?;
 
         let target_url = url.unwrap_or("about:blank");
-        let new_page = browser.new_page(target_url).await.map_err(|e| {
-            ActionError::BrowserError(format!("Failed to create new tab: {}", e))
-        })?;
+        let new_page = browser
+            .new_page(target_url)
+            .await
+            .map_err(|e| ActionError::BrowserError(format!("Failed to create new tab: {}", e)))?;
         drop(browser_guard);
 
         let new_index = {

@@ -79,7 +79,7 @@ pub fn cleanup_debug_dir(dir: &Path, policy: &CleanupPolicy) -> io::Result<Clean
     let now = SystemTime::now();
 
     // Sort newest first (most recent modification time first)
-    entries.sort_by(|a, b| b.modified.cmp(&a.modified));
+    entries.sort_by_key(|a| std::cmp::Reverse(a.modified));
 
     // Track which files to remove (by index)
     let mut to_remove = vec![false; entries.len()];
@@ -213,7 +213,11 @@ mod tests {
 
     #[test]
     fn test_cleanup_nonexistent_dir() {
-        let stats = cleanup_debug_dir(Path::new("/tmp/nonexistent_automodus_test"), &CleanupPolicy::default()).unwrap();
+        let stats = cleanup_debug_dir(
+            Path::new("/tmp/nonexistent_automodus_test"),
+            &CleanupPolicy::default(),
+        )
+        .unwrap();
         assert_eq!(stats.files_removed, 0);
     }
 

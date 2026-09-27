@@ -125,7 +125,10 @@ mod tests {
 
     #[test]
     fn test_urls_different_path() {
-        assert!(!urls_match("https://example.com/page1", "https://example.com/page2"));
+        assert!(!urls_match(
+            "https://example.com/page1",
+            "https://example.com/page2"
+        ));
     }
 
     #[test]
