@@ -14,15 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Step-level `on_success` / `on_failure` handlers**: `goto` (jump in the enclosing list), `emit` (rendered payload, error context on failure), `abort`, and `steps`; wired for every step type, failure-handler `goto` recovers the workflow
 - **Example smoke suite** (`scripts/smoke.sh`): validates the examples submodule and runs 11 standalone workflows per engine with timeouts, straggler reaping, and orphan checks; run in CI as a chromium/firefox/lightpanda matrix
 - **YAML Workflow Engine**: Define browser automation as declarative YAML workflows
-- **15+ Built-in Actions**: navigate, click, type, screenshot, wait, upload, and more
-- **Multi-trigger Support**: Manual, scheduled (cron), and HTTP webhook triggers
+- **28 Built-in Actions**: goto/click/type/select/hover, wait/extract/eval/screenshot, tab management, uploads, http.* requests, emit/log — plus engine pseudo-actions `loop`, `call`, `condition`
+- **Trigger declarations**: `on:` block accepts manual, API, cron schedule, event, and webhook triggers (parsed and validated; automatic dispatch is planned — run explicitly via CLI/API)
 - **CLI Interface**: Run workflows via `automodus run`, validate with `automodus validate`
-- **Server Mode**: REST API with `automodus serve` for headless automation
+- **Server Mode**: REST API with `automodus serve` / `automodus daemon start` for headless automation
 - **Shell Mode**: Interactive browser debugging with `automodus shell`
-- **Configurable Locators**: External CSS selectors in TOML for easy maintenance
-- **Variable Substitution**: Use `${env.VAR}`, `${locators.section.key}` in workflows
 - **Screenshot Capture**: Automatic screenshots with customizable paths
 - **Error Handling**: Rich error types with retry guidance
+- **`automodus validate` exits 1** when any workflow file is invalid (usable as a CI gate)
+- **Temp-profile cleanup**: `TempProfile` guard removes `/tmp/automodus-workflow-<pid>` profile dirs on exit
 
 ### Changed
 - **CI workflow** now triggers on `main`/`develop` (the `master`/`dev` branches it watched no longer existed, so CI never ran) and adds the engine smoke matrix
@@ -39,6 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Firefox process leaked on every run**: the spawned child handle was dropped after launch so cleanup relied on an async close that never runs on CLI exit; the child now lives in the shared kill-on-drop guard (last adapter drop or `close_browser` kills and waits), with `wait()` on the launch error path to avoid zombies
 - **Step-level `emit.data` was sent raw** instead of being template-rendered
 - rustfmt and clippy violations across the crate (CI fmt/clippy gates pass on a clean checkout)
+- **Stale `../examples/` sibling paths** in `--help`, crate docs, and tests — examples now live in the in-repo `examples/` git submodule
+- **Docs revised against code** (README, CONTRIBUTING, ARCHITECTURE, DESIGN, SHELL, DEBUG, ISSUES): removed nonexistent routes/commands/config keys, documented the three-engine matrix, capability gating, exit codes, and full env-var/action reference; shipped implementation plans moved to `docs/archive/`
 
 ## [0.1.0] - Initial Release
 
