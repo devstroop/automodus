@@ -65,10 +65,7 @@ impl Default for DaemonConfig {
 #[derive(Debug, Clone)]
 pub enum DaemonEvent {
     /// Workflow execution started
-    ExecutionStarted {
-        id: String,
-        workflow: String,
-    },
+    ExecutionStarted { id: String, workflow: String },
     /// Workflow step executed
     ExecutionStep {
         id: String,
@@ -82,20 +79,11 @@ pub enum DaemonEvent {
         duration_ms: i64,
     },
     /// Workflow execution failed
-    ExecutionError {
-        id: String,
-        error: String,
-    },
+    ExecutionError { id: String, error: String },
     /// Execution paused (debug mode)
-    ExecutionPaused {
-        id: String,
-        step: usize,
-    },
+    ExecutionPaused { id: String, step: usize },
     /// Console log captured
-    ConsoleLog {
-        level: String,
-        message: String,
-    },
+    ConsoleLog { level: String, message: String },
     /// Network request captured
     NetworkRequest {
         method: String,
@@ -103,14 +91,9 @@ pub enum DaemonEvent {
         status: Option<u32>,
     },
     /// Session created
-    SessionCreated {
-        id: String,
-        name: Option<String>,
-    },
+    SessionCreated { id: String, name: Option<String> },
     /// Session closed
-    SessionClosed {
-        id: String,
-    },
+    SessionClosed { id: String },
 }
 
 /// Daemon process - owns browser pool and workflows
@@ -174,9 +157,8 @@ impl Daemon {
         }
 
         // Start Unix socket listener
-        let listener = UnixListener::bind(&self.config.socket_path).map_err(|e| {
-            DaemonError::StartupFailed(format!("Failed to bind socket: {}", e))
-        })?;
+        let listener = UnixListener::bind(&self.config.socket_path)
+            .map_err(|e| DaemonError::StartupFailed(format!("Failed to bind socket: {}", e)))?;
         self.socket_listener = Some(listener);
 
         info!(
@@ -190,10 +172,7 @@ impl Daemon {
 
     /// Run the daemon main loop
     pub async fn run(&mut self) -> Result<(), DaemonError> {
-        let listener = self
-            .socket_listener
-            .take()
-            .ok_or_else(|| DaemonError::NotStarted)?;
+        let listener = self.socket_listener.take().ok_or(DaemonError::NotStarted)?;
 
         let core = self.core.clone();
         let mut shutdown_rx = self.shutdown_tx.subscribe();
@@ -325,9 +304,8 @@ impl Daemon {
     /// Write PID file
     fn write_pid_file(&self) -> Result<(), DaemonError> {
         let pid = std::process::id();
-        std::fs::write(&self.config.pid_file, pid.to_string()).map_err(|e| {
-            DaemonError::StartupFailed(format!("Failed to write PID file: {}", e))
-        })?;
+        std::fs::write(&self.config.pid_file, pid.to_string())
+            .map_err(|e| DaemonError::StartupFailed(format!("Failed to write PID file: {}", e)))?;
         Ok(())
     }
 
@@ -509,18 +487,16 @@ async fn dispatch_request(core: &Arc<AppCore>, request: SocketRequest) -> Socket
         }
 
         // --- Browser Commands ---
-        SocketRequest::BrowserGoto { url } => {
-            match core.get_page().await {
-                Ok(adapter) => match adapter.goto(&url).await {
-                    Ok(()) => {
-                        let current = adapter.current_url().await.unwrap_or_default();
-                        SocketResponse::ok_data(serde_json::json!({"url": current}))
-                    }
-                    Err(e) => SocketResponse::err(e.to_string()),
-                },
-                Err(e) => SocketResponse::err(format!("Browser error: {}", e)),
-            }
-        }
+        SocketRequest::BrowserGoto { url } => match core.get_page().await {
+            Ok(adapter) => match adapter.goto(&url).await {
+                Ok(()) => {
+                    let current = adapter.current_url().await.unwrap_or_default();
+                    SocketResponse::ok_data(serde_json::json!({"url": current}))
+                }
+                Err(e) => SocketResponse::err(e.to_string()),
+            },
+            Err(e) => SocketResponse::err(format!("Browser error: {}", e)),
+        },
 
         SocketRequest::BrowserClick { selector } => match core.get_page().await {
             Ok(adapter) => match adapter.click(&selector).await {
@@ -550,7 +526,9 @@ async fn dispatch_request(core: &Arc<AppCore>, request: SocketRequest) -> Socket
             Ok(adapter) => match adapter.screenshot(full_page).await {
                 Ok(bytes) => {
                     let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                    SocketResponse::ok_data(serde_json::json!({"png_base64": b64, "size": bytes.len()}))
+                    SocketResponse::ok_data(
+                        serde_json::json!({"png_base64": b64, "size": bytes.len()}),
+                    )
                 }
                 Err(e) => SocketResponse::err(e.to_string()),
             },
@@ -659,7 +637,9 @@ async fn dispatch_request(core: &Arc<AppCore>, request: SocketRequest) -> Socket
                         let json_str = val.as_str().unwrap_or("{}");
                         match serde_json::from_str::<serde_json::Value>(json_str) {
                             Ok(data) => SocketResponse::ok_data(data),
-                            Err(_) => SocketResponse::ok_data(serde_json::json!({"count": 0, "matches": []})),
+                            Err(_) => SocketResponse::ok_data(
+                                serde_json::json!({"count": 0, "matches": []}),
+                            ),
                         }
                     }
                     Err(e) => SocketResponse::err(e.to_string()),
@@ -711,8 +691,11 @@ async fn dispatch_request(core: &Arc<AppCore>, request: SocketRequest) -> Socket
         SocketRequest::BrowserPdf => match core.get_page().await {
             Ok(adapter) => match adapter.pdf().await {
                 Ok(bytes) => {
-                    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
-                    SocketResponse::ok_data(serde_json::json!({"pdf_base64": b64, "size": bytes.len()}))
+                    let b64 =
+                        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+                    SocketResponse::ok_data(
+                        serde_json::json!({"pdf_base64": b64, "size": bytes.len()}),
+                    )
                 }
                 Err(e) => SocketResponse::err(e.to_string()),
             },
@@ -887,7 +870,9 @@ impl DaemonClient {
     /// Ping the daemon
     pub async fn ping(&mut self) -> Result<(), DaemonError> {
         let resp = self.request(SocketRequest::Ping).await?;
-        Self::unwrap_response(resp).map(|_| ()).map_err(DaemonError::CommandFailed)
+        Self::unwrap_response(resp)
+            .map(|_| ())
+            .map_err(DaemonError::CommandFailed)
     }
 
     /// Get daemon status
@@ -913,10 +898,7 @@ impl DaemonClient {
     pub async fn session_list(&mut self) -> Result<Vec<serde_json::Value>, DaemonError> {
         let resp = self.request(SocketRequest::SessionList).await?;
         let data = Self::unwrap_response(resp).map_err(DaemonError::CommandFailed)?;
-        Ok(data["sessions"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default())
+        Ok(data["sessions"].as_array().cloned().unwrap_or_default())
     }
 
     pub async fn session_get(&mut self, id: &str) -> Result<serde_json::Value, DaemonError> {
@@ -926,7 +908,10 @@ impl DaemonClient {
         Self::unwrap_response(resp).map_err(DaemonError::CommandFailed)
     }
 
-    pub async fn session_find(&mut self, id_or_name: &str) -> Result<serde_json::Value, DaemonError> {
+    pub async fn session_find(
+        &mut self,
+        id_or_name: &str,
+    ) -> Result<serde_json::Value, DaemonError> {
         let resp = self
             .request(SocketRequest::SessionFind {
                 id_or_name: id_or_name.to_string(),
@@ -939,7 +924,9 @@ impl DaemonClient {
         let resp = self
             .request(SocketRequest::SessionClose { id: id.to_string() })
             .await?;
-        Self::unwrap_response(resp).map(|_| ()).map_err(DaemonError::CommandFailed)
+        Self::unwrap_response(resp)
+            .map(|_| ())
+            .map_err(DaemonError::CommandFailed)
     }
 
     pub async fn session_set_keep_alive(
@@ -953,7 +940,9 @@ impl DaemonClient {
                 keep_alive,
             })
             .await?;
-        Self::unwrap_response(resp).map(|_| ()).map_err(DaemonError::CommandFailed)
+        Self::unwrap_response(resp)
+            .map(|_| ())
+            .map_err(DaemonError::CommandFailed)
     }
 
     // --- Browser ---
@@ -974,21 +963,21 @@ impl DaemonClient {
                 selector: selector.to_string(),
             })
             .await?;
-        Self::unwrap_response(resp).map(|_| ()).map_err(DaemonError::CommandFailed)
+        Self::unwrap_response(resp)
+            .map(|_| ())
+            .map_err(DaemonError::CommandFailed)
     }
 
-    pub async fn browser_type(
-        &mut self,
-        selector: &str,
-        text: &str,
-    ) -> Result<(), DaemonError> {
+    pub async fn browser_type(&mut self, selector: &str, text: &str) -> Result<(), DaemonError> {
         let resp = self
             .request(SocketRequest::BrowserType {
                 selector: selector.to_string(),
                 text: text.to_string(),
             })
             .await?;
-        Self::unwrap_response(resp).map(|_| ()).map_err(DaemonError::CommandFailed)
+        Self::unwrap_response(resp)
+            .map(|_| ())
+            .map_err(DaemonError::CommandFailed)
     }
 
     pub async fn browser_wait(
@@ -1002,7 +991,9 @@ impl DaemonClient {
                 timeout,
             })
             .await?;
-        Self::unwrap_response(resp).map(|_| ()).map_err(DaemonError::CommandFailed)
+        Self::unwrap_response(resp)
+            .map(|_| ())
+            .map_err(DaemonError::CommandFailed)
     }
 
     pub async fn browser_screenshot(&mut self) -> Result<Vec<u8>, DaemonError> {
@@ -1017,10 +1008,7 @@ impl DaemonClient {
             .map_err(|e| DaemonError::CommandFailed(format!("Invalid screenshot data: {}", e)))
     }
 
-    pub async fn browser_eval(
-        &mut self,
-        script: &str,
-    ) -> Result<serde_json::Value, DaemonError> {
+    pub async fn browser_eval(&mut self, script: &str) -> Result<serde_json::Value, DaemonError> {
         let resp = self
             .request(SocketRequest::BrowserEval {
                 script: script.to_string(),
@@ -1048,17 +1036,23 @@ impl DaemonClient {
 
     pub async fn browser_back(&mut self) -> Result<(), DaemonError> {
         let resp = self.request(SocketRequest::BrowserBack).await?;
-        Self::unwrap_response(resp).map(|_| ()).map_err(DaemonError::CommandFailed)
+        Self::unwrap_response(resp)
+            .map(|_| ())
+            .map_err(DaemonError::CommandFailed)
     }
 
     pub async fn browser_forward(&mut self) -> Result<(), DaemonError> {
         let resp = self.request(SocketRequest::BrowserForward).await?;
-        Self::unwrap_response(resp).map(|_| ()).map_err(DaemonError::CommandFailed)
+        Self::unwrap_response(resp)
+            .map(|_| ())
+            .map_err(DaemonError::CommandFailed)
     }
 
     pub async fn browser_reload(&mut self) -> Result<(), DaemonError> {
         let resp = self.request(SocketRequest::BrowserReload).await?;
-        Self::unwrap_response(resp).map(|_| ()).map_err(DaemonError::CommandFailed)
+        Self::unwrap_response(resp)
+            .map(|_| ())
+            .map_err(DaemonError::CommandFailed)
     }
 
     pub async fn browser_highlight(&mut self, selector: &str) -> Result<(), DaemonError> {
@@ -1067,7 +1061,9 @@ impl DaemonClient {
                 selector: selector.to_string(),
             })
             .await?;
-        Self::unwrap_response(resp).map(|_| ()).map_err(DaemonError::CommandFailed)
+        Self::unwrap_response(resp)
+            .map(|_| ())
+            .map_err(DaemonError::CommandFailed)
     }
 
     pub async fn browser_find(&mut self, selector: &str) -> Result<serde_json::Value, DaemonError> {
@@ -1101,14 +1097,18 @@ impl DaemonClient {
         let resp = self
             .request(SocketRequest::BrowserTabSwitch { index })
             .await?;
-        Self::unwrap_response(resp).map(|_| ()).map_err(DaemonError::CommandFailed)
+        Self::unwrap_response(resp)
+            .map(|_| ())
+            .map_err(DaemonError::CommandFailed)
     }
 
     pub async fn browser_tab_close(&mut self, index: usize) -> Result<(), DaemonError> {
         let resp = self
             .request(SocketRequest::BrowserTabClose { index })
             .await?;
-        Self::unwrap_response(resp).map(|_| ()).map_err(DaemonError::CommandFailed)
+        Self::unwrap_response(resp)
+            .map(|_| ())
+            .map_err(DaemonError::CommandFailed)
     }
 
     // --- PDF ---

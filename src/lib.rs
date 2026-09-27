@@ -115,7 +115,10 @@ pub use actions::{
 };
 
 // Engine types
-pub use core::{AppCore, CoreEvent, ExecutionContext, Session, SessionError, SessionInfo, WorkflowEngine, WorkflowResult};
+pub use core::{
+    AppCore, CoreEvent, ExecutionContext, Session, SessionError, SessionInfo, WorkflowEngine,
+    WorkflowResult,
+};
 
 // Daemon types
 pub use daemon::{Daemon, DaemonClient, DaemonConfig, DaemonError, DaemonEvent, DaemonStatus};

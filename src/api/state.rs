@@ -9,13 +9,13 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::config::AppConfig;
-use crate::core::{AppCore, CoreEvent, Session, SessionInfo as CoreSessionInfo, WorkflowEngine};
-use crate::core::engine::PauseResponse;
-use crate::modules::SessionAdapter;
-use crate::workflow::{Workflow, WorkflowParser};
 use crate::api::schemas::ExecutionStatus;
 use crate::api::ws::ServerEvent;
+use crate::config::AppConfig;
+use crate::core::engine::PauseResponse;
+use crate::core::{AppCore, CoreEvent, Session, SessionInfo as CoreSessionInfo, WorkflowEngine};
+use crate::modules::SessionAdapter;
+use crate::workflow::{Workflow, WorkflowParser};
 
 /// Maximum executions to keep in history
 const MAX_EXECUTION_HISTORY: usize = 100;
@@ -37,7 +37,8 @@ pub struct ServerState {
     /// Cancellation tokens for running executions (exec_id -> token)
     cancel_tokens: RwLock<HashMap<String, CancellationToken>>,
     /// Pending pause signals waiting for WS/API response (exec_id -> sender)
-    pending_pauses: tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<PauseResponse>>>,
+    pending_pauses:
+        tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<PauseResponse>>>,
 }
 
 /// Workflow execution record
@@ -80,8 +81,8 @@ impl ServerState {
     /// Create a new server state with a shared AppCore
     pub fn with_core(config: AppConfig, core: Arc<AppCore>) -> Self {
         let (event_tx, _) = tokio::sync::broadcast::channel(256);
-        let workflows_dir = std::env::var("AUTOMODUS_WORKFLOWS")
-            .unwrap_or_else(|_| "workflows".to_string());
+        let workflows_dir =
+            std::env::var("AUTOMODUS_WORKFLOWS").unwrap_or_else(|_| "workflows".to_string());
         let loader = Arc::new(crate::workflow::WorkflowLoader::new(&workflows_dir));
 
         // Bridge CoreEvent → ServerEvent so WebSocket clients receive daemon events
@@ -134,21 +135,19 @@ impl ServerState {
         workflows.clear();
 
         let pattern = format!("{}/**/*.yaml", dir);
-        for entry in glob::glob(&pattern)? {
-            if let Ok(path) = entry {
-                match std::fs::read_to_string(&path) {
-                    Ok(content) => match WorkflowParser::parse(&content) {
-                        Ok(workflow) => {
-                            info!("Loaded workflow: {} from {}", workflow.name, path.display());
-                            workflows.insert(workflow.name.clone(), workflow);
-                        }
-                        Err(e) => {
-                            warn!("Failed to parse {}: {}", path.display(), e);
-                        }
-                    },
-                    Err(e) => {
-                        warn!("Failed to read {}: {}", path.display(), e);
+        for path in glob::glob(&pattern)?.flatten() {
+            match std::fs::read_to_string(&path) {
+                Ok(content) => match WorkflowParser::parse(&content) {
+                    Ok(workflow) => {
+                        info!("Loaded workflow: {} from {}", workflow.name, path.display());
+                        workflows.insert(workflow.name.clone(), workflow);
                     }
+                    Err(e) => {
+                        warn!("Failed to parse {}: {}", path.display(), e);
+                    }
+                },
+                Err(e) => {
+                    warn!("Failed to read {}: {}", path.display(), e);
                 }
             }
         }
@@ -174,7 +173,11 @@ impl ServerState {
         name: Option<String>,
         keep_alive: bool,
     ) -> Result<String, String> {
-        let id = self.core.create_session(name).await.map_err(|e| e.to_string())?;
+        let id = self
+            .core
+            .create_session(name)
+            .await
+            .map_err(|e| e.to_string())?;
 
         // AppCore defaults keep_alive to true; set to false if requested
         if !keep_alive {
@@ -199,7 +202,10 @@ impl ServerState {
 
     /// Close a session by ID
     pub async fn close_session(&self, id: &str) -> Result<(), String> {
-        self.core.close_session(id).await.map_err(|e| e.to_string())?;
+        self.core
+            .close_session(id)
+            .await
+            .map_err(|e| e.to_string())?;
 
         // Broadcast to WebSocket clients
         self.broadcast_event(ServerEvent::SessionClosed { id: id.to_string() });
@@ -250,7 +256,10 @@ impl ServerState {
                 .collect();
             completed.sort_by_key(|(_, t)| *t);
 
-            for (old_id, _) in completed.iter().take(executions.len() - MAX_EXECUTION_HISTORY) {
+            for (old_id, _) in completed
+                .iter()
+                .take(executions.len() - MAX_EXECUTION_HISTORY)
+            {
                 executions.remove(old_id);
             }
         }
@@ -262,7 +271,10 @@ impl ServerState {
         });
 
         // Store cancellation token
-        self.cancel_tokens.write().await.insert(id.clone(), token.clone());
+        self.cancel_tokens
+            .write()
+            .await
+            .insert(id.clone(), token.clone());
 
         info!("Started execution: {} for workflow: {}", id, workflow);
         (id, token)
@@ -272,7 +284,7 @@ impl ServerState {
     pub async fn update_execution_progress(&self, id: &str, steps_executed: usize, action: &str) {
         if let Some(execution) = self.executions.write().await.get_mut(id) {
             execution.steps_executed = steps_executed;
-            
+
             // Broadcast step event
             self.broadcast_event(ServerEvent::ExecutionStep {
                 id: id.to_string(),
@@ -333,7 +345,7 @@ impl ServerState {
     pub async fn list_executions(&self, limit: Option<usize>) -> Vec<ServerExecution> {
         let executions = self.executions.read().await;
         let mut list: Vec<_> = executions.values().cloned().collect();
-        list.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        list.sort_by_key(|a| std::cmp::Reverse(a.started_at));
         if let Some(limit) = limit {
             list.truncate(limit);
         }
@@ -372,7 +384,8 @@ impl ServerState {
     /// Resolve a pending pause by sending a response. Returns Err if no pause is pending.
     pub async fn resolve_pause(&self, id: &str, response: PauseResponse) -> Result<(), String> {
         if let Some(tx) = self.pending_pauses.lock().await.remove(id) {
-            tx.send(response).map_err(|_| "Pause receiver dropped".to_string())
+            tx.send(response)
+                .map_err(|_| "Pause receiver dropped".to_string())
         } else {
             Err(format!("No pending pause for execution '{}'", id))
         }
@@ -453,9 +466,7 @@ fn convert_core_event(event: CoreEvent) -> Option<ServerEvent> {
         CoreEvent::ExecutionComplete { id, success } => {
             Some(ServerEvent::ExecutionComplete { id, success })
         }
-        CoreEvent::ExecutionError { id, error } => {
-            Some(ServerEvent::ExecutionError { id, error })
-        }
+        CoreEvent::ExecutionError { id, error } => Some(ServerEvent::ExecutionError { id, error }),
         // WorkflowLoaded, WorkflowUnloaded, DebugConfigChanged have no WS equivalent
         _ => None,
     }

@@ -18,8 +18,8 @@ pub mod launch;
 pub mod selector;
 mod session;
 
-pub use adapter::ChromePageAdapter;
 pub use crate::actions::{ConsoleEntry, NetworkEntry};
+pub use adapter::ChromePageAdapter;
 pub use driver::{BrowserService, BrowserServiceConfig};
 pub use firefox::FirefoxPageAdapter;
 pub use launch::{

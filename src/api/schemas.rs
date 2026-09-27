@@ -316,10 +316,11 @@ pub struct DebugCleanupResponse {
 // ============================================================================
 
 /// Execution status
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum ExecutionStatus {
     /// Execution is running
+    #[default]
     Running,
     /// Execution completed successfully
     Completed,
@@ -327,12 +328,6 @@ pub enum ExecutionStatus {
     Failed,
     /// Execution was cancelled
     Cancelled,
-}
-
-impl Default for ExecutionStatus {
-    fn default() -> Self {
-        Self::Running
-    }
 }
 
 /// Execution information

@@ -134,8 +134,8 @@ impl TemplateEngine {
         // Handle nested references: params.foo.bar
         let parts: Vec<&str> = key.splitn(2, '.').collect();
 
-        match parts.first()? {
-            &"params" => {
+        match parts.first().copied()? {
+            "params" => {
                 if parts.len() > 1 {
                     resolve_path(&ctx.params, parts[1])
                 } else {
@@ -147,7 +147,7 @@ impl TemplateEngine {
                     ))
                 }
             }
-            &"vars" => {
+            "vars" => {
                 if parts.len() > 1 {
                     resolve_path(&ctx.vars, parts[1])
                 } else {
@@ -159,7 +159,7 @@ impl TemplateEngine {
                     ))
                 }
             }
-            &"store" => {
+            "store" => {
                 if parts.len() > 1 {
                     resolve_path(&ctx.store, parts[1])
                 } else {
@@ -171,7 +171,7 @@ impl TemplateEngine {
                     ))
                 }
             }
-            &"steps" => {
+            "steps" => {
                 if parts.len() > 1 {
                     let step_parts: Vec<&str> = parts[1].splitn(2, '.').collect();
                     let step_id = step_parts[0];
@@ -193,7 +193,7 @@ impl TemplateEngine {
                     ))
                 }
             }
-            &"env" => {
+            "env" => {
                 if parts.len() > 1 {
                     ctx.env.get(parts[1]).map(|s| Value::String(s.clone()))
                 } else {
@@ -205,7 +205,7 @@ impl TemplateEngine {
                     ))
                 }
             }
-            &"instance" => match parts.get(1) {
+            "instance" => match parts.get(1) {
                 Some(&"id") => Some(Value::String(ctx.instance_id.clone())),
                 _ => Some(Value::Object(
                     [("id".to_string(), Value::String(ctx.instance_id.clone()))]
@@ -213,8 +213,8 @@ impl TemplateEngine {
                         .collect(),
                 )),
             },
-            &"timestamp" => Some(Value::String(chrono::Utc::now().to_rfc3339())),
-            &"workflow" => match parts.get(1) {
+            "timestamp" => Some(Value::String(chrono::Utc::now().to_rfc3339())),
+            "workflow" => match parts.get(1) {
                 Some(&"name") => Some(Value::String(ctx.workflow_name.clone())),
                 Some(&"id") => Some(Value::String(ctx.workflow_id.clone())),
                 _ => Some(Value::Object(
@@ -325,8 +325,10 @@ mod tests {
     #[test]
     fn test_json_filter_escapes_quotes() {
         let mut ctx = ExecutionContext::new("test", "instance-1");
-        ctx.params
-            .insert("message".into(), Value::String("It's a \"test\"\nline".into()));
+        ctx.params.insert(
+            "message".into(),
+            Value::String("It's a \"test\"\nline".into()),
+        );
 
         let result = TemplateEngine::render("var m = {{params.message | json}};", &ctx);
         assert_eq!(result, r#"var m = "It's a \"test\"\nline";"#);
@@ -390,7 +392,8 @@ mod tests {
     #[test]
     fn test_render_yaml_embedded_json_filter_stays_string() {
         let mut ctx = ExecutionContext::new("test", "instance-1");
-        ctx.params.insert("name".into(), Value::String("Ada".into()));
+        ctx.params
+            .insert("name".into(), Value::String("Ada".into()));
 
         let yaml = serde_yaml::Value::String("hello {{params.name | json}}".into());
         let rendered = TemplateEngine::render_yaml(&yaml, &ctx);
@@ -400,7 +403,8 @@ mod tests {
     #[test]
     fn test_render_yaml_exact_string_json_is_bare() {
         let mut ctx = ExecutionContext::new("test", "instance-1");
-        ctx.params.insert("name".into(), Value::String("Ada".into()));
+        ctx.params
+            .insert("name".into(), Value::String("Ada".into()));
 
         let yaml = serde_yaml::Value::String("{{params.name | json}}".into());
         let rendered = TemplateEngine::render_yaml(&yaml, &ctx);
@@ -422,7 +426,8 @@ mod tests {
     #[test]
     fn test_render_yaml_hyphenated_key_preserves_type() {
         let mut ctx = ExecutionContext::new("test", "instance-1");
-        ctx.params.insert("user-id".into(), Value::Number(42.into()));
+        ctx.params
+            .insert("user-id".into(), Value::Number(42.into()));
 
         let yaml = serde_yaml::Value::String("{{params.user-id | json}}".into());
         let rendered = TemplateEngine::render_yaml(&yaml, &ctx);
@@ -435,8 +440,7 @@ mod tests {
         ctx.params.insert("a".into(), Value::String("X".into()));
         ctx.params.insert("b".into(), Value::Number(2.into()));
 
-        let yaml =
-            serde_yaml::Value::String("{{params.a}} and {{params.b | json}}".into());
+        let yaml = serde_yaml::Value::String("{{params.a}} and {{params.b | json}}".into());
         let rendered = TemplateEngine::render_yaml(&yaml, &ctx);
         // Must interpolate both; must NOT become Null via bogus single-template match
         assert_eq!(rendered.as_str(), Some("X and 2"));
@@ -447,8 +451,7 @@ mod tests {
         let ctx = ExecutionContext::new("test", "instance-1");
 
         // Junk key (contains `}}`) — not a valid path; should not become YAML null
-        let yaml =
-            serde_yaml::Value::String("{{params.a}} and {{params.b | json}}".into());
+        let yaml = serde_yaml::Value::String("{{params.a}} and {{params.b | json}}".into());
         let rendered = TemplateEngine::render_yaml(&yaml, &ctx);
         assert!(!rendered.is_null());
 
@@ -504,7 +507,8 @@ mod tests {
     #[test]
     fn test_length_with_trailing_segment_is_none() {
         let mut ctx = ExecutionContext::new("test", "instance-1");
-        ctx.store.insert("items".into(), serde_json::json!([1, 2, 3]));
+        ctx.store
+            .insert("items".into(), serde_json::json!([1, 2, 3]));
         ctx.store.insert("s".into(), serde_json::json!("hi"));
 
         // length only valid as final segment — trailing .foo must not yield a number.

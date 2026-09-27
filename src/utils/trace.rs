@@ -27,7 +27,7 @@ impl TraceLogger {
 
         // Create trace file
         let trace_file = output_dir.join("trace.jsonl");
-        
+
         if let Err(e) = std::fs::create_dir_all(output_dir) {
             warn!("Failed to create trace output directory: {}", e);
             return Self {
@@ -83,7 +83,7 @@ impl TraceLogger {
             });
 
             if let Ok(mut w) = writer.lock() {
-                if let Err(e) = writeln!(w, "{}", entry.to_string()) {
+                if let Err(e) = writeln!(w, "{}", entry) {
                     warn!("Failed to write trace log: {}", e);
                 }
                 let _ = w.flush();
@@ -121,7 +121,13 @@ impl TraceLogger {
     }
 
     /// Log JavaScript injection
-    pub fn log_js(&self, workflow: &str, step: usize, script: &str, result: Option<&serde_json::Value>) {
+    pub fn log_js(
+        &self,
+        workflow: &str,
+        step: usize,
+        script: &str,
+        result: Option<&serde_json::Value>,
+    ) {
         self.log(TraceEvent {
             event_type: "js.executed".to_string(),
             workflow: workflow.to_string(),
@@ -134,7 +140,13 @@ impl TraceLogger {
     }
 
     /// Log action execution
-    pub fn log_action(&self, workflow: &str, step: usize, action: &str, params: &serde_json::Value) {
+    pub fn log_action(
+        &self,
+        workflow: &str,
+        step: usize,
+        action: &str,
+        params: &serde_json::Value,
+    ) {
         self.log(TraceEvent {
             event_type: "action.execute".to_string(),
             workflow: workflow.to_string(),

@@ -89,8 +89,6 @@ impl From<reqwest::Error> for HttpError {
             HttpError::Timeout(30000)
         } else if e.is_connect() {
             HttpError::Connection(e.to_string())
-        } else if e.is_request() {
-            HttpError::Request(e.to_string())
         } else {
             HttpError::Request(e.to_string())
         }
@@ -256,7 +254,7 @@ impl HttpClient {
             .map_err(|e| HttpError::Request(e.to_string()))?;
 
         // Try to parse as JSON, fall back to string
-        let body = serde_json::from_str(&body_text).unwrap_or_else(|_| Value::String(body_text));
+        let body = serde_json::from_str(&body_text).unwrap_or(Value::String(body_text));
 
         Ok(HttpResponse {
             status,

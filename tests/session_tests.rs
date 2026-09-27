@@ -36,10 +36,13 @@ mod lifecycle_tests {
         // Timestamps should be RFC3339 format
         let now = chrono::Utc::now();
         let formatted = now.to_rfc3339();
-        
+
         // RFC3339 format: "2024-01-01T12:00:00.000000000+00:00"
         assert!(formatted.contains('T'), "Should have T separator");
-        assert!(formatted.contains('+') || formatted.contains('Z'), "Should have timezone");
+        assert!(
+            formatted.contains('+') || formatted.contains('Z'),
+            "Should have timezone"
+        );
         println!("Sample timestamp: {}", formatted);
     }
 
@@ -64,9 +67,12 @@ mod timeout_tests {
         // Idle timeout should be configurable, default 30 minutes
         let default_timeout_minutes = 30;
         let timeout_duration = Duration::from_secs(default_timeout_minutes * 60);
-        
+
         assert_eq!(timeout_duration.as_secs(), 1800);
-        println!("Default idle timeout: {} seconds", timeout_duration.as_secs());
+        println!(
+            "Default idle timeout: {} seconds",
+            timeout_duration.as_secs()
+        );
     }
 
     #[test]
@@ -74,7 +80,7 @@ mod timeout_tests {
         // Sessions with keep_alive=true should not timeout
         let keep_alive = true;
         let should_timeout = !keep_alive;
-        
+
         assert!(!should_timeout, "keep_alive sessions should not timeout");
     }
 
@@ -84,14 +90,17 @@ mod timeout_tests {
         let created_at = chrono::Utc::now();
         std::thread::sleep(std::time::Duration::from_millis(10));
         let last_activity = chrono::Utc::now();
-        
-        assert!(last_activity > created_at, "Activity should update timestamp");
+
+        assert!(
+            last_activity > created_at,
+            "Activity should update timestamp"
+        );
     }
 
     #[tokio::test]
     async fn test_cleanup_idle_sessions() {
-        use automodus::daemon::DaemonConfig;
         use automodus::core::AppCore;
+        use automodus::daemon::DaemonConfig;
 
         let config = DaemonConfig::default();
         let mut core = AppCore::new(&config);
@@ -100,21 +109,30 @@ mod timeout_tests {
         let core = std::sync::Arc::new(core);
 
         // Create a session (default: keep_alive=true, so it won't be cleaned)
-        let id = core.create_session(Some("keep-alive-session".into())).await.unwrap();
-        
+        let id = core
+            .create_session(Some("keep-alive-session".into()))
+            .await
+            .unwrap();
+
         // Wait past timeout
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        
+
         // cleanup should NOT remove keep_alive sessions
         let removed = core.cleanup_idle_sessions().await;
-        assert!(removed.is_empty(), "keep_alive sessions should not be cleaned up");
-        assert!(core.get_session(&id).await.is_some(), "Session should still exist");
+        assert!(
+            removed.is_empty(),
+            "keep_alive sessions should not be cleaned up"
+        );
+        assert!(
+            core.get_session(&id).await.is_some(),
+            "Session should still exist"
+        );
     }
 
     #[tokio::test]
     async fn test_cleanup_removes_non_keepalive() {
-        use automodus::daemon::DaemonConfig;
         use automodus::core::AppCore;
+        use automodus::daemon::DaemonConfig;
 
         let config = DaemonConfig::default();
         let mut core = AppCore::new(&config);
@@ -125,7 +143,7 @@ mod timeout_tests {
         // by verifying that sessions with keep_alive=true are preserved.
         let id = core.create_session(Some("test".into())).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        
+
         let removed = core.cleanup_idle_sessions().await;
         assert!(removed.is_empty(), "keep_alive sessions are preserved");
         assert!(core.get_session(&id).await.is_some());
@@ -145,9 +163,12 @@ mod store_tests {
         // Store should respect max sessions limit
         let max_sessions = 10;
         let current_sessions = 5;
-        
-        assert!(current_sessions < max_sessions, "Should allow more sessions");
-        
+
+        assert!(
+            current_sessions < max_sessions,
+            "Should allow more sessions"
+        );
+
         let at_limit = max_sessions;
         assert!(at_limit >= max_sessions, "Should block at limit");
     }
@@ -158,7 +179,7 @@ mod store_tests {
         let mut sessions: HashMap<String, String> = HashMap::new();
         let id = "test-session-123";
         sessions.insert(id.to_string(), "session-data".to_string());
-        
+
         assert!(sessions.contains_key(id));
         assert_eq!(sessions.get(id), Some(&"session-data".to_string()));
     }
@@ -169,7 +190,7 @@ mod store_tests {
         let mut sessions: HashMap<String, String> = HashMap::new();
         let id = "test-session-456";
         sessions.insert(id.to_string(), "data".to_string());
-        
+
         let removed = sessions.remove(id);
         assert!(removed.is_some());
         assert!(!sessions.contains_key(id));
@@ -188,7 +209,7 @@ mod api_tests {
     #[ignore] // Requires running server
     async fn test_create_session() {
         let client = reqwest::Client::new();
-        
+
         let response = client
             .post(&format!("{}/api/sessions", BASE_URL))
             .json(&serde_json::json!({
@@ -197,12 +218,12 @@ mod api_tests {
             }))
             .send()
             .await;
-        
+
         match response {
             Ok(resp) => {
                 let body: serde_json::Value = resp.json().await.unwrap();
                 println!("Create session response: {:?}", body);
-                
+
                 if body["success"].as_bool().unwrap_or(false) {
                     assert!(body["id"].is_string(), "Should have session ID");
                 }
@@ -217,17 +238,17 @@ mod api_tests {
     #[ignore] // Requires running server
     async fn test_list_sessions() {
         let client = reqwest::Client::new();
-        
+
         let response = client
             .get(&format!("{}/api/sessions", BASE_URL))
             .send()
             .await;
-        
+
         match response {
             Ok(resp) => {
                 let body: serde_json::Value = resp.json().await.unwrap();
                 println!("List sessions response: {:?}", body);
-                
+
                 assert!(body["sessions"].is_array(), "Should have sessions array");
             }
             Err(e) => {
@@ -240,7 +261,7 @@ mod api_tests {
     #[ignore] // Requires running server
     async fn test_session_crud_flow() {
         let client = reqwest::Client::new();
-        
+
         // Create session
         let create_resp = client
             .post(&format!("{}/api/sessions", BASE_URL))
@@ -250,7 +271,7 @@ mod api_tests {
             }))
             .send()
             .await;
-        
+
         let session_id = match create_resp {
             Ok(resp) => {
                 let body: serde_json::Value = resp.json().await.unwrap();
@@ -258,27 +279,27 @@ mod api_tests {
             }
             Err(_) => None,
         };
-        
+
         if let Some(id) = session_id {
             println!("Created session: {}", id);
-            
+
             // Get session
             let get_resp = client
                 .get(&format!("{}/api/sessions/{}", BASE_URL, id))
                 .send()
                 .await;
-            
+
             if let Ok(resp) = get_resp {
                 let body: serde_json::Value = resp.json().await.unwrap();
                 println!("Get session: {:?}", body);
             }
-            
+
             // Delete session
             let delete_resp = client
                 .delete(&format!("{}/api/sessions/{}", BASE_URL, id))
                 .send()
                 .await;
-            
+
             if let Ok(resp) = delete_resp {
                 let body: serde_json::Value = resp.json().await.unwrap();
                 println!("Delete session: {:?}", body);

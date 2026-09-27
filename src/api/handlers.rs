@@ -416,7 +416,10 @@ pub async fn type_handler(
     };
 
     // clear: false by default - append text
-    match adapter.type_text(&request.selector, &request.text, false).await {
+    match adapter
+        .type_text(&request.selector, &request.text, false)
+        .await
+    {
         Ok(()) => Json(BrowserActionResponse {
             success: true,
             result: None,
@@ -752,9 +755,7 @@ pub async fn pdf_handler(State(state): State<Arc<ServerState>>) -> impl IntoResp
         (status = 500, description = "Cleanup failed")
     )
 )]
-pub async fn debug_cleanup_handler(
-    State(state): State<Arc<ServerState>>,
-) -> impl IntoResponse {
+pub async fn debug_cleanup_handler(State(state): State<Arc<ServerState>>) -> impl IntoResponse {
     let debug_dir = state.debug_dir();
     let policy = crate::utils::CleanupPolicy::default();
 
@@ -927,9 +928,7 @@ pub async fn list_executions_handler(
     State(state): State<Arc<ServerState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let limit = params
-        .get("limit")
-        .and_then(|l| l.parse::<usize>().ok());
+    let limit = params.get("limit").and_then(|l| l.parse::<usize>().ok());
 
     let executions = state.list_executions(limit).await;
 
@@ -1015,10 +1014,7 @@ pub async fn cancel_execution_handler(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     match state.cancel_execution(&id).await {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(serde_json::json!({"success": true})),
-        ),
+        Ok(()) => (StatusCode::OK, Json(serde_json::json!({"success": true}))),
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": e})),
