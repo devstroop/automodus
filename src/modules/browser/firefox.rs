@@ -74,6 +74,11 @@ async fn wait_for_port(host: &str, port: u16, timeout: Duration) -> Result<(), S
 #[derive(Clone)]
 pub struct FirefoxPageAdapter {
     browser: Arc<Mutex<Option<rustenium::browsers::FirefoxBrowser>>>,
+    /// The Firefox process we spawned in [`Self::launch`]. Shared across
+    /// clones so the last adapter clone dropping (or [`Self::close_browser`])
+    /// kills the child — rustenium's `close()` alone does not reap it when
+    /// the CLI exits.
+    child: Arc<std::sync::Mutex<super::session::KillOnDrop>>,
     /// Tracked tab context ids (index 0 is the initial tab).
     tabs: Arc<Mutex<Vec<BidiContext>>>,
     current_tab: Arc<Mutex<usize>>,
@@ -85,6 +90,7 @@ impl FirefoxPageAdapter {
     pub fn new(browser: rustenium::browsers::FirefoxBrowser, initial: BidiContext) -> Self {
         Self {
             browser: Arc::new(Mutex::new(Some(browser))),
+            child: Arc::new(std::sync::Mutex::new(super::session::KillOnDrop::empty())),
             tabs: Arc::new(Mutex::new(vec![initial])),
             current_tab: Arc::new(Mutex::new(0)),
             closed: Arc::new(AtomicBool::new(false)),
@@ -131,7 +137,13 @@ impl FirefoxPageAdapter {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
-            .map_err(|e| format!("Failed to spawn Firefox at {}: {}", firefox_path.display(), e))?;
+            .map_err(|e| {
+                format!(
+                    "Failed to spawn Firefox at {}: {}",
+                    firefox_path.display(),
+                    e
+                )
+            })?;
 
         if let Err(e) = wait_for_port("127.0.0.1", port, Duration::from_secs(15)).await {
             let _ = child.kill();
@@ -139,8 +151,9 @@ impl FirefoxPageAdapter {
             return Err(e);
         }
 
-        // Remote mode: rustenium only connects (we already spawned).
-        // close() still kills by remote_debugging_port, so our child is reaped.
+        // Remote mode: rustenium only connects (we already spawned); the child
+        // handle lives in the adapter so drop/close reap it (rustenium's
+        // close() alone leaves the process running when the CLI exits).
         let config = FirefoxConfig {
             host: Some("127.0.0.1".to_string()),
             launch_mode: FirefoxLaunchMode::Remote(port),
@@ -160,6 +173,7 @@ impl FirefoxPageAdapter {
             Err(_) => {
                 let domain = browser.create_context(false).await.map_err(|e| {
                     let _ = child.kill();
+                    let _ = child.wait();
                     format!("Firefox connected but no browsing context: {}", e)
                 })?;
                 domain.id().clone()
@@ -167,7 +181,10 @@ impl FirefoxPageAdapter {
         };
 
         info!("Firefox launched successfully");
-        Ok(Self::new(browser, initial))
+        let adapter = Self::new(browser, initial);
+        *adapter.child.lock().unwrap_or_else(|e| e.into_inner()) =
+            super::session::KillOnDrop::new(child);
+        Ok(adapter)
     }
 
     /// Close the underlying browser if this adapter still owns it.
@@ -181,13 +198,14 @@ impl FirefoxPageAdapter {
                 debug!("close_browser: firefox closed");
             }
         }
+        drop(guard);
+        // Reap the spawned child (drops to KillOnDrop::drop -> kill + wait)
+        drop(self.child.lock().unwrap_or_else(|e| e.into_inner()).take());
     }
 
     fn ensure_open(&self) -> Result<(), ActionError> {
         if self.closed.load(Ordering::SeqCst) {
-            return Err(ActionError::BrowserError(
-                "Browser has been closed".into(),
-            ));
+            return Err(ActionError::BrowserError("Browser has been closed".into()));
         }
         Ok(())
     }
@@ -199,9 +217,7 @@ impl FirefoxPageAdapter {
         self.ensure_open()?;
         let guard = self.browser.lock().await;
         if guard.is_none() {
-            return Err(ActionError::BrowserError(
-                "Firefox is not running".into(),
-            ));
+            return Err(ActionError::BrowserError("Firefox is not running".into()));
         }
         Ok(guard)
     }
@@ -254,7 +270,11 @@ impl FirefoxPageAdapter {
         Ok(())
     }
 
-    async fn find_exists(&self, locator: Locator, context: &BidiContext) -> Result<bool, ActionError> {
+    async fn find_exists(
+        &self,
+        locator: Locator,
+        context: &BidiContext,
+    ) -> Result<bool, ActionError> {
         let mut guard = self.lock_browser().await?;
         let browser = guard.as_mut().expect("checked above");
         let options = FindNodesOptionsBuilder::default()
@@ -386,7 +406,10 @@ impl BrowserHandle for FirefoxPageAdapter {
     }
 
     async fn wait_for(&self, selector: &str, timeout_ms: u64) -> Result<(), ActionError> {
-        debug!("Waiting for element: {} (timeout: {}ms)", selector, timeout_ms);
+        debug!(
+            "Waiting for element: {} (timeout: {}ms)",
+            selector, timeout_ms
+        );
         let ctx = self.current_context().await?;
         let parsed = parse_selector(selector);
         let duration = Duration::from_millis(timeout_ms);
@@ -469,12 +492,12 @@ impl BrowserHandle for FirefoxPageAdapter {
                 .await
                 .unwrap_or_default();
 
-            let matches = if condition.starts_with("contains:") {
-                current_url.contains(&condition[9..])
-            } else if condition.starts_with("starts:") {
-                current_url.starts_with(&condition[7..])
-            } else if condition.starts_with("ends:") {
-                current_url.ends_with(&condition[5..])
+            let matches = if let Some(rest) = condition.strip_prefix("contains:") {
+                current_url.contains(rest)
+            } else if let Some(rest) = condition.strip_prefix("starts:") {
+                current_url.starts_with(rest)
+            } else if let Some(rest) = condition.strip_prefix("ends:") {
+                current_url.ends_with(rest)
             } else {
                 current_url.contains(condition) || current_url == condition
             };
@@ -545,8 +568,7 @@ impl BrowserHandle for FirefoxPageAdapter {
 
     async fn reload(&self) -> Result<(), ActionError> {
         let ctx = self.current_context().await?;
-        self.eval_in(&ctx, "location.reload()".to_string())
-            .await?;
+        self.eval_in(&ctx, "location.reload()".to_string()).await?;
         Ok(())
     }
 
@@ -766,6 +788,9 @@ mod tests {
     fn closed_adapter_is_not_alive() {
         let adapter = FirefoxPageAdapter {
             browser: Arc::new(Mutex::new(None)),
+            child: Arc::new(std::sync::Mutex::new(
+                super::super::session::KillOnDrop::empty(),
+            )),
             tabs: Arc::new(Mutex::new(vec![])),
             current_tab: Arc::new(Mutex::new(0)),
             closed: Arc::new(AtomicBool::new(false)),
