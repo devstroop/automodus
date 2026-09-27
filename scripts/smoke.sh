@@ -47,6 +47,18 @@ RUNLOG_DIR="$(mktemp -d /tmp/automodus-smoke-runs-XXXXXX)"
 CFG=""
 trap 'rm -f "${CFG:-}"' EXIT
 
+# Several examples set `headless: false`, which overrides the engine config —
+# they need an X server. CI runners have none, so run under Xvfb when DISPLAY
+# is unset (timeout stays inside the X session so SIGTERM reaches automodus).
+run_prefix=()
+if [[ -z "${DISPLAY:-}" ]]; then
+  if command -v xvfb-run >/dev/null 2>&1; then
+    run_prefix=(xvfb-run -a)
+  else
+    echo "WARNING: no \$DISPLAY and no xvfb-run; headed workflows will fail" >&2
+  fi
+fi
+
 echo "== validate =="
 "$BIN" validate examples
 
@@ -56,6 +68,18 @@ for engine in "${engines[@]}"; do
   echo "== engine: $engine =="
   CFG="$(mktemp /tmp/automodus-smoke-XXXXXX.toml)"
   printf '[browser]\nengine = "%s"\nheadless = true\n' "$engine" >"$CFG"
+
+  # Cold-start warm-up: the first browser spawn on a fresh runner is slow
+  # (firefox's port wait and rustenium's session handshake have tight
+  # timeouts). Absorb it with a throwaway run outside the scored suite.
+  warm_w="$RUNLOG_DIR/${engine}__warmup.yaml"
+  printf 'name: smoke_warmup\nsteps:\n  - action: goto\n    url: "about:blank"\n' >"$warm_w"
+  if AUTOMODUS_CONFIG="$CFG" timeout 60 "${run_prefix[@]}" "$BIN" run "$warm_w" \
+    >"$RUNLOG_DIR/${engine}__warmup.log" 2>&1; then
+    echo "  warm-up ok"
+  else
+    echo "  warm-up failed (continuing; see $RUNLOG_DIR/${engine}__warmup.log)"
+  fi
 
   for wf in "${workflows[@]}"; do
     # Lightpanda supports a single page per connection upstream
@@ -68,7 +92,7 @@ for engine in "${engines[@]}"; do
     fi
     runlog="$RUNLOG_DIR/${engine}__$(echo "$wf" | tr '/' '_').log"
     rc=0
-    AUTOMODUS_CONFIG="$CFG" timeout "$TIMEOUT_SECS" "$BIN" run "examples/$wf" \
+    AUTOMODUS_CONFIG="$CFG" "${run_prefix[@]}" timeout "$TIMEOUT_SECS" "$BIN" run "examples/$wf" \
       >"$runlog" 2>&1 || rc=$?
     if [[ $rc -eq 0 ]]; then
       echo "  PASS  $wf"
