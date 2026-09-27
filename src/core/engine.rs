@@ -12,11 +12,21 @@ use tracing::{debug, error, info, warn};
 
 use crate::actions::{ActionError, ActionOutput, ActionRegistry, BrowserHandle};
 use crate::utils::yaml_to_json;
-use crate::workflow::schema::{CaptureMode, DebugConfig, ResolvedDebugConfig};
+use crate::workflow::schema::{CaptureMode, DebugConfig, ResolvedDebugConfig, StepHandler};
 use crate::workflow::{CompleteHandler, ErrorHandler, Step, Workflow, WorkflowResolver};
 
 use super::context::ExecutionContext;
 use super::template::TemplateEngine;
+
+/// How execution proceeds after a dispatch action's outcome handlers ran.
+enum DispatchFlow {
+    /// Advance to the next step
+    Next,
+    /// Jump to the given step index
+    Jump(usize),
+    /// Fail the workflow with this error
+    Fail(WorkflowError),
+}
 
 /// Pause response from handler
 #[derive(Debug, Clone, PartialEq)]
@@ -79,18 +89,16 @@ impl PauseHandler for ShellPauseHandler {
         println!("   [c]ontinue  [s]kip  [a]bort");
 
         // Read from stdin on a blocking thread so we don't block the runtime
-        let response = tokio::task::spawn_blocking(|| {
-            loop {
-                let mut input = String::new();
-                if std::io::stdin().read_line(&mut input).is_err() {
-                    return PauseResponse::Continue;
-                }
-                match input.trim().to_lowercase().as_str() {
-                    "c" | "continue" | "" => return PauseResponse::Continue,
-                    "s" | "skip" => return PauseResponse::Skip,
-                    "a" | "abort" => return PauseResponse::Abort,
-                    _ => println!("   [c]ontinue  [s]kip  [a]bort"),
-                }
+        let response = tokio::task::spawn_blocking(|| loop {
+            let mut input = String::new();
+            if std::io::stdin().read_line(&mut input).is_err() {
+                return PauseResponse::Continue;
+            }
+            match input.trim().to_lowercase().as_str() {
+                "c" | "continue" | "" => return PauseResponse::Continue,
+                "s" | "skip" => return PauseResponse::Skip,
+                "a" | "abort" => return PauseResponse::Abort,
+                _ => println!("   [c]ontinue  [s]kip  [a]bort"),
             }
         })
         .await;
@@ -290,7 +298,14 @@ impl WorkflowEngine {
 
         // Execute steps
         let result = self
-            .execute_steps(workflow, browser, &mut ctx, &mut debug_screenshots, pause_handler, &cancel_token)
+            .execute_steps(
+                workflow,
+                browser,
+                &mut ctx,
+                &mut debug_screenshots,
+                pause_handler,
+                &cancel_token,
+            )
             .await;
 
         // Build result
@@ -412,28 +427,61 @@ impl WorkflowEngine {
 
             // Capture screenshot before step if configured
             if matches!(step_debug.capture, CaptureMode::Before | CaptureMode::All) {
-                if let Some(path) = self
-                    .capture_debug_screenshot(browser, ctx, "before")
-                    .await
-                {
+                if let Some(path) = self.capture_debug_screenshot(browser, ctx, "before").await {
                     debug_screenshots.push(path);
                 }
             }
 
-            // Handle `call` action — invoke a sub-workflow
-            if step.action == "call" {
-                self.execute_call_action(step, browser, ctx, debug_screenshots, pause_handler, cancel_token)
-                    .await?;
-                ctx.next_step();
-                continue;
-            }
-
-            // Handle `condition` action specially (with then/else blocks)
-            // Must check BEFORE step-level condition because `if:` gets captured into step.condition
-            if step.action == "condition" {
-                self.execute_condition_action(step, browser, ctx).await?;
-                ctx.next_step();
-                continue;
+            // Handle `call` / `condition` actions — dispatched before the
+            // step-level `if:` gate (condition consumes `if:` as its own
+            // condition; call predates the gate). Their on_success/on_failure
+            // handlers still run via apply_dispatch_hooks.
+            if step.action == "call" || step.action == "condition" {
+                let outcome = if step.action == "call" {
+                    self.execute_call_action(
+                        step,
+                        browser,
+                        ctx,
+                        debug_screenshots,
+                        pause_handler,
+                        cancel_token,
+                    )
+                    .await
+                } else {
+                    self.execute_condition_action(
+                        workflow,
+                        step,
+                        browser,
+                        ctx,
+                        debug_screenshots,
+                        pause_handler,
+                        cancel_token,
+                    )
+                    .await
+                };
+                match self
+                    .apply_dispatch_hooks(
+                        workflow,
+                        step,
+                        outcome,
+                        browser,
+                        ctx,
+                        debug_screenshots,
+                        pause_handler,
+                        cancel_token,
+                    )
+                    .await?
+                {
+                    DispatchFlow::Jump(idx) => {
+                        ctx.goto_step(idx);
+                        continue;
+                    }
+                    DispatchFlow::Fail(err) => return Err(err),
+                    DispatchFlow::Next => {
+                        ctx.next_step();
+                        continue;
+                    }
+                }
             }
 
             // Check condition (step-level `if:`) - for non-condition actions
@@ -449,9 +497,55 @@ impl WorkflowEngine {
                 }
             }
 
+            // Handle `loop` action — after the step-level `if:` gate so a loop
+            // can be skipped by its own condition.
+            if step.action == "loop" {
+                let outcome = self
+                    .execute_loop_action(
+                        workflow,
+                        step,
+                        browser,
+                        ctx,
+                        debug_screenshots,
+                        pause_handler,
+                        cancel_token,
+                    )
+                    .await;
+                match self
+                    .apply_dispatch_hooks(
+                        workflow,
+                        step,
+                        outcome,
+                        browser,
+                        ctx,
+                        debug_screenshots,
+                        pause_handler,
+                        cancel_token,
+                    )
+                    .await?
+                {
+                    DispatchFlow::Jump(idx) => {
+                        ctx.goto_step(idx);
+                        continue;
+                    }
+                    DispatchFlow::Fail(err) => return Err(err),
+                    DispatchFlow::Next => {
+                        ctx.next_step();
+                        continue;
+                    }
+                }
+            }
+
             // Execute step with retries
             let result = self
-                .execute_step_with_retry(step, browser, ctx, &step_debug, debug_screenshots, pause_handler)
+                .execute_step_with_retry(
+                    step,
+                    browser,
+                    ctx,
+                    &step_debug,
+                    debug_screenshots,
+                    pause_handler,
+                )
                 .await;
 
             // Handle execution result
@@ -459,9 +553,8 @@ impl WorkflowEngine {
                 Ok(output) => {
                     // Capture screenshot after step if configured
                     if matches!(step_debug.capture, CaptureMode::After | CaptureMode::All) {
-                        if let Some(path) = self
-                            .capture_debug_screenshot(browser, ctx, "after")
-                            .await
+                        if let Some(path) =
+                            self.capture_debug_screenshot(browser, ctx, "after").await
                         {
                             debug_screenshots.push(path);
                         }
@@ -470,15 +563,37 @@ impl WorkflowEngine {
                 }
                 Err(e) => {
                     // Capture screenshot on failure if configured
-                    if matches!(
-                        step_debug.capture,
-                        CaptureMode::Failure | CaptureMode::All
-                    ) {
-                        if let Some(path) = self
-                            .capture_debug_screenshot(browser, ctx, "failure")
-                            .await
+                    if matches!(step_debug.capture, CaptureMode::Failure | CaptureMode::All) {
+                        if let Some(path) =
+                            self.capture_debug_screenshot(browser, ctx, "failure").await
                         {
                             debug_screenshots.push(path);
+                        }
+                    }
+
+                    // Run step-level on_failure handler; a `goto` in the
+                    // handler can recover from the failure and continue.
+                    if let Some(handler) = &step.on_failure {
+                        match self
+                            .run_step_handler(
+                                handler,
+                                "on_failure",
+                                workflow,
+                                browser,
+                                ctx,
+                                debug_screenshots,
+                                pause_handler,
+                                cancel_token,
+                                Some(e.to_string()),
+                            )
+                            .await
+                        {
+                            Ok(Some(idx)) => {
+                                ctx.goto_step(idx);
+                                continue;
+                            }
+                            Ok(None) => {}
+                            Err(handler_err) => return Err(handler_err),
                         }
                     }
                     return Err(e);
@@ -500,6 +615,27 @@ impl WorkflowEngine {
             // Emit events
             if let Some((event, data)) = output.emit {
                 ctx.emit_event(&event, data);
+            }
+
+            // Run step-level on_success handler; `goto` jumps, `abort` fails here
+            if let Some(handler) = &step.on_success {
+                if let Some(idx) = self
+                    .run_step_handler(
+                        handler,
+                        "on_success",
+                        workflow,
+                        browser,
+                        ctx,
+                        debug_screenshots,
+                        pause_handler,
+                        cancel_token,
+                        None,
+                    )
+                    .await?
+                {
+                    ctx.goto_step(idx);
+                    continue;
+                }
             }
 
             // Handle control flow
@@ -586,7 +722,11 @@ impl WorkflowEngine {
                     // Capture screenshot on failure during retries
                     if matches!(step_debug.capture, CaptureMode::Failure | CaptureMode::All) {
                         if let Some(path) = self
-                            .capture_debug_screenshot(browser, ctx, &format!("retry{}_failure", attempt))
+                            .capture_debug_screenshot(
+                                browser,
+                                ctx,
+                                &format!("retry{}_failure", attempt),
+                            )
                             .await
                         {
                             debug_screenshots.push(path);
@@ -691,8 +831,8 @@ impl WorkflowEngine {
         let child_debug = if let Some(step_dbg) = &step.debug {
             let parent_debug = DebugConfig {
                 enabled: Some(ctx.debug.enabled),
-                level: Some(ctx.debug.level.clone()),
-                capture: Some(ctx.debug.capture.clone()),
+                level: Some(ctx.debug.level),
+                capture: Some(ctx.debug.capture),
                 highlight: Some(ctx.debug.highlight),
                 delay: Some(ctx.debug.delay),
                 pause: Some(ctx.debug.pause),
@@ -700,7 +840,10 @@ impl WorkflowEngine {
                 network: Some(ctx.debug.network),
                 profile: None,
             };
-            parent_debug.merge(step_dbg).merge(&sub_workflow.debug).resolve()
+            parent_debug
+                .merge(step_dbg)
+                .merge(&sub_workflow.debug)
+                .resolve()
         } else {
             sub_workflow.debug.clone().with_profile().resolve()
         };
@@ -719,9 +862,15 @@ impl WorkflowEngine {
         }
 
         // Execute sub-workflow steps (Box::pin for recursive async)
-        let result = Box::pin(
-            self.execute_steps(&sub_workflow, browser, &mut child_ctx, debug_screenshots, pause_handler, cancel_token)
-        ).await;
+        let result = Box::pin(self.execute_steps(
+            &sub_workflow,
+            browser,
+            &mut child_ctx,
+            debug_screenshots,
+            pause_handler,
+            cancel_token,
+        ))
+        .await;
 
         // Propagate tab index changes back to parent
         ctx.tab_index = child_ctx.tab_index;
@@ -766,12 +915,118 @@ impl WorkflowEngine {
         }
     }
 
-    /// Execute a condition action with then/else branches
+    /// Execute a nested block of steps (condition branches, loop bodies,
+    /// `steps:` handlers) in a child context that inherits the parent's
+    /// variables, store, step outputs and tab state.
+    ///
+    /// After the block, child mutations are merged back into the parent and
+    /// `vars_overlay` keys are restored to their pre-block values so item
+    /// variables from loops don't leak past the block.
+    ///
+    /// Blocks increment `call_depth`, giving nested loops/conditions the same
+    /// runaway protection as recursive `call`s (MAX_CALL_DEPTH).
+    #[allow(clippy::too_many_arguments)]
+    async fn execute_block(
+        &self,
+        parent: &Workflow,
+        block_name: &str,
+        steps: Vec<Step>,
+        vars_overlay: HashMap<String, Value>,
+        browser: &dyn BrowserHandle,
+        ctx: &mut ExecutionContext,
+        debug_screenshots: &mut Vec<String>,
+        pause_handler: &dyn PauseHandler,
+        cancel_token: &Option<CancellationToken>,
+    ) -> Result<Value, WorkflowError> {
+        if steps.is_empty() {
+            return Ok(Value::Null);
+        }
+        if ctx.call_depth >= MAX_CALL_DEPTH {
+            return Err(WorkflowError::InvalidConfig(format!(
+                "Maximum call depth ({}) exceeded — possible workflow loop",
+                MAX_CALL_DEPTH
+            )));
+        }
+
+        // Remember pre-block values of overlay keys so they can be restored
+        let saved_overlay: Vec<(String, Option<Value>)> = vars_overlay
+            .keys()
+            .map(|k| (k.clone(), ctx.vars.get(k).cloned()))
+            .collect();
+
+        // Temp workflow sharing everything with the parent except the step list
+        let mut block_workflow = parent.clone();
+        block_workflow.name = format!("{}[{}]", parent.name, block_name);
+        block_workflow.steps = steps;
+        block_workflow.output = None;
+        block_workflow.on_complete = None;
+        block_workflow.on_error = None;
+
+        let mut child = ExecutionContext::new(&block_workflow.name, &ctx.instance_id)
+            .with_debug(ctx.debug.clone())
+            .with_params(ctx.params.clone());
+        child.call_depth = ctx.call_depth + 1;
+        child.tab_index = ctx.tab_index;
+        child.vars = ctx.vars.clone();
+        child.store = ctx.store.clone();
+        child.step_outputs = ctx.step_outputs.clone();
+        for (key, value) in vars_overlay {
+            child.vars.insert(key, value);
+        }
+
+        let result = Box::pin(self.execute_steps(
+            &block_workflow,
+            browser,
+            &mut child,
+            debug_screenshots,
+            pause_handler,
+            cancel_token,
+        ))
+        .await;
+
+        // Merge child state back (also on error: keep partial progress)
+        ctx.tab_index = child.tab_index;
+        for (key, value) in std::mem::take(&mut child.vars) {
+            ctx.vars.insert(key, value);
+        }
+        for (key, value) in std::mem::take(&mut child.store) {
+            ctx.store.insert(key, value);
+        }
+        for (key, value) in std::mem::take(&mut child.step_outputs) {
+            ctx.step_outputs.insert(key, value);
+        }
+        for (name, data) in std::mem::take(&mut child.events) {
+            ctx.emit_event(name, data);
+        }
+
+        // Restore overlay keys (loop item vars etc.) to pre-block values
+        for (key, saved) in saved_overlay {
+            match saved {
+                Some(value) => {
+                    ctx.vars.insert(key, value);
+                }
+                None => {
+                    ctx.vars.remove(&key);
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Execute a `condition` action by running the selected then/else branch
+    /// through [`Self::execute_block`] — branches therefore support the full
+    /// step vocabulary (retry, `if:`, `call`, `loop`, handlers, goto, …).
+    #[allow(clippy::too_many_arguments)]
     async fn execute_condition_action(
         &self,
+        workflow: &Workflow,
         step: &Step,
         browser: &dyn BrowserHandle,
         ctx: &mut ExecutionContext,
+        debug_screenshots: &mut Vec<String>,
+        pause_handler: &dyn PauseHandler,
+        cancel_token: &Option<CancellationToken>,
     ) -> Result<(), WorkflowError> {
         // Get the `if` condition - check step.condition first (captured by serde rename),
         // then fall back to params["if"]
@@ -795,50 +1050,258 @@ impl WorkflowEngine {
         );
 
         // Get the appropriate branch
-        let steps_to_execute: Vec<Step> = if condition_result {
-            // Execute 'then' branch
-            step.params
-                .get("then")
-                .and_then(|v| serde_yaml::from_value(v.clone()).ok())
-                .unwrap_or_default()
-        } else {
-            // Execute 'else' branch
-            step.params
-                .get("else")
-                .and_then(|v| serde_yaml::from_value(v.clone()).ok())
-                .unwrap_or_default()
+        let branch = if condition_result { "then" } else { "else" };
+        let steps_to_execute: Vec<Step> = step
+            .params
+            .get(branch)
+            .and_then(|v| serde_yaml::from_value(v.clone()).ok())
+            .unwrap_or_default();
+
+        self.execute_block(
+            workflow,
+            branch,
+            steps_to_execute,
+            HashMap::new(),
+            browser,
+            ctx,
+            debug_screenshots,
+            pause_handler,
+            cancel_token,
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    /// Execute a `loop` action: iterate `items` and run `steps` once per item
+    /// with the current item bound to the `as` variable (and optionally the
+    /// zero-based index to `index_as`), each iteration as an isolated block.
+    #[allow(clippy::too_many_arguments)]
+    async fn execute_loop_action(
+        &self,
+        workflow: &Workflow,
+        step: &Step,
+        browser: &dyn BrowserHandle,
+        ctx: &mut ExecutionContext,
+        debug_screenshots: &mut Vec<String>,
+        pause_handler: &dyn PauseHandler,
+        cancel_token: &Option<CancellationToken>,
+    ) -> Result<(), WorkflowError> {
+        let items_param = step.params.get("items").ok_or_else(|| {
+            WorkflowError::InvalidConfig("loop action requires 'items' parameter".into())
+        })?;
+        let item_var = step
+            .params
+            .get("as")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                WorkflowError::InvalidConfig("loop action requires 'as' parameter".into())
+            })?;
+        let index_var = step
+            .params
+            .get("index_as")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        let body: Vec<Step> = step
+            .params
+            .get("steps")
+            .cloned()
+            .and_then(|v| serde_yaml::from_value(v).ok())
+            .ok_or_else(|| {
+                WorkflowError::InvalidConfig("loop action requires 'steps' to be a list".into())
+            })?;
+        if body.is_empty() {
+            return Ok(());
+        }
+
+        // Items resolve through templates: Sequence = list, Null = empty,
+        // anything else = single item
+        let rendered_items = TemplateEngine::render_yaml(items_param, ctx);
+        let items: Vec<serde_yaml::Value> = match rendered_items {
+            serde_yaml::Value::Sequence(seq) => seq,
+            serde_yaml::Value::Null => Vec::new(),
+            other => vec![other],
         };
 
-        // Execute the branch steps
-        for nested_step in &steps_to_execute {
-            // Handle nested condition actions recursively
-            if nested_step.action == "condition" {
-                // Use Box::pin for recursive async call
-                Box::pin(self.execute_condition_action(nested_step, browser, ctx)).await?;
-            } else {
-                let step_debug = self.resolve_step_debug(ctx, nested_step);
-                let output = self.execute_step(nested_step, browser, ctx, &step_debug).await?;
+        debug!(
+            workflow = %ctx.workflow_name,
+            step = ctx.step_index,
+            items = items.len(),
+            item_var = %item_var,
+            "Executing loop"
+        );
 
-                // Store output
-                if let Some(data) = &output.data {
-                    if let Some(id) = &nested_step.id {
-                        ctx.store_step_output(id, data.clone());
-                    }
-                }
-
-                // Merge store values
-                for (key, value) in output.store {
-                    ctx.store_value(key, value);
-                }
-
-                // Emit events
-                if let Some((event, data)) = output.emit {
-                    ctx.emit_event(&event, data);
-                }
+        for (idx, item) in items.iter().enumerate() {
+            let mut overlay: HashMap<String, Value> = HashMap::new();
+            overlay.insert(item_var.to_string(), yaml_to_json(item));
+            if let Some(index_key) = &index_var {
+                overlay.insert(index_key.clone(), json!(idx));
             }
+
+            self.execute_block(
+                workflow,
+                &format!("loop[{}]", idx),
+                body.clone(),
+                overlay,
+                browser,
+                ctx,
+                debug_screenshots,
+                pause_handler,
+                cancel_token,
+            )
+            .await?;
         }
 
         Ok(())
+    }
+
+    /// Run `on_success`/`on_failure` handlers for a dispatch action
+    /// (call/condition/loop) and decide how execution proceeds.
+    #[allow(clippy::too_many_arguments)]
+    async fn apply_dispatch_hooks(
+        &self,
+        workflow: &Workflow,
+        step: &Step,
+        outcome: Result<(), WorkflowError>,
+        browser: &dyn BrowserHandle,
+        ctx: &mut ExecutionContext,
+        debug_screenshots: &mut Vec<String>,
+        pause_handler: &dyn PauseHandler,
+        cancel_token: &Option<CancellationToken>,
+    ) -> Result<DispatchFlow, WorkflowError> {
+        match outcome {
+            Ok(()) => {
+                if let Some(handler) = &step.on_success {
+                    if let Some(idx) = self
+                        .run_step_handler(
+                            handler,
+                            "on_success",
+                            workflow,
+                            browser,
+                            ctx,
+                            debug_screenshots,
+                            pause_handler,
+                            cancel_token,
+                            None,
+                        )
+                        .await?
+                    {
+                        return Ok(DispatchFlow::Jump(idx));
+                    }
+                }
+                Ok(DispatchFlow::Next)
+            }
+            Err(e) => {
+                if let Some(handler) = &step.on_failure {
+                    if let Some(idx) = self
+                        .run_step_handler(
+                            handler,
+                            "on_failure",
+                            workflow,
+                            browser,
+                            ctx,
+                            debug_screenshots,
+                            pause_handler,
+                            cancel_token,
+                            Some(e.to_string()),
+                        )
+                        .await?
+                    {
+                        return Ok(DispatchFlow::Jump(idx));
+                    }
+                }
+                Ok(DispatchFlow::Fail(e))
+            }
+        }
+    }
+
+    /// Run a step-level handler (`on_success` / `on_failure`).
+    ///
+    /// Returns `Some(index)` when the handler jumps via `goto` — the caller
+    /// must `goto_step(index)` and continue. `Abort` yields [`WorkflowError::Aborted`].
+    #[allow(clippy::too_many_arguments)]
+    async fn run_step_handler(
+        &self,
+        handler: &StepHandler,
+        kind: &str,
+        workflow: &Workflow,
+        browser: &dyn BrowserHandle,
+        ctx: &mut ExecutionContext,
+        debug_screenshots: &mut Vec<String>,
+        pause_handler: &dyn PauseHandler,
+        cancel_token: &Option<CancellationToken>,
+        error_context: Option<String>,
+    ) -> Result<Option<usize>, WorkflowError> {
+        match handler {
+            StepHandler::Goto { goto } => {
+                let idx = workflow
+                    .steps
+                    .iter()
+                    .position(|s| s.id.as_deref() == Some(goto.as_str()))
+                    .ok_or_else(|| {
+                        WorkflowError::InvalidConfig(format!(
+                            "{} handler: no step with id '{}' in workflow",
+                            kind, goto
+                        ))
+                    })?;
+                info!(
+                    workflow = %ctx.workflow_name,
+                    step = ctx.step_index,
+                    handler = kind,
+                    target = %goto,
+                    "Handler jumping to step"
+                );
+                Ok(Some(idx))
+            }
+            StepHandler::Abort { abort, error } => {
+                if *abort {
+                    let message = match error {
+                        Some(msg) => TemplateEngine::render(msg, ctx),
+                        None => error_context
+                            .clone()
+                            .unwrap_or_else(|| format!("{} handler aborted the workflow", kind)),
+                    };
+                    Err(WorkflowError::Aborted(message))
+                } else {
+                    Ok(None)
+                }
+            }
+            StepHandler::Emit { emit, data } => {
+                let name = TemplateEngine::render(emit, ctx);
+                let mut payload = serde_json::Map::new();
+                if let Some(err) = &error_context {
+                    payload.insert("error".into(), Value::String(err.clone()));
+                }
+                payload.insert("workflow".into(), json!(ctx.workflow_name));
+                payload.insert("step".into(), json!(ctx.step_index));
+                payload.insert("handler".into(), json!(kind));
+                for (key, value) in data {
+                    let rendered = TemplateEngine::render_yaml(value, ctx);
+                    payload.insert(key.clone(), yaml_to_json(&rendered));
+                }
+                ctx.emit_event(&name, Value::Object(payload));
+                Ok(None)
+            }
+            StepHandler::Steps { steps } | StepHandler::StepsList(steps) => {
+                if steps.is_empty() {
+                    return Ok(None);
+                }
+                self.execute_block(
+                    workflow,
+                    kind,
+                    steps.clone(),
+                    HashMap::new(),
+                    browser,
+                    ctx,
+                    debug_screenshots,
+                    pause_handler,
+                    cancel_token,
+                )
+                .await?;
+                Ok(None)
+            }
+        }
     }
 
     /// Execute a single step
@@ -881,13 +1344,20 @@ impl WorkflowEngine {
             .execute(&rendered_params, &action_ctx, browser)
             .await?;
 
-        // Handle step-level emit
+        // Handle step-level emit (data values are template-rendered)
         if let Some(emit) = &step.emit {
             let mut result = output;
+            let mut data_map = serde_json::Map::new();
+            if let Some(emit_data) = &emit.data {
+                for (key, value) in emit_data {
+                    let rendered = TemplateEngine::render_yaml(value, ctx);
+                    data_map.insert(key.clone(), yaml_to_json(&rendered));
+                }
+            }
             let data = json!({
                 "workflow": ctx.workflow_name,
                 "step": ctx.step_index,
-                "data": emit.data
+                "data": Value::Object(data_map)
             });
             result.emit = Some((emit.event.clone(), data));
             return Ok(result);
@@ -1029,8 +1499,8 @@ impl WorkflowEngine {
             // Convert workflow's resolved config back to DebugConfig for merge
             let workflow_debug = DebugConfig {
                 enabled: Some(ctx.debug.enabled),
-                level: Some(ctx.debug.level.clone()),
-                capture: Some(ctx.debug.capture.clone()),
+                level: Some(ctx.debug.level),
+                capture: Some(ctx.debug.capture),
                 highlight: Some(ctx.debug.highlight),
                 delay: Some(ctx.debug.delay),
                 pause: Some(ctx.debug.pause),
@@ -1133,29 +1603,93 @@ mod tests {
 
     #[async_trait::async_trait]
     impl BrowserHandle for MockBrowser {
-        async fn goto(&self, _url: &str) -> Result<(), ActionError> { Ok(()) }
-        async fn click(&self, _sel: &str) -> Result<(), ActionError> { Ok(()) }
-        async fn type_text(&self, _sel: &str, _text: &str, _clear: bool) -> Result<(), ActionError> { Ok(()) }
-        async fn get_text(&self, _sel: &str) -> Result<String, ActionError> { Ok(String::new()) }
-        async fn get_attribute(&self, _sel: &str, _attr: &str) -> Result<Option<String>, ActionError> { Ok(None) }
-        async fn wait_for(&self, _sel: &str, _timeout: u64) -> Result<(), ActionError> { Ok(()) }
-        async fn wait_for_hidden(&self, _sel: &str, _timeout: u64) -> Result<(), ActionError> { Ok(()) }
-        async fn wait_for_url(&self, _cond: &str, _timeout: u64) -> Result<(), ActionError> { Ok(()) }
-        async fn screenshot(&self, _full: bool) -> Result<Vec<u8>, ActionError> { Ok(vec![]) }
-        async fn eval(&self, _script: &str) -> Result<Value, ActionError> { Ok(Value::Null) }
-        async fn current_url(&self) -> Result<String, ActionError> { Ok("about:blank".into()) }
-        async fn back(&self) -> Result<(), ActionError> { Ok(()) }
-        async fn forward(&self) -> Result<(), ActionError> { Ok(()) }
-        async fn reload(&self) -> Result<(), ActionError> { Ok(()) }
-        async fn new_tab(&self, _url: Option<&str>) -> Result<usize, ActionError> { Ok(0) }
-        async fn switch_tab(&self, _idx: usize) -> Result<(), ActionError> { Ok(()) }
-        async fn close_tab(&self, _idx: usize) -> Result<(), ActionError> { Ok(()) }
-        async fn tab_count(&self) -> Result<usize, ActionError> { Ok(1) }
-        async fn list_tabs(&self) -> Result<Vec<TabInfo>, ActionError> { Ok(vec![]) }
-        async fn set_file_input_files(&self, _sel: &str, _paths: Vec<String>) -> Result<(), ActionError> { Ok(()) }
-        async fn set_file_chooser_intercept(&self, _enabled: bool) -> Result<(), ActionError> { Ok(()) }
-        async fn upload_via_file_chooser(&self, _trigger: Option<&str>, _paths: Vec<String>, _timeout: u64) -> Result<(), ActionError> { Ok(()) }
-        async fn pdf(&self) -> Result<Vec<u8>, ActionError> { Ok(vec![]) }
+        async fn goto(&self, _url: &str) -> Result<(), ActionError> {
+            Ok(())
+        }
+        async fn click(&self, _sel: &str) -> Result<(), ActionError> {
+            Ok(())
+        }
+        async fn type_text(
+            &self,
+            _sel: &str,
+            _text: &str,
+            _clear: bool,
+        ) -> Result<(), ActionError> {
+            Ok(())
+        }
+        async fn get_text(&self, _sel: &str) -> Result<String, ActionError> {
+            Ok(String::new())
+        }
+        async fn get_attribute(
+            &self,
+            _sel: &str,
+            _attr: &str,
+        ) -> Result<Option<String>, ActionError> {
+            Ok(None)
+        }
+        async fn wait_for(&self, _sel: &str, _timeout: u64) -> Result<(), ActionError> {
+            Ok(())
+        }
+        async fn wait_for_hidden(&self, _sel: &str, _timeout: u64) -> Result<(), ActionError> {
+            Ok(())
+        }
+        async fn wait_for_url(&self, _cond: &str, _timeout: u64) -> Result<(), ActionError> {
+            Ok(())
+        }
+        async fn screenshot(&self, _full: bool) -> Result<Vec<u8>, ActionError> {
+            Ok(vec![])
+        }
+        async fn eval(&self, _script: &str) -> Result<Value, ActionError> {
+            Ok(Value::Null)
+        }
+        async fn current_url(&self) -> Result<String, ActionError> {
+            Ok("about:blank".into())
+        }
+        async fn back(&self) -> Result<(), ActionError> {
+            Ok(())
+        }
+        async fn forward(&self) -> Result<(), ActionError> {
+            Ok(())
+        }
+        async fn reload(&self) -> Result<(), ActionError> {
+            Ok(())
+        }
+        async fn new_tab(&self, _url: Option<&str>) -> Result<usize, ActionError> {
+            Ok(0)
+        }
+        async fn switch_tab(&self, _idx: usize) -> Result<(), ActionError> {
+            Ok(())
+        }
+        async fn close_tab(&self, _idx: usize) -> Result<(), ActionError> {
+            Ok(())
+        }
+        async fn tab_count(&self) -> Result<usize, ActionError> {
+            Ok(1)
+        }
+        async fn list_tabs(&self) -> Result<Vec<TabInfo>, ActionError> {
+            Ok(vec![])
+        }
+        async fn set_file_input_files(
+            &self,
+            _sel: &str,
+            _paths: Vec<String>,
+        ) -> Result<(), ActionError> {
+            Ok(())
+        }
+        async fn set_file_chooser_intercept(&self, _enabled: bool) -> Result<(), ActionError> {
+            Ok(())
+        }
+        async fn upload_via_file_chooser(
+            &self,
+            _trigger: Option<&str>,
+            _paths: Vec<String>,
+            _timeout: u64,
+        ) -> Result<(), ActionError> {
+            Ok(())
+        }
+        async fn pdf(&self) -> Result<Vec<u8>, ActionError> {
+            Ok(vec![])
+        }
     }
 
     /// Mock resolver that returns workflows from a HashMap
@@ -1165,7 +1699,9 @@ mod tests {
 
     impl MockResolver {
         fn new() -> Self {
-            Self { workflows: HashMap::new() }
+            Self {
+                workflows: HashMap::new(),
+            }
         }
 
         fn add(&mut self, yaml: &str) -> String {
@@ -1190,7 +1726,8 @@ mod tests {
     async fn test_call_action_basic() {
         // Sub-workflow that logs and stores a value
         let mut resolver = MockResolver::new();
-        resolver.add(r#"
+        resolver.add(
+            r#"
 name: greet
 params:
   name:
@@ -1205,13 +1742,15 @@ steps:
     store_as: greeting_status
 output:
   status: "{{store.greeting_status}}"
-"#);
+"#,
+        );
 
         let engine = WorkflowEngine::with_resolver(Arc::new(resolver));
         let browser = MockBrowser;
 
         // Parent workflow calls sub-workflow
-        let parent = WorkflowParser::parse(r#"
+        let parent = WorkflowParser::parse(
+            r#"
 name: parent
 steps:
   - action: call
@@ -1221,9 +1760,14 @@ steps:
     store_as: greet_result
   - action: log
     message: "Done"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
-        let result = engine.execute(&parent, &browser, HashMap::new()).await.unwrap();
+        let result = engine
+            .execute(&parent, &browser, HashMap::new())
+            .await
+            .unwrap();
         assert!(result.success, "Parent workflow should succeed");
         assert_eq!(result.steps_executed, 2);
     }
@@ -1232,34 +1776,44 @@ steps:
     async fn test_call_action_nested() {
         // Three-level nesting: A calls B calls C
         let mut resolver = MockResolver::new();
-        resolver.add(r#"
+        resolver.add(
+            r#"
 name: level_c
 steps:
   - action: log
     message: "Level C"
-"#);
-        resolver.add(r#"
+"#,
+        );
+        resolver.add(
+            r#"
 name: level_b
 steps:
   - action: call
     workflow: level_c
   - action: log
     message: "Level B"
-"#);
+"#,
+        );
 
         let engine = WorkflowEngine::with_resolver(Arc::new(resolver));
         let browser = MockBrowser;
 
-        let top = WorkflowParser::parse(r#"
+        let top = WorkflowParser::parse(
+            r#"
 name: level_a
 steps:
   - action: call
     workflow: level_b
   - action: log
     message: "Level A"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
-        let result = engine.execute(&top, &browser, HashMap::new()).await.unwrap();
+        let result = engine
+            .execute(&top, &browser, HashMap::new())
+            .await
+            .unwrap();
         assert!(result.success, "Three-level nested call should succeed");
     }
 
@@ -1269,16 +1823,23 @@ steps:
         let engine = WorkflowEngine::new();
         let browser = MockBrowser;
 
-        let wf = WorkflowParser::parse(r#"
+        let wf = WorkflowParser::parse(
+            r#"
 name: no-resolver
 steps:
   - action: call
     workflow: something
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let result = engine.execute(&wf, &browser, HashMap::new()).await.unwrap();
         assert!(!result.success, "Should fail without resolver");
-        assert!(result.error.as_ref().unwrap().contains("No workflow resolver"));
+        assert!(result
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("No workflow resolver"));
     }
 
     #[tokio::test]
@@ -1287,12 +1848,15 @@ steps:
         let engine = WorkflowEngine::with_resolver(Arc::new(resolver));
         let browser = MockBrowser;
 
-        let wf = WorkflowParser::parse(r#"
+        let wf = WorkflowParser::parse(
+            r#"
 name: missing-call
 steps:
   - action: call
     workflow: nonexistent
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let result = engine.execute(&wf, &browser, HashMap::new()).await.unwrap();
         assert!(!result.success, "Should fail for missing workflow");
@@ -1303,32 +1867,42 @@ steps:
     async fn test_call_action_max_depth() {
         // Create a workflow that calls itself
         let mut resolver = MockResolver::new();
-        resolver.add(r#"
+        resolver.add(
+            r#"
 name: recursive
 steps:
   - action: call
     workflow: recursive
-"#);
+"#,
+        );
 
         let engine = WorkflowEngine::with_resolver(Arc::new(resolver));
         let browser = MockBrowser;
 
-        let wf = WorkflowParser::parse(r#"
+        let wf = WorkflowParser::parse(
+            r#"
 name: start-recursion
 steps:
   - action: call
     workflow: recursive
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let result = engine.execute(&wf, &browser, HashMap::new()).await.unwrap();
         assert!(!result.success, "Should fail at max depth");
-        assert!(result.error.as_ref().unwrap().contains("Maximum call depth"));
+        assert!(result
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("Maximum call depth"));
     }
 
     #[tokio::test]
     async fn test_call_action_params_forwarding() {
         let mut resolver = MockResolver::new();
-        resolver.add(r#"
+        resolver.add(
+            r#"
 name: echo
 params:
   message:
@@ -1337,12 +1911,14 @@ params:
 steps:
   - action: log
     message: "{{params.message}}"
-"#);
+"#,
+        );
 
         let engine = WorkflowEngine::with_resolver(Arc::new(resolver));
         let browser = MockBrowser;
 
-        let parent = WorkflowParser::parse(r#"
+        let parent = WorkflowParser::parse(
+            r#"
 name: caller
 params:
   greeting:
@@ -1353,10 +1929,15 @@ steps:
     workflow: echo
     params:
       message: "{{params.greeting}}"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let mut params = HashMap::new();
-        params.insert("greeting".to_string(), serde_json::Value::String("hello world".into()));
+        params.insert(
+            "greeting".to_string(),
+            serde_json::Value::String("hello world".into()),
+        );
 
         let result = engine.execute(&parent, &browser, params).await.unwrap();
         assert!(result.success, "Param forwarding should work");
@@ -1365,17 +1946,20 @@ steps:
     #[tokio::test]
     async fn test_call_action_with_condition() {
         let mut resolver = MockResolver::new();
-        resolver.add(r#"
+        resolver.add(
+            r#"
 name: optional-step
 steps:
   - action: log
     message: "ran optional step"
-"#);
+"#,
+        );
 
         let engine = WorkflowEngine::with_resolver(Arc::new(resolver));
         let browser = MockBrowser;
 
-        let wf = WorkflowParser::parse(r#"
+        let wf = WorkflowParser::parse(
+            r#"
 name: conditional-call
 steps:
   - action: call
@@ -1383,11 +1967,13 @@ steps:
     if: "false"
   - action: log
     message: "after conditional call"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let result = engine.execute(&wf, &browser, HashMap::new()).await.unwrap();
         assert!(result.success);
-        // The call should be skipped due to condition, so only 1 step actually runs  
+        // The call should be skipped due to condition, so only 1 step actually runs
         // (the log step, since the call is skipped)
         assert_eq!(result.steps_executed, 2);
     }
@@ -1402,7 +1988,10 @@ steps:
 
     impl TestPauseHandler {
         fn new(response: PauseResponse) -> Self {
-            Self { response: response, calls: std::sync::Mutex::new(Vec::new()) }
+            Self {
+                response: response,
+                calls: std::sync::Mutex::new(Vec::new()),
+            }
         }
         fn call_count(&self) -> usize {
             self.calls.lock().unwrap().len()
@@ -1411,8 +2000,17 @@ steps:
 
     #[async_trait::async_trait]
     impl PauseHandler for TestPauseHandler {
-        async fn on_pause(&self, workflow: &str, step: usize, action: &str, _selector: Option<&str>) -> PauseResponse {
-            self.calls.lock().unwrap().push((workflow.to_string(), step, action.to_string()));
+        async fn on_pause(
+            &self,
+            workflow: &str,
+            step: usize,
+            action: &str,
+            _selector: Option<&str>,
+        ) -> PauseResponse {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((workflow.to_string(), step, action.to_string()));
             self.response.clone()
         }
     }
@@ -1423,7 +2021,8 @@ steps:
         let browser = MockBrowser;
         let handler = TestPauseHandler::new(PauseResponse::Continue);
 
-        let wf = WorkflowParser::parse(r#"
+        let wf = WorkflowParser::parse(
+            r#"
 name: pause-test
 debug:
   enabled: true
@@ -1433,13 +2032,22 @@ steps:
     message: "step one"
   - action: log
     message: "step two"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let debug = wf.debug.resolve();
-        let result = engine.execute_with_pause_handler(&wf, &browser, HashMap::new(), debug, &handler, None).await.unwrap();
+        let result = engine
+            .execute_with_pause_handler(&wf, &browser, HashMap::new(), debug, &handler, None)
+            .await
+            .unwrap();
         assert!(result.success);
         assert_eq!(result.steps_executed, 2);
-        assert_eq!(handler.call_count(), 2, "Pause handler should be called for each step");
+        assert_eq!(
+            handler.call_count(),
+            2,
+            "Pause handler should be called for each step"
+        );
     }
 
     #[tokio::test]
@@ -1448,7 +2056,8 @@ steps:
         let browser = MockBrowser;
         let handler = TestPauseHandler::new(PauseResponse::Skip);
 
-        let wf = WorkflowParser::parse(r#"
+        let wf = WorkflowParser::parse(
+            r#"
 name: skip-test
 debug:
   enabled: true
@@ -1458,10 +2067,15 @@ steps:
     message: "step one"
   - action: log
     message: "step two"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let debug = wf.debug.resolve();
-        let result = engine.execute_with_pause_handler(&wf, &browser, HashMap::new(), debug, &handler, None).await.unwrap();
+        let result = engine
+            .execute_with_pause_handler(&wf, &browser, HashMap::new(), debug, &handler, None)
+            .await
+            .unwrap();
         assert!(result.success);
         // Both steps are skipped, but step_index still advances
         assert_eq!(handler.call_count(), 2);
@@ -1473,7 +2087,8 @@ steps:
         let browser = MockBrowser;
         let handler = TestPauseHandler::new(PauseResponse::Abort);
 
-        let wf = WorkflowParser::parse(r#"
+        let wf = WorkflowParser::parse(
+            r#"
 name: abort-test
 debug:
   enabled: true
@@ -1483,13 +2098,25 @@ steps:
     message: "step one"
   - action: log
     message: "step two"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let debug = wf.debug.resolve();
-        let result = engine.execute_with_pause_handler(&wf, &browser, HashMap::new(), debug, &handler, None).await.unwrap();
+        let result = engine
+            .execute_with_pause_handler(&wf, &browser, HashMap::new(), debug, &handler, None)
+            .await
+            .unwrap();
         assert!(!result.success, "Abort should fail the workflow");
-        assert!(result.error.as_ref().unwrap().contains("abort"), "Error should mention abort");
-        assert_eq!(handler.call_count(), 1, "Only first step should pause before abort");
+        assert!(
+            result.error.as_ref().unwrap().contains("abort"),
+            "Error should mention abort"
+        );
+        assert_eq!(
+            handler.call_count(),
+            1,
+            "Only first step should pause before abort"
+        );
     }
 
     #[tokio::test]
@@ -1498,18 +2125,35 @@ steps:
         let browser = MockBrowser;
         let handler = TestPauseHandler::new(PauseResponse::Continue);
 
-        let wf = WorkflowParser::parse(r#"
+        let wf = WorkflowParser::parse(
+            r#"
 name: no-pause-test
 steps:
   - action: log
     message: "step one"
   - action: log
     message: "step two"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
-        let result = engine.execute_with_pause_handler(&wf, &browser, HashMap::new(), ResolvedDebugConfig::default(), &handler, None).await.unwrap();
+        let result = engine
+            .execute_with_pause_handler(
+                &wf,
+                &browser,
+                HashMap::new(),
+                ResolvedDebugConfig::default(),
+                &handler,
+                None,
+            )
+            .await
+            .unwrap();
         assert!(result.success);
-        assert_eq!(handler.call_count(), 0, "Pause handler should NOT be called when pause is disabled");
+        assert_eq!(
+            handler.call_count(),
+            0,
+            "Pause handler should NOT be called when pause is disabled"
+        );
     }
 
     #[tokio::test]
@@ -1517,5 +2161,532 @@ steps:
         let handler = DefaultPauseHandler;
         let response = handler.on_pause("wf", 0, "click", Some("button")).await;
         assert_eq!(response, PauseResponse::Continue);
+    }
+
+    // --- Loop action tests ---
+
+    #[tokio::test]
+    async fn test_loop_basic_iterates_all_items() {
+        let engine = WorkflowEngine::new();
+        let browser = MockBrowser;
+
+        let wf = WorkflowParser::parse(
+            r#"
+name: loop-basic
+steps:
+  - action: loop
+    items: ["alpha", "beta", "gamma"]
+    as: item
+    steps:
+      - action: emit
+        event: each
+        data:
+          v: "{{vars.item}}"
+  - action: emit
+    event: after_loop
+"#,
+        )
+        .unwrap();
+
+        let result = engine.execute(&wf, &browser, HashMap::new()).await.unwrap();
+        assert!(result.success, "loop should succeed: {:?}", result.error);
+
+        let each: Vec<&Value> = result
+            .events
+            .iter()
+            .filter(|(n, _)| n == "each")
+            .map(|(_, d)| d)
+            .collect();
+        assert_eq!(each.len(), 3, "loop body should run once per item");
+        assert_eq!(each[0]["data"]["v"], json!("alpha"));
+        assert_eq!(each[1]["data"]["v"], json!("beta"));
+        assert_eq!(each[2]["data"]["v"], json!("gamma"));
+        assert!(result.events.iter().any(|(n, _)| n == "after_loop"));
+    }
+
+    #[tokio::test]
+    async fn test_loop_index_is_zero_based() {
+        let engine = WorkflowEngine::new();
+        let browser = MockBrowser;
+
+        let wf = WorkflowParser::parse(
+            r#"
+name: loop-index
+steps:
+  - action: loop
+    items: ["x", "y"]
+    as: val
+    index_as: idx
+    steps:
+      - action: emit
+        event: iter
+        data:
+          i: "{{vars.idx}}"
+          v: "{{vars.val}}"
+"#,
+        )
+        .unwrap();
+
+        let result = engine.execute(&wf, &browser, HashMap::new()).await.unwrap();
+        assert!(result.success, "{:?}", result.error);
+
+        let idxs: Vec<&Value> = result
+            .events
+            .iter()
+            .filter(|(n, _)| n == "iter")
+            .map(|(_, d)| &d["data"]["i"])
+            .collect();
+        assert_eq!(idxs, vec![&json!("0"), &json!("1")]);
+        let vals: Vec<&Value> = result
+            .events
+            .iter()
+            .filter(|(n, _)| n == "iter")
+            .map(|(_, d)| &d["data"]["v"])
+            .collect();
+        assert_eq!(vals, vec![&json!("x"), &json!("y")]);
+    }
+
+    #[tokio::test]
+    async fn test_loop_item_var_does_not_leak_after_loop() {
+        let engine = WorkflowEngine::new();
+        let browser = MockBrowser;
+
+        let wf = WorkflowParser::parse(
+            r#"
+name: loop-no-leak
+steps:
+  - action: loop
+    items: ["leak"]
+    as: item
+    steps:
+      - action: emit
+        event: iter
+  - action: condition
+    if: "{{vars.item}} == leak"
+    then:
+      - action: emit
+        event: leaked
+    else:
+      - action: emit
+        event: clean
+"#,
+        )
+        .unwrap();
+
+        let result = engine.execute(&wf, &browser, HashMap::new()).await.unwrap();
+        assert!(result.success, "{:?}", result.error);
+        assert!(result.events.iter().any(|(n, _)| n == "clean"));
+        assert!(
+            !result.events.iter().any(|(n, _)| n == "leaked"),
+            "loop item var must be scoped to the loop"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_loop_respects_step_if_gate() {
+        let engine = WorkflowEngine::new();
+        let browser = MockBrowser;
+
+        let wf = WorkflowParser::parse(
+            r#"
+name: loop-skipped
+steps:
+  - action: loop
+    if: "false"
+    items: ["a"]
+    as: item
+    steps:
+      - action: emit
+        event: never
+  - action: emit
+    event: after_loop
+"#,
+        )
+        .unwrap();
+
+        let result = engine.execute(&wf, &browser, HashMap::new()).await.unwrap();
+        assert!(result.success, "{:?}", result.error);
+        assert!(!result.events.iter().any(|(n, _)| n == "never"));
+        assert!(result.events.iter().any(|(n, _)| n == "after_loop"));
+    }
+
+    #[tokio::test]
+    async fn test_loop_empty_items_runs_nothing() {
+        let engine = WorkflowEngine::new();
+        let browser = MockBrowser;
+
+        let wf = WorkflowParser::parse(
+            r#"
+name: loop-empty
+steps:
+  - action: loop
+    items: []
+    as: item
+    steps:
+      - action: emit
+        event: never
+  - action: emit
+    event: after_loop
+"#,
+        )
+        .unwrap();
+
+        let result = engine.execute(&wf, &browser, HashMap::new()).await.unwrap();
+        assert!(result.success, "{:?}", result.error);
+        assert!(!result.events.iter().any(|(n, _)| n == "never"));
+        assert!(result.events.iter().any(|(n, _)| n == "after_loop"));
+    }
+
+    #[tokio::test]
+    async fn test_nested_loops() {
+        let engine = WorkflowEngine::new();
+        let browser = MockBrowser;
+
+        let wf = WorkflowParser::parse(
+            r#"
+name: nested-loops
+steps:
+  - action: loop
+    items: ["a", "b"]
+    as: outer
+    steps:
+      - action: loop
+        items: ["1", "2"]
+        as: inner
+        steps:
+          - action: emit
+            event: combo
+            data:
+              o: "{{vars.outer}}"
+              i: "{{vars.inner}}"
+"#,
+        )
+        .unwrap();
+
+        let result = engine.execute(&wf, &browser, HashMap::new()).await.unwrap();
+        assert!(result.success, "{:?}", result.error);
+        let combos: Vec<(&Value, &Value)> = result
+            .events
+            .iter()
+            .filter(|(n, _)| n == "combo")
+            .map(|(_, d)| (&d["data"]["o"], &d["data"]["i"]))
+            .collect();
+        assert_eq!(combos.len(), 4);
+        assert_eq!(
+            combos,
+            vec![
+                (&json!("a"), &json!("1")),
+                (&json!("a"), &json!("2")),
+                (&json!("b"), &json!("1")),
+                (&json!("b"), &json!("2")),
+            ]
+        );
+    }
+
+    // --- Condition branch block tests ---
+
+    #[tokio::test]
+    async fn test_condition_branch_supports_loop() {
+        let engine = WorkflowEngine::new();
+        let browser = MockBrowser;
+
+        let wf = WorkflowParser::parse(
+            r#"
+name: cond-loop
+steps:
+  - action: condition
+    if: "true"
+    then:
+      - action: loop
+        items: ["p", "q"]
+        as: item
+        steps:
+          - action: emit
+            event: in_loop
+            data:
+              v: "{{vars.item}}"
+    else:
+      - action: emit
+        event: wrong_branch
+"#,
+        )
+        .unwrap();
+
+        let result = engine.execute(&wf, &browser, HashMap::new()).await.unwrap();
+        assert!(result.success, "{:?}", result.error);
+        let seen: Vec<&Value> = result
+            .events
+            .iter()
+            .filter(|(n, _)| n == "in_loop")
+            .map(|(_, d)| &d["data"]["v"])
+            .collect();
+        assert_eq!(seen, vec![&json!("p"), &json!("q")]);
+        assert!(!result.events.iter().any(|(n, _)| n == "wrong_branch"));
+    }
+
+    // --- Step-level handler tests ---
+
+    #[tokio::test]
+    async fn test_on_success_emit() {
+        let engine = WorkflowEngine::new();
+        let browser = MockBrowser;
+
+        let wf = WorkflowParser::parse(
+            r#"
+name: on-success-emit
+steps:
+  - id: a
+    action: emit
+    event: did_a
+    on_success:
+      emit: after_a
+      data:
+        from: "handler"
+"#,
+        )
+        .unwrap();
+
+        let result = engine.execute(&wf, &browser, HashMap::new()).await.unwrap();
+        assert!(result.success, "{:?}", result.error);
+        assert!(result.events.iter().any(|(n, _)| n == "did_a"));
+        let handler_event = result
+            .events
+            .iter()
+            .find(|(n, _)| n == "after_a")
+            .expect("on_success emit event");
+        assert_eq!(handler_event.1["handler"], json!("on_success"));
+        assert_eq!(handler_event.1["from"], json!("handler"));
+    }
+
+    #[tokio::test]
+    async fn test_on_success_goto_skips_intermediate_steps() {
+        let engine = WorkflowEngine::new();
+        let browser = MockBrowser;
+
+        let wf = WorkflowParser::parse(
+            r#"
+name: on-success-goto
+steps:
+  - id: a
+    action: emit
+    event: ev_a
+    on_success:
+      goto: c
+  - id: b
+    action: emit
+    event: ev_b
+  - id: c
+    action: emit
+    event: ev_c
+"#,
+        )
+        .unwrap();
+
+        let result = engine.execute(&wf, &browser, HashMap::new()).await.unwrap();
+        assert!(result.success, "{:?}", result.error);
+        let names: Vec<&str> = result.events.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["ev_a", "ev_c"]);
+    }
+
+    // Action that always fails, for on_failure tests
+    struct MockFailAction;
+
+    #[async_trait::async_trait]
+    impl crate::actions::Action for MockFailAction {
+        fn name(&self) -> &'static str {
+            "mock.fail"
+        }
+
+        async fn execute(
+            &self,
+            _params: &HashMap<String, serde_yaml::Value>,
+            _ctx: &crate::actions::ActionContext,
+            _browser: &dyn BrowserHandle,
+        ) -> Result<ActionOutput, ActionError> {
+            Err(ActionError::Internal("intentional test failure".into()))
+        }
+    }
+
+    fn workflow_with_fail_action(yaml: &str) -> Workflow {
+        // Bypass WorkflowParser::validate: mock.fail is only registered on the
+        // engine instance, so the shared registry check would reject it.
+        serde_yaml::from_str(yaml).expect("valid workflow yaml")
+    }
+
+    #[tokio::test]
+    async fn test_on_failure_emit_and_still_fails() {
+        let mut engine = WorkflowEngine::new();
+        engine.registry.register(Arc::new(MockFailAction));
+        let browser = MockBrowser;
+
+        let wf = workflow_with_fail_action(
+            r#"
+name: on-failure-emit
+steps:
+  - action: mock.fail
+    on_failure:
+      emit: step_failed
+      data:
+        why: "boom"
+"#,
+        );
+
+        let result = engine.execute(&wf, &browser, HashMap::new()).await.unwrap();
+        assert!(!result.success, "workflow should still fail");
+        assert!(result
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("intentional test failure"));
+        let failed_event = result
+            .events
+            .iter()
+            .find(|(n, _)| n == "step_failed")
+            .expect("on_failure emit event");
+        assert_eq!(failed_event.1["handler"], json!("on_failure"));
+        assert_eq!(failed_event.1["why"], json!("boom"));
+        assert!(
+            failed_event.1["error"]
+                .as_str()
+                .unwrap()
+                .contains("intentional test failure"),
+            "handler payload should carry the error: {:?}",
+            failed_event.1
+        );
+    }
+
+    #[tokio::test]
+    async fn test_on_failure_goto_recovers_workflow() {
+        let mut engine = WorkflowEngine::new();
+        engine.registry.register(Arc::new(MockFailAction));
+        let browser = MockBrowser;
+
+        let wf = workflow_with_fail_action(
+            r#"
+name: on-failure-recover
+steps:
+  - id: f
+    action: mock.fail
+    on_failure:
+      goto: recover
+  - id: skipme
+    action: emit
+    event: skipped
+  - id: recover
+    action: emit
+    event: recovered
+"#,
+        );
+
+        let result = engine.execute(&wf, &browser, HashMap::new()).await.unwrap();
+        assert!(
+            result.success,
+            "goto recovery should succeed: {:?}",
+            result.error
+        );
+        let names: Vec<&str> = result.events.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["recovered"]);
+    }
+
+    #[tokio::test]
+    async fn test_on_failure_abort_fails_workflow() {
+        let mut engine = WorkflowEngine::new();
+        engine.registry.register(Arc::new(MockFailAction));
+        let browser = MockBrowser;
+
+        let wf = workflow_with_fail_action(
+            r#"
+name: on-failure-abort
+steps:
+  - action: mock.fail
+    on_failure:
+      abort: true
+      error: "handler says stop"
+"#,
+        );
+
+        let result = engine.execute(&wf, &browser, HashMap::new()).await.unwrap();
+        assert!(!result.success);
+        assert!(result.error.as_ref().unwrap().contains("handler says stop"));
+    }
+
+    #[tokio::test]
+    async fn test_on_failure_missing_goto_target_fails() {
+        let mut engine = WorkflowEngine::new();
+        engine.registry.register(Arc::new(MockFailAction));
+        let browser = MockBrowser;
+
+        let wf = workflow_with_fail_action(
+            r#"
+name: on-failure-bad-goto
+steps:
+  - action: mock.fail
+    on_failure:
+      goto: nowhere
+"#,
+        );
+
+        let result = engine.execute(&wf, &browser, HashMap::new()).await.unwrap();
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("no step with id 'nowhere'"));
+    }
+
+    #[tokio::test]
+    async fn test_on_success_abort_stops_workflow() {
+        let engine = WorkflowEngine::new();
+        let browser = MockBrowser;
+
+        let wf = WorkflowParser::parse(
+            r#"
+name: on-success-abort
+steps:
+  - action: emit
+    event: first
+    on_success:
+      abort: true
+      error: "not allowed"
+  - action: emit
+    event: never
+"#,
+        )
+        .unwrap();
+
+        let result = engine.execute(&wf, &browser, HashMap::new()).await.unwrap();
+        assert!(!result.success);
+        assert!(result.error.as_ref().unwrap().contains("not allowed"));
+        assert!(!result.events.iter().any(|(n, _)| n == "never"));
+    }
+
+    #[tokio::test]
+    async fn test_on_success_steps_handler_runs_nested_steps() {
+        let engine = WorkflowEngine::new();
+        let browser = MockBrowser;
+
+        let wf = WorkflowParser::parse(
+            r#"
+name: on-success-steps
+steps:
+  - action: emit
+    event: base
+    on_success:
+      steps:
+        - action: emit
+          event: nested_one
+        - action: emit
+          event: nested_two
+  - action: emit
+    event: after
+"#,
+        )
+        .unwrap();
+
+        let result = engine.execute(&wf, &browser, HashMap::new()).await.unwrap();
+        assert!(result.success, "{:?}", result.error);
+        let names: Vec<&str> = result.events.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["base", "nested_one", "nested_two", "after"]);
     }
 }

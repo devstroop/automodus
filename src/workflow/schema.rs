@@ -487,8 +487,11 @@ pub enum StepHandler {
         error: Option<String>,
     },
 
-    /// Execute nested steps
-    Steps(Vec<Step>),
+    /// Execute nested steps (map form: `steps: [...]`)
+    Steps { steps: Vec<Step> },
+
+    /// Execute nested steps (list form: a bare list of steps)
+    StepsList(Vec<Step>),
 }
 
 /// Output definition
@@ -786,7 +789,7 @@ steps:
         assert!(cfg.enabled.is_none());
         assert!(cfg.level.is_none());
         assert!(cfg.capture.is_none());
-        
+
         let resolved = cfg.resolve();
         assert!(!resolved.enabled);
         assert_eq!(resolved.level, LogLevel::Info);
@@ -801,18 +804,18 @@ steps:
             capture: Some(CaptureMode::All),
             ..Default::default()
         };
-        
+
         let override_cfg = DebugConfig {
             level: Some(LogLevel::Trace),
             delay: Some(500),
             ..Default::default()
         };
-        
+
         let merged = base.merge(&override_cfg);
-        assert_eq!(merged.enabled, Some(true));  // from base
-        assert_eq!(merged.level, Some(LogLevel::Trace));  // overridden
-        assert_eq!(merged.capture, Some(CaptureMode::All));  // from base
-        assert_eq!(merged.delay, Some(500));  // from override
+        assert_eq!(merged.enabled, Some(true)); // from base
+        assert_eq!(merged.level, Some(LogLevel::Trace)); // overridden
+        assert_eq!(merged.capture, Some(CaptureMode::All)); // from base
+        assert_eq!(merged.delay, Some(500)); // from override
     }
 
     #[test]
@@ -838,8 +841,8 @@ steps:
             ..Default::default()
         };
         let resolved = cfg.with_profile().resolve();
-        assert_eq!(resolved.capture, CaptureMode::All);  // explicit wins
-        assert!(resolved.console);  // from profile
+        assert_eq!(resolved.capture, CaptureMode::All); // explicit wins
+        assert!(resolved.console); // from profile
     }
 
     #[test]
@@ -894,7 +897,7 @@ steps:
 "##;
         let workflow: Workflow = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(workflow.debug.profile, Some(DebugProfile::Verbose));
-        
+
         let resolved = workflow.debug.with_profile().resolve();
         assert_eq!(resolved.level, LogLevel::Trace);
         assert_eq!(resolved.capture, CaptureMode::All);
@@ -927,7 +930,7 @@ steps:
     url: "https://example.com"
 "##;
         let workflow: Workflow = serde_yaml::from_str(yaml).unwrap();
-        assert!(workflow.debug.enabled.is_none());  // Default
-        assert!(workflow.steps[0].debug.is_none());  // Not set
+        assert!(workflow.debug.enabled.is_none()); // Default
+        assert!(workflow.steps[0].debug.is_none()); // Not set
     }
 }
