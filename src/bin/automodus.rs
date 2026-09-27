@@ -761,6 +761,19 @@ async fn handle_daemon_command(op: DaemonOp) -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
+/// Removes a per-run temp browser profile dir on drop (best-effort).
+///
+/// Workflow runs get a fresh `/tmp/automodus-workflow-<pid>` profile that
+/// nothing cleaned up before — dozens of runs fill tmpfs. Only wrapped for
+/// the temp-dir run path; persistent profiles (shell/server) are untouched.
+struct TempProfile(std::path::PathBuf);
+
+impl Drop for TempProfile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 async fn run_workflow(
     path: &std::path::Path,
     keep_open: bool,
@@ -823,6 +836,11 @@ async fn run_workflow(
             options = options.lightpanda_path(lp);
         }
     }
+
+    // Declared before the adapter: locals drop in reverse order, so the
+    // adapter (browser kill + wait) always runs before the profile removal.
+    let _profile = TempProfile(options.user_data_dir.clone());
+
     let adapter = launch_session(&options)
         .await
         .map_err(|e| format!("Failed to launch browser: {}", e))?;
@@ -939,9 +957,11 @@ async fn run_workflow(
 
     // Non-zero exit on workflow failure so scripts/CI can gate on it.
     // Drop the adapter first: process::exit skips destructors, which would
-    // orphan the browser child (chromiumoxide kill_on_drop / KillOnDrop).
+    // orphan the browser child (chromiumoxide kill_on_drop / KillOnDrop);
+    // then drop the profile guard (also skipped by process::exit).
     if !result.success {
         drop(adapter);
+        drop(_profile);
         std::process::exit(1);
     }
 
