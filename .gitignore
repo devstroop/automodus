@@ -51,7 +51,7 @@ config/app.toml
 config/local.toml
 
 # Runtime workflows directory (user-created via AUTOMODUS_WORKFLOWS default;
-# shared examples live in the workspace sibling ../examples/)
+# shared examples live in the examples/ git submodule)
 workflows/
 
 # Runtime artifacts (screenshots, debug captures from example/workflow runs)

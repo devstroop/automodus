@@ -321,7 +321,7 @@ pub fn ensure_config_exists() -> std::io::Result<PathBuf> {
     // Create default config if it doesn't exist
     if !config_path.exists() {
         let default_content = r#"# Automodus Daemon Configuration
-# See: https://github.com/automodus/automodus/docs/SHELL.md
+# See: docs/SHELL.md
 
 [daemon]
 socket_path = "~/.automodus/automodus.sock"
