@@ -1,39 +1,36 @@
 # Automodus - Programmable Workflow Automation Platform
 
+> **Status of this document:** the design spec, checked against the current
+> implementation. Sections are marked **✅ implemented** (matches the code;
+> every YAML snippet validates with `automodus validate`) or **📋 planned**
+> (schema may accept the syntax, but nothing wires it up yet).
+
 ## Vision
 
-A **general-purpose, event-driven workflow automation platform** with declarative YAML workflows.
+A **general-purpose workflow automation platform** with declarative YAML
+workflows, driven by the CLI, the REST API, or the interactive shell.
 
 ## Core Concepts
 
-### 1. Workflows
-A workflow is a YAML-defined automation sequence that runs in browser instances.
+### 1. Workflows ✅
+
+A workflow is a YAML-defined automation sequence that runs in a browser
+instance.
 
 ```yaml
-# workflows/example.yaml
+# workflows/checkout.yaml
 name: checkout-workflow
 version: "1.0"
+description: Open a product page and capture the order total
 
 # Browser configuration
 browser:
-  instances: 1                    # Number of parallel browser instances
-  headless: false                 # Show browser window
+  headless: true                 # Show browser window when false
   data_dir: "./data/{{workflow.name}}/{{instance.id}}"
-  
-# What triggers this workflow
-on:
-  # Expose as REST API endpoint
-  api:
-    path: /workflows/checkout
-    method: POST
-    
-  # Schedule-based trigger
-  schedule: "0 */6 * * *"         # Every 6 hours
-  
-  # Event-based trigger (from other workflows or external)
-  event: cart.ready
-  
-# Input parameters (from trigger)
+  width: 1280
+  height: 720
+
+# Input parameters (supplied by the runner: CLI key=value or API "params")
 params:
   product_url:
     type: string
@@ -42,328 +39,358 @@ params:
     type: number
     default: 1
 
-# Variables available throughout workflow
+# Variables available throughout the workflow
 vars:
   base_url: "https://shop.example.com"
-  
+
 # The automation steps
 steps:
   - id: navigate
     action: goto
     url: "{{params.product_url}}"
-    
+
   - id: add_to_cart
     action: click
     selector: "button.add-to-cart"
-    wait_after: 2s
-    
+
   - id: check_added
     action: wait_for
     selector: ".cart-count"
-    condition: text.equals("{{params.quantity}}")
-    timeout: 10s
-    on_success:
-      goto: checkout
+    timeout: 10000
+    # Step-level gate: rendered before evaluation, supports == / != or
+    # truthiness (true/yes/1/false/no/0/empty)
+    if: "{{params.quantity}} == 1"
     on_failure:
-      emit: cart.error
-      data:
-        reason: "Item not added"
-      abort: true
-      
+      goto: checkout
+
   - id: checkout
     action: goto
     url: "{{vars.base_url}}/checkout"
-    
+
   - id: screenshot
     action: screenshot
     path: "./output/{{timestamp}}_checkout.png"
-    
+
   - id: extract_total
     action: extract
     selector: ".order-total"
-    attribute: text
     store_as: order_total
-    
-# What to emit/return when workflow completes
-outputs:
-  - name: total
-    value: "{{order_total}}"
-  - name: screenshot
-    value: "{{steps.screenshot.output}}"
-    
+
+# What to return when the workflow completes
+# (map of name -> template; read back as {{output.name}} is not supported —
+# the map is resolved into WorkflowResult.output)
+output:
+  total: "{{store.order_total}}"
+  url: "{{params.product_url}}"
+
 on_complete:
-  emit: checkout.completed
-  data:
-    total: "{{order_total}}"
-    
+  emit:
+    event: checkout.completed
+
 on_error:
-  emit: checkout.failed
   screenshot: true
+  emit:
+    event: checkout.failed
 ```
 
-### 2. Actions (Built-in)
+Note: workflow-level `on_complete`/`on_error` emits receive an automatic
+payload (workflow name, duration, step, error) — custom `data:` on those two
+handlers is accepted by the schema but not included. Step-handler
+(`on_success`/`on_failure`) and action-level `emit` **do** render and include
+their `data:` map.
+
+Key schema types (in `src/workflow/schema.rs`):
+
+| Type | Purpose |
+|------|---------|
+| `Workflow` | Top-level: name, version, browser, on, params, vars, steps, output, on_complete, on_error, debug |
+| `Step` | id, action, flattened params, retry, `if:`, emit, on_success, on_failure, debug |
+| `RetryConfig` | `max` (attempts) + `delay_ms` |
+| `StepHandler` | One of: `goto:`, `emit:`+`data:`, `abort:`+`error:`, `steps:` (or a bare list of steps) |
+| `DebugConfig` | Optional debug settings (`Option<T>` fields for merge) |
+| `ResolvedDebugConfig` | Concrete debug values after merging |
+| `Triggers` | api, schedule, event, webhook, watch, manual (📋 schema-only) |
+
+### 2. Actions ✅
+
+28 registered actions + 3 engine pseudo-actions. Validation is
+registry-backed — an unknown action fails `automodus validate` and prints the
+known list. Aliases: `navigate` → `goto`, `input` → `type`, `wait` → `wait_for`.
 
 | Action | Description | Key Params |
 |--------|-------------|------------|
-| `goto` | Navigate to URL | `url` |
-| `click` | Click element | `selector`, `button` |
+| `goto` | Navigate to URL | `url`, `wait_until` |
+| `back` / `forward` / `reload` | History navigation / reload | — |
+| `click` | Click element | `selector` |
 | `type` | Type text | `selector`, `text`, `clear` |
-| `wait_for` | Wait for element/condition | `selector`, `condition`, `timeout` |
-| `screenshot` | Capture screenshot | `path`, `full_page` |
-| `extract` | Extract data from page | `selector`, `attribute`, `store_as` |
+| `hover` | Hover element | `selector` |
+| `select` | Select dropdown option | `selector`, `value` |
+| `wait_for` | Wait for element/URL/text | `selector` \| `url` \| `text`, `timeout`, `state` |
+| `sleep` | Wait fixed time | `duration` or `ms` |
+| `extract` | Extract data from page | `selector`, `attribute`, `many`, `store_as` (or `as`) |
 | `eval` | Run JavaScript | `script`, `store_as` |
-| `tab.new` | Open new tab | `url` |
-| `tab.switch` | Switch to tab | `index` or `title` |
-| `tab.close` | Close tab | `index` |
-| `emit` | Emit event | `event`, `data` |
-| `call` | Call another workflow | `workflow`, `params`, `await` |
-| `http` | Make HTTP request | `method`, `url`, `body` |
-| `sleep` | Wait fixed time | `duration` |
-| `condition` | Conditional branch | `if`, `then`, `else` |
-| `loop` | Iterate | `items`, `as`, `steps` |
+| `screenshot` | Capture screenshot | `path`, `full_page` (literal bool) |
+| `tab.list` / `tab.new` / `tab.switch` / `tab.close` | Tab management | `url` / `index` / `index` (literal ints) |
+| `upload` / `wait_upload` / `file_chooser` | File inputs (Chromium-only) | `file_path`/`files`, `trigger`, `enabled` |
+| `http.get/post/put/patch/delete` | HTTP requests | `url`, `headers`, `body`, `store_as` |
+| `http.request` | Generic HTTP request | `method`, `url` |
+| `emit` | Emit event (recorded on the event bus) | `event`, `data` |
+| `log` | Log message | `message` |
+| `loop` (pseudo) | Iterate items, run `steps` per item | `items`, `as`, `steps`, `index_as` |
+| `condition` (pseudo) | Branch | `if`, `then`, `else` |
+| `call` (pseudo) | Invoke another workflow | `workflow`, `params` |
 
-### 3. Triggers
+**Engine notes:**
+
+- `upload`/`wait_upload`/`file_chooser` require Chromium capabilities
+  (`file_input`, `file_chooser`); `screenshot`/`eval`/tabs work on all engines
+  (Lightpanda is single-page — no tab management).
+- `screenshot` has no `store_as`; read the result via `{{steps.<id>...}}`.
+- `tab.switch.index` must be a **literal integer** — template-rendered strings
+  fail `as_u64()`.
+- Booleans that gate behavior (`full_page`) must be literal too; branch on
+  params with `if:` instead (see `examples/browser/screenshot.yaml`).
+
+### 3. Triggers 📋 (schema-only)
+
+The `on:` block is parsed and validated (`automodus list` shows it), but no
+dispatcher exists yet — cron/webhook/event routing is **planned**. Run
+workflows explicitly with `automodus run` or
+`POST /api/workflows/{name}/run`.
 
 ```yaml
 on:
-  # REST API trigger - creates endpoint
+  # REST API trigger (planned: dynamic endpoint from path)
   api:
     path: /trigger/my-workflow
     method: POST
-    auth: bearer          # optional auth requirement
-    
-  # Cron schedule
+
+  # Cron schedule (planned)
   schedule: "*/5 * * * *"  # Every 5 minutes
-  
-  # Event from another workflow or external webhook
+
+  # Event from another workflow (planned)
   event: user.signup
-  
-  # Webhook (external systems call in)
+
+  # Webhook (planned)
   webhook:
     path: /webhook/stripe
-    secret: "{{env.STRIPE_SECRET}}"
-    
-  # File watcher
+    secret: "whsec_..."
+
+  # File watcher (planned)
   watch:
     path: "./input/*.csv"
     events: [created, modified]
-    
-  # Manual only (no auto-trigger)
+
+  # Manual only (the default when `on:` is omitted)
   manual: true
 ```
 
-### 4. Events & Pipelines
+### 4. Events & Pipelines 📋 (partially implemented)
 
-Workflows communicate via events:
+`emit` (action or `on_complete`/`on_error`/step-handler form) records events
+on an in-process broadcast bus, and `on:`-declared `event:` triggers are
+schema-validated — but **nothing subscribes yet**, so one workflow cannot
+trigger another. `{{trigger.*}}` template roots do not exist.
 
 ```yaml
-# workflow-a.yaml
+# workflow-a.yaml — emit as a step action: data IS rendered and recorded
 steps:
   - id: process
     action: extract
     selector: ".data"
     store_as: result
-    
-on_complete:
-  emit: data.processed
-  data:
-    result: "{{result}}"
-    
+
+  - action: emit
+    event: data.processed
+    data:
+      result: "{{store.result}}"
+
 ---
-# workflow-b.yaml (triggered by workflow-a)
+# workflow-b.yaml — the declaration validates today, but nothing dispatches it
 on:
   event: data.processed
-  
+
 steps:
   - id: use_data
     action: log
-    message: "Got: {{trigger.data.result}}"
+    message: "Event recorded"
 ```
 
-### 5. Multi-Instance & Tabs
+### 5. Multi-Instance & Tabs ✅ (single instance today)
+
+`browser.instances` is accepted by the schema, but a run launches one browser
+per execution; isolation comes from `data_dir` (per-run temp profiles are
+cleaned up automatically). Tab control works on Chromium and Firefox:
 
 ```yaml
 browser:
-  instances: 3                    # Run 3 parallel browser instances
+  instances: 3                    # accepted; one browser is launched per run
   data_dir: "./profiles/{{instance.id}}"
-  
+
 steps:
+  # Literal item lists iterate directly
   - id: open_tabs
     action: loop
-    items: ["https://a.com", "https://b.com", "https://c.com"]
+    items: ["https://a.example.com", "https://b.example.com", "https://c.example.com"]
     as: url
     steps:
       - action: tab.new
-        url: "{{url}}"
-        
-  - id: parallel_extract
+        url: "{{vars.url}}"
+
+  # Loop variables are read through vars.<as> / vars.<index_as>
+  - id: log_indexes
     action: loop
     items: [0, 1, 2]
     as: tab_index
-    parallel: true              # Run in parallel
+    index_as: i
     steps:
-      - action: tab.switch
-        index: "{{tab_index}}"
-      - action: extract
-        selector: "h1"
-        store_as: "title_{{tab_index}}"
+      - action: log
+        message: "iteration {{vars.i}} -> tab {{vars.tab_index}}"
+
+  # To iterate a stored YAML list, render it as JSON so it stays a sequence:
+  #   items: "{{vars.sites | json}}"
+  # (parallel loops are rejected by the validator)
 ```
 
-## Architecture
+## Architecture ✅
 
 ```
 automodus/
 ├── Cargo.toml
-├── config/
-│   └── automodus.toml         # Server configuration
-├── ../examples/              # Example YAML workflows (workspace sibling, outside this repo)
-│   ├── browser/              # Browser demos
-│   ├── http/                 # HTTP demos
-│   ├── compose/              # Composition demos
-│   └── whatsapp/             # WhatsApp pack
+├── config/app.example.toml     # Config template (config/app.toml is gitignored)
+├── examples/                   # Example workflow pack (git submodule)
+│   ├── browser/                # Browser demos
+│   ├── compose/                # Composition demos
+│   ├── control-flow/           # loop / condition / call demos
+│   ├── debug/                  # Debug-mode demos
+│   ├── http/                   # HTTP demos
+│   └── whatsapp/               # WhatsApp pack
+├── scripts/smoke.sh            # Engine-matrix example smoke runner
 ├── src/
-│   ├── main.rs                # Entry point
-│   ├── lib.rs                 # Library exports
-│   │
-│   ├── core/                  # Core execution engine
-│   │   ├── mod.rs
-│   │   ├── engine.rs          # Workflow execution engine
-│   │   ├── context.rs         # Execution context (vars, params)
-│   │   ├── runtime.rs         # Browser instance management
-│   │   └── events.rs          # Event bus
-│   │
-│   ├── workflow/              # Workflow definition & parsing
-│   │   ├── mod.rs
-│   │   ├── schema.rs          # YAML schema types
-│   │   ├── parser.rs          # YAML parser
-│   │   ├── validator.rs       # Workflow validation
-│   │   └── loader.rs          # Load workflows from directory
-│   │
-│   ├── actions/               # Built-in actions
-│   │   ├── mod.rs             # Action registry
-│   │   ├── navigate.rs        # goto, back, forward, reload
-│   │   ├── interact.rs        # click, type, select, hover
-│   │   ├── wait.rs            # wait_for, sleep
-│   │   ├── extract.rs         # extract, eval
-│   │   ├── capture.rs         # screenshot, pdf
-│   │   ├── tabs.rs            # tab.new, tab.switch, tab.close
-│   │   ├── control.rs         # condition, loop, call
-│   │   └── http.rs            # http requests
-│   │
-│   ├── triggers/              # Trigger handlers
-│   │   ├── mod.rs
-│   │   ├── api.rs             # REST API triggers
-│   │   ├── schedule.rs        # Cron scheduler
-│   │   ├── events.rs          # Event triggers
-│   │   └── webhook.rs         # Webhook handlers
-│   │
-│   ├── browser/               # Browser automation (from existing)
-│   │   ├── mod.rs
-│   │   ├── instance.rs        # Browser instance management
-│   │   ├── cdp.rs             # Chrome DevTools Protocol
-│   │   ├── tabs.rs            # Tab management
-│   │   └── session.rs         # Session/profile management
-│   │
-│   ├── api/                   # REST API server
-│   │   ├── mod.rs
-│   │   ├── routes.rs          # API routes
-│   │   ├── workflows.rs       # /api/workflows endpoints
-│   │   ├── triggers.rs        # Dynamic trigger routes
-│   │   └── events.rs          # /api/events endpoints
-│   │
-│   └── utils/                 # Utilities
-│       ├── mod.rs
-│       ├── template.rs        # {{variable}} interpolation
-│       └── logging.rs
-│
-└── tests/
-    └── workflows/             # Test workflow YAMLs
+│   ├── bin/automodus.rs        # CLI entry point (hand-rolled arg parsing)
+│   ├── lib.rs / error.rs / config.rs
+│   ├── core/                   # Execution engine
+│   │   ├── engine.rs           # Workflow execution, loops, handlers, debug
+│   │   ├── context.rs          # ExecutionContext (vars, params, store)
+│   │   ├── app.rs              # AppCore (daemon/shell shared state)
+│   │   ├── template.rs         # {{variable}} interpolation (+ | json)
+│   │   └── json_path.rs        # JSONPath-style extraction
+│   ├── workflow/               # Workflow definition & parsing
+│   │   ├── schema.rs           # YAML schema types
+│   │   ├── parser.rs           # Registry-backed validation
+│   │   └── loader.rs           # Load workflows from directory
+│   ├── actions/                # Action registry + shared types
+│   │   ├── registry.rs         # Action/BrowserHandle traits, capabilities
+│   │   └── control.rs          # emit, log
+│   ├── modules/
+│   │   ├── browser/            # Multi-engine browser automation
+│   │   │   ├── session.rs      # SessionAdapter dispatch + Lightpanda CDP
+│   │   │   ├── adapter.rs      # Chromium CDP (chromiumoxide)
+│   │   │   ├── firefox.rs      # Firefox BiDi (rustenium)
+│   │   │   ├── launch.rs       # launch_session() per engine
+│   │   │   ├── driver.rs / selector.rs
+│   │   │   └── actions/        # navigate, interact, wait, extract, ...
+│   │   └── http/               # HTTP client + http.* actions
+│   ├── daemon/                 # Daemon (mod, config, protocol)
+│   ├── shell/                  # Interactive shell client
+│   ├── api/                    # REST API + WebSocket (server, handlers, ws)
+│   ├── triggers/               # Trigger type re-exports (schema-only today)
+│   └── utils/                  # logging, debug cleanup, trace, metrics
+├── tests/                      # Integration/session/shell/daemon suites
+└── .github/workflows/ci.yml    # fmt, clippy, tests, 3-engine smoke matrix
 ```
 
-## API Endpoints
+## API Endpoints ✅
 
 ```
-POST   /api/workflows                    # Upload/create workflow
-GET    /api/workflows                    # List all workflows
-GET    /api/workflows/{name}             # Get workflow details
-DELETE /api/workflows/{name}             # Delete workflow
-POST   /api/workflows/{name}/run         # Run workflow manually
-GET    /api/workflows/{name}/runs        # List workflow runs
-GET    /api/workflows/{name}/runs/{id}   # Get run status/output
-
-POST   /api/events                   # Emit event
-GET    /api/events/stream            # SSE event stream
-
-GET    /api/browser/instances        # List browser instances
-POST   /api/browser/instances        # Create instance
-DELETE /api/browser/instances/{id}   # Stop instance
-
-# Dynamic routes from workflow triggers
-POST   /workflows/checkout           # From workflow's on.api.path
-POST   /webhook/stripe               # From workflow's on.webhook.path
+GET    /api/health                      # Health check
+GET    /api/workflows                   # List workflows
+POST   /api/workflows/reload            # Rescan workflows directory
+GET    /api/workflows/{name}            # Workflow details
+POST   /api/workflows/{name}/run        # Run workflow {"params": {...}}
+GET    /api/executions[/{id}]           # Execution history
+DELETE /api/executions/{id}             # Cancel execution
+GET    /api/browser/screenshot          # Screenshot
+POST   /api/browser/{goto,click,type,wait,eval}
+GET    /api/browser/page                # Page info
+GET/POST /api/browser/tabs              # List / open tabs
+POST   /api/browser/tabs/switch         # Switch tab
+DELETE /api/browser/tabs/{index}        # Close tab
+GET    /api/browser/pdf                 # PDF (Chromium-only)
+POST   /api/debug/cleanup               # Prune debug artifacts
+GET/POST/DELETE /api/sessions[/{id}]    # Session CRUD
+WS     /ws                              # execution.started/step/complete/error/paused
+GET    /swagger-ui, /api/openapi.json   # OpenAPI docs
 ```
 
-## Template Syntax
+Validation is CLI-only (`automodus validate [path]`, exit 1 when invalid).
+There is no upload/delete workflow endpoint and no dynamic trigger routing
+(see 📋 above).
+
+## Template Syntax ✅
 
 ```yaml
-# Variables
-"{{params.email}}"              # From trigger params
-"{{vars.base_url}}"             # From workflow vars
-"{{env.API_KEY}}"               # Environment variable
-"{{steps.extract_data.output}}" # Previous step output
-"{{instance.id}}"               # Current browser instance
-"{{workflow.name}}"             # Current workflow name
-"{{timestamp}}"                 # Current timestamp
-"{{random.uuid}}"               # Random UUID
+# Roots (validated allow-list)
+# {{params.email}}               Input parameter
+# {{vars.base_url}}              Workflow variable (loop items: {{vars.<as>}})
+# {{store.order_total}}          Value stored by extract/eval
+# {{steps.extract_data.output}}  Output from a step id
+# {{env.API_KEY}}                Environment variable
+# {{instance.id}}                Browser instance id
+# {{workflow.name}}              Current workflow name/id
+# {{timestamp}}                  Current RFC3339 timestamp
+# {{x | json}}                   Only built-in filter (JSON-serialize x)
+#
+# Conditions (step `if:`, condition action) — rendered first, then:
+#   "left == right" / "left != right"   (case-insensitive string compare)
+#   "true|yes|1" / "false|no|0|<empty>" (truthiness)
 
-# Expressions
-"{{params.count + 1}}"
-"{{params.name | upper}}"
-"{{params.items | join(', ')}}"
+# Not supported (📋 or nonexistent): arithmetic ({{params.count + 1}}),
+# pipes other than | json (| upper, | join, | entries), {{random.*}},
+# {{trigger.*}}, ${env.VAR} / ${locators.*} substitution.
 ```
 
-## Configuration
+## Configuration ✅
 
 ```toml
-# config/automodus.toml
+# config/app.toml (template: config/app.example.toml)
 [server]
-host = "0.0.0.0"
-port = 8080
+host = "127.0.0.1"
+port = 3000
 
 [browser]
-executable = "/usr/bin/chromium"
-default_headless = true
-max_instances = 10
-default_data_dir = "./data/browser"
+engine = "chromium"        # chromium | firefox | lightpanda
+headless = true
+timeout_ms = 30000
+# chrome_path = "/usr/bin/chromium"
+# firefox_path = "/usr/bin/firefox"
+# lightpanda_path = "/home/you/.local/bin/lightpanda"
 
 [workflows]
-directory = "./workflows"
-watch = true                    # Hot-reload on changes
-
-[events]
-buffer_size = 1000
-retention = "24h"
-
-[auth]
-enabled = true
-secret_key = "your-secret"
+directory = "workflows"
+auto_reload = true
 ```
 
-## Example Workflows
+Any `AUTOMODUS_*` environment variable overrides a config key
+(`AUTOMODUS_BROWSER_ENGINE=firefox`, …). Workflow-level `debug:` merges with
+`AUTOMODUS_DEBUG*` and CLI flags on the `automodus run` path only
+(see [DEBUG.md](DEBUG.md)). Daemon-specific keys (`[daemon]`, `[http]`, …) are
+defined in `src/daemon/config.rs` but its TOML loader is currently unused —
+the daemon runs on defaults.
+
+## Example Workflows ✅
+
+All three patterns below validate today (`automodus validate`).
 
 ### 1. Simple Screenshot Service
 
 ```yaml
 name: screenshot-service
-on:
-  api:
-    path: /screenshot
-    method: POST
 
 params:
   url:
     type: string
-    required: true
+    default: "https://books.toscrape.com/"
   full_page:
     type: boolean
     default: false
@@ -371,120 +398,131 @@ params:
 steps:
   - action: goto
     url: "{{params.url}}"
+
   - action: wait_for
     selector: body
-    timeout: 10s
-  - action: screenshot
-    full_page: "{{params.full_page}}"
-    store_as: image
+    timeout: 15000
 
-outputs:
-  - name: screenshot
-    value: "{{image}}"
-    type: base64
+  # Booleans gate behavior — branch instead of templating the flag
+  - id: capture_viewport
+    action: screenshot
+    path: "data/screenshots/service.png"
+    full_page: false
+    if: "{{params.full_page}} != true"
+
+  - id: capture_full
+    action: screenshot
+    path: "data/screenshots/service.png"
+    full_page: true
+    if: "{{params.full_page}} == true"
+
+output:
+  path: "data/screenshots/service.png"
+  url: "{{params.url}}"
 ```
 
 ### 2. Multi-Tab Data Aggregator
 
 ```yaml
 name: price-aggregator
-browser:
-  instances: 1
-  
-on:
-  schedule: "0 * * * *"  # Every hour
 
 vars:
   sites:
-    - url: "https://amazon.com/product/123"
-      selector: "#price"
-    - url: "https://ebay.com/item/456"  
-      selector: ".price"
-    - url: "https://walmart.com/ip/789"
-      selector: "[data-price]"
+    - url: "https://books.toscrape.com/"
+      selector: ".product_pod"
+    - url: "https://books.toscrape.com/catalogue/category/books/travel_2/index.html"
+      selector: ".product_pod"
 
 steps:
-  - id: open_sites
+  # One browser, one tab: iterate the stored list and scrape sequentially
+  - id: scrape
     action: loop
-    items: "{{vars.sites}}"
-    as: site
-    steps:
-      - action: tab.new
-        url: "{{site.url}}"
-        
-  - id: extract_prices
-    action: loop
-    items: "{{vars.sites}}"
+    items: "{{vars.sites | json}}"
     as: site
     index_as: i
     steps:
-      - action: tab.switch
-        index: "{{i}}"
+      - action: goto
+        url: "{{vars.site.url}}"
+      - action: wait_for
+        selector: "{{vars.site.selector}}"
+        timeout: 15000
       - action: extract
-        selector: "{{site.selector}}"
-        store_as: "price_{{i}}"
-        
+        selector: "{{vars.site.selector}} h3 a"
+        attribute: title
+        store_as: "title_{{vars.i}}"
+
   - action: emit
     event: prices.collected
     data:
-      prices: ["{{price_0}}", "{{price_1}}", "{{price_2}}"]
+      first: "{{store.title_0}}"
+      second: "{{store.title_1}}"
 ```
 
 ### 3. Form Automation with Retry
 
-```yaml  
+```yaml
 name: form-submit
-on:
-  event: form.requested
 
 params:
   form_data:
     type: object
+    default: {}
 
 steps:
   - action: goto
     url: "https://example.com/form"
-    
+
+  # Literal field list — `| entries` does not exist; loop over pairs directly
   - action: loop
-    items: "{{params.form_data | entries}}"
+    items:
+      - { key: email, value: "robot@example.com" }
+      - { key: note, value: "automated" }
     as: field
     steps:
       - action: type
-        selector: "[name='{{field.key}}']"
-        text: "{{field.value}}"
+        selector: "[name='{{vars.field.key}}']"
+        text: "{{vars.field.value}}"
         clear: true
-        
+
   - id: submit
     action: click
     selector: "button[type=submit]"
     retry:
-      attempts: 3
-      delay: 2s
-      
-  - action: wait_for
-    condition: url.contains("/success")
-    timeout: 30s
-    on_failure:
-      - action: screenshot
-        path: "./errors/{{timestamp}}.png"
-      - abort: true
-        error: "Form submission failed"
+      max: 3
+      delay_ms: 2000
 
-outputs:
-  - name: success
-    value: true
+  - action: wait_for
+    url: "contains:/success"
+    timeout: 30000
+    on_failure:
+      steps:
+        - action: screenshot
+          path: "data/screenshots/form_error.png"
+        - action: log
+          message: "Form submission failed"
+
+output:
+  success: true
 ```
 
-## Phase 1 MVP Scope
+`on_failure` / `on_success` handlers are a **single** object — pick one of
+`goto:`, `emit:` (+`data:`), `abort:` (+`error:`), or `steps:` (or a bare
+list of steps). Combining keys (e.g. `emit:` + `abort:`) is not supported: the
+first matching form wins and extra keys are ignored.
 
-1. **Core**: YAML parser, execution engine, variable interpolation
-2. **Actions**: goto, click, type, wait_for, screenshot, extract, sleep
-3. **Triggers**: API endpoint, manual
-4. **Browser**: Single instance management, basic tab support
-5. **API**: Workflow CRUD, manual run, run status
+## Implementation Status
 
-## Future Phases
-
-- Phase 2: Multi-instance parallel execution, event bus, scheduling
-- Phase 3: Plugins/extensions, WASM actions, scripting
-- Phase 4: Web UI, workflow designer, monitoring dashboard
+| Area | Status |
+|------|--------|
+| YAML parser, registry-backed validator, template engine | ✅ shipped |
+| 28 actions + `loop` / `condition` / `call`, step handlers, step retry | ✅ shipped |
+| Chromium (CDP), Firefox (BiDi), Lightpanda engines + capability gates | ✅ shipped |
+| CLI (`run`/`validate`/`list`/`shell`/`daemon`), REST API, WebSocket, daemon | ✅ shipped |
+| Debug system (profiles, captures, pause, trace; see DEBUG.md) | ✅ shipped (console/network buffering Chromium-only, not yet surfaced) |
+| CI: fmt, clippy, tests, 3-engine smoke matrix | ✅ shipped |
+| Trigger dispatch (cron / webhook / dynamic API routes) | 📋 planned |
+| Cross-workflow event subscriptions | 📋 planned |
+| Surfacing console/network captures via API/shell | 📋 planned |
+| Daemon TOML config loading (loader exists, not wired) | 📋 planned |
+| Multi-instance parallel execution per workflow | 📋 planned |
+| Web UI / workflow designer | 📋 planned |
