@@ -58,7 +58,10 @@ pub enum ShellCommand {
     /// Type text into an element
     Type { selector: String, text: String },
     /// Wait for an element
-    Wait { selector: String, timeout: Option<u64> },
+    Wait {
+        selector: String,
+        timeout: Option<u64>,
+    },
     /// Take a screenshot
     Screenshot { path: Option<PathBuf> },
     /// Get element text
@@ -90,9 +93,15 @@ pub enum ShellCommand {
     /// Highlight an element
     Highlight { selector: String },
     /// Trace workflow (run with --debug=trace)
-    Trace { path: PathBuf, params: HashMap<String, String> },
+    Trace {
+        path: PathBuf,
+        params: HashMap<String, String>,
+    },
     /// Create a new session
-    SessionNew { name: Option<String>, keep_alive: bool },
+    SessionNew {
+        name: Option<String>,
+        keep_alive: bool,
+    },
     /// List all sessions
     SessionList,
     /// Switch to a session by ID or name
@@ -102,7 +111,10 @@ pub enum ShellCommand {
     /// Show current session info
     SessionInfo,
     /// Toggle keep-alive on a session
-    SessionKeepAlive { target: Option<String>, toggle: Option<bool> },
+    SessionKeepAlive {
+        target: Option<String>,
+        toggle: Option<bool>,
+    },
     /// List open tabs
     Tabs,
     /// Open a new tab
@@ -240,9 +252,17 @@ impl ShellCompleter {
                 if name.starts_with(prefix) || prefix.is_empty() {
                     let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
                     let full = if dir.is_empty() {
-                        if is_dir { format!("{}/", name) } else { name.clone() }
+                        if is_dir {
+                            format!("{}/", name)
+                        } else {
+                            name.clone()
+                        }
                     } else {
-                        if is_dir { format!("{}{}/", dir, name) } else { format!("{}{}", dir, name) }
+                        if is_dir {
+                            format!("{}{}/", dir, name)
+                        } else {
+                            format!("{}{}", dir, name)
+                        }
                     };
                     completions.push(Pair {
                         display: full.clone(),
@@ -312,7 +332,7 @@ impl Completer for ShellCompleter {
                                     "switch" | "close" | "keep-alive" => {
                                         Ok((pos, self.complete_session_name("")))
                                     }
-                                    _ => Ok((pos, vec![]))
+                                    _ => Ok((pos, vec![])),
                                 }
                             } else {
                                 Ok((start, self.complete_session_subcommand(last)))
@@ -323,7 +343,7 @@ impl Completer for ShellCompleter {
                                 "switch" | "close" | "keep-alive" => {
                                     Ok((start, self.complete_session_name(last)))
                                 }
-                                _ => Ok((pos, vec![]))
+                                _ => Ok((pos, vec![])),
                             }
                         } else {
                             Ok((pos, vec![]))
@@ -399,7 +419,11 @@ impl ShellClient {
             }
         }
 
-        Ok(Self { editor, config, session_names })
+        Ok(Self {
+            editor,
+            config,
+            session_names,
+        })
     }
 
     /// Read a line with the default prompt
@@ -557,7 +581,7 @@ impl ShellClient {
 
     fn parse_debug_command(args: &str) -> ShellCommand {
         let parts: Vec<&str> = args.split_whitespace().collect();
-        
+
         if parts.is_empty() {
             return ShellCommand::DebugStatus;
         }
@@ -565,10 +589,9 @@ impl ShellClient {
         match parts[0] {
             "on" => {
                 // Parse optional --profile=NAME
-                let profile = parts.iter().find_map(|p| {
-                    p.strip_prefix("--profile=")
-                        .map(|s| s.to_string())
-                });
+                let profile = parts
+                    .iter()
+                    .find_map(|p| p.strip_prefix("--profile=").map(|s| s.to_string()));
                 ShellCommand::DebugOn { profile }
             }
             "off" => ShellCommand::DebugOff,

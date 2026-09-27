@@ -34,7 +34,7 @@ mod pid_file_tests {
         // PID file should be in ~/.automodus/daemon.pid
         let home = dirs::home_dir().expect("Home directory should exist");
         let expected = home.join(".automodus").join("daemon.pid");
-        
+
         // Just verify the path is constructible
         assert!(expected.parent().is_some());
         println!("Expected PID file path: {}", expected.display());
@@ -46,26 +46,24 @@ mod pid_file_tests {
         let test_dir = unique_test_dir("stale-pid");
         std::fs::create_dir_all(&test_dir).expect("Create test directory");
         let pid_file = test_dir.join("daemon.pid");
-        
+
         // Write a PID that definitely doesn't exist (very high number)
         std::fs::write(&pid_file, "99999999").expect("Write PID file");
-        
+
         // Verify file exists
         assert!(pid_file.exists());
-        
+
         // Read and parse PID
         let content = std::fs::read_to_string(&pid_file).expect("Read PID file");
         let pid: u32 = content.trim().parse().expect("Parse PID");
         assert_eq!(pid, 99999999);
-        
+
         // The PID should be stale (process doesn't exist)
         #[cfg(unix)]
         {
             use std::process::Command;
-            let result = Command::new("kill")
-                .args(["-0", &pid.to_string()])
-                .output();
-            
+            let result = Command::new("kill").args(["-0", &pid.to_string()]).output();
+
             // kill -0 should fail because process doesn't exist
             match result {
                 Ok(output) => {
@@ -76,7 +74,7 @@ mod pid_file_tests {
                 }
             }
         }
-        
+
         // Clean up this test's directory
         let _ = std::fs::remove_dir_all(&test_dir);
     }
@@ -95,7 +93,7 @@ mod socket_tests {
         // Socket should be in ~/.automodus/automodus.sock
         let home = dirs::home_dir().expect("Home directory should exist");
         let expected = home.join(".automodus").join("automodus.sock");
-        
+
         // Just verify the path is constructible
         assert!(expected.parent().is_some());
         println!("Expected socket path: {}", expected.display());
@@ -104,13 +102,13 @@ mod socket_tests {
     #[test]
     fn test_socket_directory_creation() {
         let test_dir = unique_test_dir("socket-dir");
-        
+
         // Create directory
         std::fs::create_dir_all(&test_dir).expect("Create test directory");
-        
+
         // Verify directory exists
         assert!(test_dir.is_dir());
-        
+
         // Clean up this test's directory
         let _ = std::fs::remove_dir_all(&test_dir);
     }
@@ -129,21 +127,19 @@ mod lifecycle_tests {
     fn test_daemon_start_stop() {
         // This test requires the daemon binary to be built
         // Run: cargo build first
-        
+
         let binary = std::env::current_dir()
             .unwrap()
             .join("target/debug/automodus");
-        
+
         if !binary.exists() {
             println!("Skipping test: binary not found at {}", binary.display());
             return;
         }
-        
+
         // Start daemon in foreground for testing (would normally background)
-        let output = Command::new(&binary)
-            .args(["daemon", "status"])
-            .output();
-        
+        let output = Command::new(&binary).args(["daemon", "status"]).output();
+
         match output {
             Ok(output) => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
@@ -164,23 +160,25 @@ mod lifecycle_tests {
         let binary = std::env::current_dir()
             .unwrap()
             .join("target/debug/automodus");
-        
+
         if !binary.exists() {
             println!("Skipping test: binary not found");
             return;
         }
-        
+
         let output = Command::new(&binary)
             .args(["daemon", "status"])
             .output()
             .expect("Execute status command");
-        
+
         let stdout = String::from_utf8_lossy(&output.stdout);
         println!("Daemon status: {}", stdout);
-        
+
         // Should contain either "running" or "not running"
         assert!(
-            stdout.contains("running") || stdout.contains("not running") || stdout.contains("Daemon"),
+            stdout.contains("running")
+                || stdout.contains("not running")
+                || stdout.contains("Daemon"),
             "Status should report daemon state"
         );
     }
@@ -198,7 +196,7 @@ mod shutdown_tests {
         #[cfg(unix)]
         {
             use libc::{SIGINT, SIGTERM};
-            
+
             assert_eq!(SIGTERM, 15, "SIGTERM should be 15");
             assert_eq!(SIGINT, 2, "SIGINT should be 2");
             println!("Signal constants verified");
@@ -215,17 +213,17 @@ mod config_tests {
     #[test]
     fn test_default_config_paths() {
         let home = dirs::home_dir().expect("Home directory");
-        
+
         let config_dir = home.join(".automodus");
         let pid_file = config_dir.join("daemon.pid");
         let socket_file = config_dir.join("automodus.sock");
         let log_file = config_dir.join("daemon.log");
-        
+
         println!("Config directory: {}", config_dir.display());
         println!("PID file: {}", pid_file.display());
         println!("Socket file: {}", socket_file.display());
         println!("Log file: {}", log_file.display());
-        
+
         // Verify paths are sensible
         assert!(config_dir.is_absolute());
         assert!(pid_file.is_absolute());
@@ -385,7 +383,10 @@ mod session_store_tests {
         let core = AppCore::new(&config);
 
         // Create session
-        let id = core.create_session(Some("test-session".into())).await.unwrap();
+        let id = core
+            .create_session(Some("test-session".into()))
+            .await
+            .unwrap();
         assert!(!id.is_empty());
 
         // Get session

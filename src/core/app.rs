@@ -150,9 +150,12 @@ impl AppCore {
     }
 
     /// Merge debug config with global settings
-    pub async fn resolve_debug_config(&self, workflow_config: Option<DebugConfig>) -> ResolvedDebugConfig {
+    pub async fn resolve_debug_config(
+        &self,
+        workflow_config: Option<DebugConfig>,
+    ) -> ResolvedDebugConfig {
         let global = self.debug_config.read().await.clone();
-        
+
         match workflow_config {
             Some(wf) => {
                 // Workflow config takes precedence for provided values
@@ -199,7 +202,7 @@ impl AppCore {
     /// Create a new browser session
     pub async fn create_session(&self, name: Option<String>) -> Result<String, SessionError> {
         let mut sessions = self.sessions.write().await;
-        
+
         if sessions.count() >= self.max_sessions {
             return Err(SessionError::MaxSessionsReached);
         }
@@ -216,7 +219,7 @@ impl AppCore {
         sessions.insert(session);
 
         self.broadcast(CoreEvent::SessionCreated { id: id.clone() });
-        
+
         Ok(id)
     }
 
@@ -233,13 +236,13 @@ impl AppCore {
     /// Close a specific session
     pub async fn close_session(&self, id: &str) -> Result<(), SessionError> {
         let mut sessions = self.sessions.write().await;
-        
+
         if sessions.remove(id).is_none() {
             return Err(SessionError::NotFound);
         }
 
         self.broadcast(CoreEvent::SessionClosed { id: id.to_string() });
-        
+
         Ok(())
     }
 
@@ -247,7 +250,7 @@ impl AppCore {
     pub async fn close_all_sessions(&self) {
         let mut sessions = self.sessions.write().await;
         let ids: Vec<String> = sessions.list().into_iter().map(|s| s.id).collect();
-        
+
         for id in ids {
             sessions.remove(&id);
             self.broadcast(CoreEvent::SessionClosed { id });
@@ -277,7 +280,11 @@ impl AppCore {
     }
 
     /// Set keep_alive on a session
-    pub async fn set_session_keep_alive(&self, id: &str, keep_alive: bool) -> Result<(), SessionError> {
+    pub async fn set_session_keep_alive(
+        &self,
+        id: &str,
+        keep_alive: bool,
+    ) -> Result<(), SessionError> {
         let mut sessions = self.sessions.write().await;
         match sessions.get_mut(id) {
             Some(session) => {
@@ -346,7 +353,11 @@ pub enum CoreEvent {
     /// Execution started
     ExecutionStarted { id: String, workflow: String },
     /// Execution step
-    ExecutionStep { id: String, step: usize, action: String },
+    ExecutionStep {
+        id: String,
+        step: usize,
+        action: String,
+    },
     /// Execution complete
     ExecutionComplete { id: String, success: bool },
     /// Execution error

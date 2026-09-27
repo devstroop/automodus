@@ -10,10 +10,13 @@ use serde_json::Value;
 use std::collections::HashMap;
 use tracing::{debug, info};
 
+/// Extracted common request parameters: (url, headers, body)
+type RequestParams = (String, Option<HashMap<String, String>>, Option<String>);
+
 /// Helper to extract common parameters from action params
 fn extract_request_params(
     params: &HashMap<String, serde_yaml::Value>,
-) -> Result<(String, Option<HashMap<String, String>>, Option<String>), ActionError> {
+) -> Result<RequestParams, ActionError> {
     // URL is required
     let url = params
         .get("url")

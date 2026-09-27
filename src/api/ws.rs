@@ -135,7 +135,11 @@ pub enum ServerEvent {
     /// Execution started
     ExecutionStarted { id: String, workflow: String },
     /// Execution step
-    ExecutionStep { id: String, step: usize, action: String },
+    ExecutionStep {
+        id: String,
+        step: usize,
+        action: String,
+    },
     /// Execution complete
     ExecutionComplete { id: String, success: bool },
     /// Execution error
@@ -171,7 +175,7 @@ impl From<ServerEvent> for WsEvent {
 /// WebSocket upgrade handler
 ///
 /// Connect to `/ws` for real-time execution events.
-/// 
+///
 /// Events sent by server:
 /// - `connected` - Initial connection established
 /// - `execution.started` - Workflow execution began

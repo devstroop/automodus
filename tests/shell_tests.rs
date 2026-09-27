@@ -25,7 +25,7 @@ mod client_tests {
             .unwrap_or_else(|| PathBuf::from("."))
             .join("automodus");
         let history_file = data_dir.join("history.txt");
-        
+
         println!("History file path: {}", history_file.display());
         assert!(history_file.is_absolute() || data_dir == PathBuf::from(".").join("automodus"));
     }
@@ -75,8 +75,8 @@ mod command_flow_tests {
 
 #[cfg(test)]
 mod session_command_tests {
-    use automodus::shell::ShellCommand;
     use automodus::shell::ShellClient;
+    use automodus::shell::ShellCommand;
 
     #[test]
     fn test_parse_session_new() {
@@ -237,7 +237,10 @@ mod session_appcore_tests {
     async fn test_find_session_by_name() {
         let config = DaemonConfig::default();
         let core = AppCore::new(&config);
-        let id = core.create_session(Some("test-session".to_string())).await.unwrap();
+        let id = core
+            .create_session(Some("test-session".to_string()))
+            .await
+            .unwrap();
 
         let found = core.find_session_by_name("test-session").await;
         assert!(found.is_some());
@@ -248,7 +251,10 @@ mod session_appcore_tests {
     async fn test_find_session_by_id_or_name() {
         let config = DaemonConfig::default();
         let core = AppCore::new(&config);
-        let id = core.create_session(Some("myname".to_string())).await.unwrap();
+        let id = core
+            .create_session(Some("myname".to_string()))
+            .await
+            .unwrap();
 
         // Find by name
         let by_name = core.find_session("myname").await;
@@ -267,7 +273,10 @@ mod session_appcore_tests {
     async fn test_set_session_keep_alive() {
         let config = DaemonConfig::default();
         let core = AppCore::new(&config);
-        let id = core.create_session(Some("ka-test".to_string())).await.unwrap();
+        let id = core
+            .create_session(Some("ka-test".to_string()))
+            .await
+            .unwrap();
 
         // Default is keep_alive = true (from create_session)
         let session = core.get_session(&id).await.unwrap();
@@ -301,7 +310,7 @@ mod daemon_integration_tests {
         // Test that shell can establish connection to daemon socket
         let home = dirs::home_dir().expect("Home directory");
         let socket_path = home.join(".automodus").join("automodus.sock");
-        
+
         if socket_path.exists() {
             println!("Socket exists at: {}", socket_path.display());
             // In real test, would attempt connection
@@ -316,7 +325,7 @@ mod daemon_integration_tests {
         // Shell should handle daemon not running gracefully
         let home = dirs::home_dir().expect("Home directory");
         let socket_path = home.join(".automodus").join("automodus.sock");
-        
+
         // If socket doesn't exist, shell should show helpful error
         if !socket_path.exists() {
             println!("Daemon not running - shell should suggest 'automodus daemon start'");
@@ -366,7 +375,7 @@ mod multi_shell_tests {
         // This is a design principle test
         let shell1_cmd = "goto https://example.com";
         let shell2_cmd = "click #button";
-        
+
         // Commands are independent
         assert_ne!(shell1_cmd, shell2_cmd);
     }

@@ -9,7 +9,7 @@ use anyhow::Result;
 use chromiumoxide::browser::{Browser, BrowserConfig};
 use chromiumoxide::page::Page;
 use futures_util::stream::StreamExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, info};
@@ -71,7 +71,7 @@ impl BrowserServiceConfig {
     }
 
     /// Create config for a specific account
-    pub fn for_account(account_data_dir: &PathBuf, headless: bool, timeout_ms: u64) -> Self {
+    pub fn for_account(account_data_dir: &Path, headless: bool, timeout_ms: u64) -> Self {
         Self {
             user_data_dir: account_data_dir.join("chrome-profile"),
             headless,
@@ -154,15 +154,17 @@ impl BrowserService {
                     ));
                 }
             }
-            None => match resolve_chrome_path_with(Some(&self.config)) {
-                Ok(Some(chrome)) => {
-                    browser_config = browser_config.chrome_executable(chrome.as_path());
+            None => {
+                match resolve_chrome_path_with(Some(&self.config)) {
+                    Ok(Some(chrome)) => {
+                        browser_config = browser_config.chrome_executable(chrome.as_path());
+                    }
+                    Ok(None) => {
+                        debug!("No Chrome path configured or auto-detected; using chromiumoxide defaults");
+                    }
+                    Err(e) => return Err(anyhow::anyhow!(e)),
                 }
-                Ok(None) => {
-                    debug!("No Chrome path configured or auto-detected; using chromiumoxide defaults");
-                }
-                Err(e) => return Err(anyhow::anyhow!(e)),
-            },
+            }
         }
 
         // Set headless mode

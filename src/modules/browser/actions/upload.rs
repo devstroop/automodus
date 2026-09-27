@@ -8,9 +8,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::actions::registry::{
-    Action, ActionContext, ActionError, ActionOutput, BrowserHandle,
-};
+use crate::actions::registry::{Action, ActionContext, ActionError, ActionOutput, BrowserHandle};
 
 fn require_file_input(browser: &dyn BrowserHandle) -> Result<(), ActionError> {
     if !browser.capabilities().file_input {

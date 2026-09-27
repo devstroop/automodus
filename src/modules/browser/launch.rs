@@ -230,7 +230,10 @@ pub fn resolve_chrome_path_with(
 
         // Binary layout inside a revision dir differs by OS
         #[cfg(target_os = "macos")]
-        let (chrome_rel, shell_rel) = ("chrome-mac/Chromium.app/Contents/MacOS/Chromium", "chrome-mac/headless_shell");
+        let (chrome_rel, shell_rel) = (
+            "chrome-mac/Chromium.app/Contents/MacOS/Chromium",
+            "chrome-mac/headless_shell",
+        );
         #[cfg(target_os = "windows")]
         let (chrome_rel, shell_rel) = ("chrome-win/chrome.exe", "chrome-win/headless_shell.exe");
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -262,20 +265,26 @@ pub fn resolve_chrome_path_with(
             }
         }
         // Prefer the newest full Chromium, then newest headless shell
-        chromium.sort_by(|a, b| b.0.cmp(&a.0));
+        chromium.sort_by_key(|(v, _)| std::cmp::Reverse(*v));
         if let Some((_, p)) = chromium.into_iter().next() {
             return Some(p);
         }
-        shells.sort_by(|a, b| b.0.cmp(&a.0));
+        shells.sort_by_key(|(v, _)| std::cmp::Reverse(*v));
         shells.into_iter().next().map(|(_, p)| p)
     }
 
     // System browser install locations (per-OS)
     #[cfg(target_os = "macos")]
     let system_candidates: [Option<PathBuf>; 5] = [
-        Some(PathBuf::from("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")),
-        Some(PathBuf::from("/Applications/Chromium.app/Contents/MacOS/Chromium")),
-        Some(PathBuf::from("/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary")),
+        Some(PathBuf::from(
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        )),
+        Some(PathBuf::from(
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        )),
+        Some(PathBuf::from(
+            "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+        )),
         Some(PathBuf::from("/opt/homebrew/bin/chromium")),
         Some(PathBuf::from("/usr/local/bin/chromium")),
     ];
@@ -321,7 +330,10 @@ pub fn resolve_chrome_path_with(
 /// direct connections (useful in CI where gsettings proxy is broken).
 fn proxy_bypass_enabled() -> bool {
     matches!(
-        std::env::var("AUTOMODUS_NO_PROXY").unwrap_or_default().to_lowercase().as_str(),
+        std::env::var("AUTOMODUS_NO_PROXY")
+            .unwrap_or_default()
+            .to_lowercase()
+            .as_str(),
         "1" | "true" | "yes" | "on"
     )
 }
@@ -333,7 +345,10 @@ fn proxy_bypass_enabled() -> bool {
 /// on broken IPv6 routes).
 fn ipv6_disable_enabled() -> bool {
     matches!(
-        std::env::var("AUTOMODUS_DISABLE_IPV6").unwrap_or_default().to_lowercase().as_str(),
+        std::env::var("AUTOMODUS_DISABLE_IPV6")
+            .unwrap_or_default()
+            .to_lowercase()
+            .as_str(),
         "1" | "true" | "yes" | "on"
     )
 }
@@ -534,9 +549,7 @@ pub fn resolve_lightpanda_path(explicit: Option<&PathBuf>) -> Result<PathBuf, St
     ];
     #[cfg(target_os = "windows")]
     let candidates: [Option<PathBuf>; 3] = [
-        Some(PathBuf::from(
-            r"C:\Program Files\Lightpanda\lightpanda.exe",
-        )),
+        Some(PathBuf::from(r"C:\Program Files\Lightpanda\lightpanda.exe")),
         dirs::home_dir().map(|h| h.join(".local/bin/lightpanda.exe")),
         which_binary("lightpanda.exe"),
     ];
@@ -722,9 +735,9 @@ pub async fn launch_session(options: &LaunchOptions) -> Result<super::SessionAda
             let browser = launch_browser(options).await?;
             let page = get_or_create_page(&browser, None).await?;
             let browser_ref = Arc::new(Mutex::new(Some(browser)));
-            Ok(SessionAdapter::Chrome(super::ChromePageAdapter::with_browser(
-                page, browser_ref,
-            )))
+            Ok(SessionAdapter::Chrome(
+                super::ChromePageAdapter::with_browser(page, browser_ref),
+            ))
         }
         crate::config::BrowserEngine::Firefox => {
             let config_ff = crate::config::AppConfig::load()
@@ -741,9 +754,7 @@ pub async fn launch_session(options: &LaunchOptions) -> Result<super::SessionAda
             .await?;
             Ok(SessionAdapter::Firefox(adapter))
         }
-        crate::config::BrowserEngine::Lightpanda => {
-            launch_lightpanda_session(options).await
-        }
+        crate::config::BrowserEngine::Lightpanda => launch_lightpanda_session(options).await,
     }
 }
 
@@ -788,9 +799,13 @@ async fn launch_lightpanda_session(
         "Launching Lightpanda (CDP serve)"
     );
 
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("Failed to spawn Lightpanda at {}: {}", lightpanda.display(), e))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        format!(
+            "Failed to spawn Lightpanda at {}: {}",
+            lightpanda.display(),
+            e
+        )
+    })?;
 
     // Wait until /json/version returns the browser WebSocket URL.
     // We parse `webSocketDebuggerUrl` ourselves: Lightpanda omits Chromium-only
@@ -838,10 +853,7 @@ async fn launch_lightpanda_session(
                     Some(ws) if ws.starts_with("ws") => break ws,
                     other => {
                         if Instant::now() < deadline {
-                            tracing::debug!(
-                                "Lightpanda /json/version missing ws url: {:?}",
-                                other
-                            );
+                            tracing::debug!("Lightpanda /json/version missing ws url: {:?}", other);
                             tokio::time::sleep(Duration::from_millis(100)).await;
                         } else {
                             let _ = child.kill();
@@ -863,7 +875,8 @@ async fn launch_lightpanda_session(
                 let _ = child.wait();
                 return Err(format!(
                     "Lightpanda CDP endpoint {} returned {}",
-                    http, resp.status()
+                    http,
+                    resp.status()
                 ));
             }
             Err(_) if Instant::now() < deadline => {
@@ -966,8 +979,7 @@ mod tests {
 
     #[test]
     fn build_browser_config_rejects_non_chromium_engine() {
-        let opts =
-            LaunchOptions::for_workflow().engine(crate::config::BrowserEngine::Firefox);
+        let opts = LaunchOptions::for_workflow().engine(crate::config::BrowserEngine::Firefox);
         let err = build_browser_config(&opts).unwrap_err();
         assert!(
             err.contains("only builds Chromium") && err.contains("firefox"),
@@ -978,8 +990,7 @@ mod tests {
 
     #[test]
     fn build_browser_config_rejects_lightpanda_engine() {
-        let opts =
-            LaunchOptions::for_workflow().engine(crate::config::BrowserEngine::Lightpanda);
+        let opts = LaunchOptions::for_workflow().engine(crate::config::BrowserEngine::Lightpanda);
         let err = build_browser_config(&opts).unwrap_err();
         assert!(
             err.contains("only builds Chromium") && err.contains("lightpanda"),
@@ -990,8 +1001,8 @@ mod tests {
 
     #[test]
     fn resolve_lightpanda_path_rejects_missing_explicit() {
-        let err =
-            resolve_lightpanda_path(Some(&PathBuf::from("/definitely/not/lightpanda"))).unwrap_err();
+        let err = resolve_lightpanda_path(Some(&PathBuf::from("/definitely/not/lightpanda")))
+            .unwrap_err();
         assert!(err.contains("does not exist"), "unexpected err: {}", err);
     }
 
@@ -1008,7 +1019,8 @@ mod tests {
 
     #[test]
     fn resolve_firefox_path_rejects_missing_explicit() {
-        let err = resolve_firefox_path(Some(&PathBuf::from("/definitely/not/firefox"))).unwrap_err();
+        let err =
+            resolve_firefox_path(Some(&PathBuf::from("/definitely/not/firefox"))).unwrap_err();
         assert!(err.contains("does not exist"), "unexpected err: {}", err);
     }
 
@@ -1025,11 +1037,14 @@ mod tests {
 
     #[test]
     fn chromium_engine_builds_config() {
-        let opts =
-            LaunchOptions::for_workflow().engine(crate::config::BrowserEngine::Chromium);
+        let opts = LaunchOptions::for_workflow().engine(crate::config::BrowserEngine::Chromium);
         // May still fail on missing chrome_path elsewhere, but not on engine
         if let Err(e) = build_browser_config(&opts) {
-            assert!(!e.contains("engine"), "must not fail on chromium engine: {}", e);
+            assert!(
+                !e.contains("engine"),
+                "must not fail on chromium engine: {}",
+                e
+            );
         }
     }
 

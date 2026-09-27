@@ -275,7 +275,11 @@ mod tests {
         ];
         for msg in transient {
             let e = ActionError::BrowserError(msg.to_string());
-            assert!(is_transient_nav_eval_error(&e), "should be transient: {}", msg);
+            assert!(
+                is_transient_nav_eval_error(&e),
+                "should be transient: {}",
+                msg
+            );
             assert!(!is_fatal_session_error(&e), "should not be fatal: {}", msg);
         }
 
@@ -360,7 +364,7 @@ mod tests {
         // Simulate the decision logic: only Some(false) may satisfy Hidden/Absent.
         let state = WaitState::Hidden;
         let cases: [(Option<bool>, bool); 3] = [
-            (None, false),  // unknown — must not succeed
+            (None, false),       // unknown — must not succeed
             (Some(true), false), // text still present — must not succeed
             (Some(false), true), // text confirmed gone — success
         ];
