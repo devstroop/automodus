@@ -145,7 +145,9 @@ impl FirefoxPageAdapter {
                 )
             })?;
 
-        if let Err(e) = wait_for_port("127.0.0.1", port, Duration::from_secs(15)).await {
+        // 30s: a cold runner's first firefox spawn can exceed 15s before the
+        // remote-debugging port opens (CI smoke runs hit exactly that).
+        if let Err(e) = wait_for_port("127.0.0.1", port, Duration::from_secs(30)).await {
             let _ = child.kill();
             let _ = child.wait();
             return Err(e);
