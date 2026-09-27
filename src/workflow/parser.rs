@@ -3,9 +3,16 @@
 //! Parses YAML files into Workflow definitions.
 
 use anyhow::{Context, Result};
+use std::collections::HashSet;
 use std::path::Path;
 
-use super::schema::Workflow;
+use crate::actions::ActionRegistry;
+
+use super::schema::{Step, StepHandler, Workflow};
+
+/// Engine pseudo-actions handled directly by `WorkflowEngine`, not the
+/// action registry (`registry.get` returns `None` for them).
+const ENGINE_PSEUDO_ACTIONS: [&str; 3] = ["call", "condition", "loop"];
 
 /// Parses YAML workflow definitions
 pub struct WorkflowParser;
@@ -39,6 +46,10 @@ impl WorkflowParser {
     }
 
     /// Validate a workflow definition
+    ///
+    /// Fails on unknown actions (registry-backed, aliases included), missing
+    /// required params, malformed nested step lists, and handler `goto`
+    /// targets that don't exist in the enclosing step list.
     pub fn validate(workflow: &Workflow) -> Result<()> {
         // Name is required
         if workflow.name.trim().is_empty() {
@@ -50,10 +61,10 @@ impl WorkflowParser {
             anyhow::bail!("Workflow must have at least one step");
         }
 
-        // Validate each step
-        for (idx, step) in workflow.steps.iter().enumerate() {
-            Self::validate_step(step, idx)?;
-        }
+        // Single source of truth for registered actions (builtins + aliases)
+        let registry = ActionRegistry::new();
+
+        Self::validate_steps(&workflow.steps, &registry)?;
 
         // Validate triggers
         Self::validate_triggers(&workflow.triggers)?;
@@ -61,10 +72,41 @@ impl WorkflowParser {
         Ok(())
     }
 
-    fn validate_step(step: &super::schema::Step, index: usize) -> Result<()> {
+    /// Validate a list of steps (top-level or nested inside a handler/branch/loop)
+    fn validate_steps(steps: &[Step], registry: &ActionRegistry) -> Result<()> {
+        let enclosing_ids: HashSet<&str> = steps.iter().filter_map(|s| s.id.as_deref()).collect();
+        for (idx, step) in steps.iter().enumerate() {
+            Self::validate_step(step, idx, &enclosing_ids, registry)?;
+        }
+        Ok(())
+    }
+
+    fn validate_step(
+        step: &Step,
+        index: usize,
+        enclosing_ids: &HashSet<&str>,
+        registry: &ActionRegistry,
+    ) -> Result<()> {
         // Action is required
         if step.action.trim().is_empty() {
             anyhow::bail!("Step {} has no action specified", index);
+        }
+
+        // Action must be registered (or be an engine pseudo-action) — this is
+        // the closed action set; typos fail at validate time, not runtime.
+        if !ENGINE_PSEUDO_ACTIONS.contains(&step.action.as_str())
+            && registry.get(&step.action).is_none()
+        {
+            let mut known: Vec<&str> = registry.list();
+            known.extend(ENGINE_PSEUDO_ACTIONS);
+            known.sort_unstable();
+            anyhow::bail!(
+                "Step {} ({}): unknown action '{}' — known actions: {}",
+                index,
+                step.id.as_deref().unwrap_or("-"),
+                step.action,
+                known.join(", ")
+            );
         }
 
         // Validate action-specific requirements
@@ -110,9 +152,20 @@ impl WorkflowParser {
                 if !step.params.contains_key("as") {
                     anyhow::bail!("Step {} (loop): 'as' parameter is required", index);
                 }
-                if !step.params.contains_key("steps") {
-                    anyhow::bail!("Step {} (loop): 'steps' parameter is required", index);
+                if step.params.get("parallel").and_then(|v| v.as_bool()) == Some(true) {
+                    anyhow::bail!(
+                        "Step {} (loop): parallel loops are not supported — remove 'parallel' or set it to false",
+                        index
+                    );
                 }
+                let body = step.params.get("steps").ok_or_else(|| {
+                    anyhow::anyhow!("Step {} (loop): 'steps' parameter is required", index)
+                })?;
+                let nested: Vec<Step> =
+                    serde_yaml::from_value(body.clone()).with_context(|| {
+                        format!("Step {} (loop): 'steps' must be a list of steps", index)
+                    })?;
+                Self::validate_steps(&nested, registry)?;
             }
             "condition" => {
                 // Note: 'if' key at step level is captured by step.condition (serde rename),
@@ -120,6 +173,18 @@ impl WorkflowParser {
                 let has_if = step.condition.is_some() || step.params.contains_key("if");
                 if !has_if {
                     anyhow::bail!("Step {} (condition): 'if' parameter is required", index);
+                }
+                for branch in ["then", "else"] {
+                    if let Some(val) = step.params.get(branch) {
+                        let nested: Vec<Step> =
+                            serde_yaml::from_value(val.clone()).with_context(|| {
+                                format!(
+                                    "Step {} (condition): '{}' must be a list of steps",
+                                    index, branch
+                                )
+                            })?;
+                        Self::validate_steps(&nested, registry)?;
+                    }
                 }
                 if !step.params.contains_key("then") {
                     anyhow::bail!("Step {} (condition): 'then' parameter is required", index);
@@ -143,22 +208,58 @@ impl WorkflowParser {
                     );
                 }
             }
-            // Actions without required params
-            "screenshot" | "wait_for" | "eval" | "http" => {}
+            // Actions without required params at validate time
+            "screenshot" | "wait_for" | "eval" => {}
             "tab.list" | "tab.new" | "tab.switch" | "tab.close" => {}
             "back" | "forward" | "reload" => {}
             // HTTP actions
             "http.get" | "http.post" | "http.put" | "http.patch" | "http.delete"
             | "http.request" => {}
             // Utility actions
-            "log" | "debug" | "print" => {}
-            "wait_upload" => {}
-            // Unknown actions - warn but don't fail (could be custom)
-            _ => {
-                tracing::warn!("Unknown action '{}' at step {}", step.action, index);
+            "log" | "wait_upload" => {}
+            // Registered actions without extra required params (hover, select,
+            // upload, file_chooser, …) — registry check above already vetted them.
+            _ => {}
+        }
+
+        // Validate step-level handlers (on_success / on_failure)
+        for (kind, handler) in [
+            ("on_success", &step.on_success),
+            ("on_failure", &step.on_failure),
+        ] {
+            if let Some(handler) = handler {
+                Self::validate_handler(handler, kind, step, index, enclosing_ids, registry)?;
             }
         }
 
+        Ok(())
+    }
+
+    fn validate_handler(
+        handler: &StepHandler,
+        kind: &str,
+        step: &Step,
+        index: usize,
+        enclosing_ids: &HashSet<&str>,
+        registry: &ActionRegistry,
+    ) -> Result<()> {
+        match handler {
+            StepHandler::Goto { goto } => {
+                if !enclosing_ids.contains(goto.as_str()) {
+                    anyhow::bail!(
+                        "Step {} ({}): {} handler jumps to '{}' but no step with that id exists in this step list",
+                        index,
+                        step.action,
+                        kind,
+                        goto
+                    );
+                }
+            }
+            StepHandler::Abort { .. } | StepHandler::Emit { .. } => {}
+            StepHandler::Steps { steps: nested } | StepHandler::StepsList(nested) => {
+                Self::validate_steps(nested, registry)?;
+            }
+        }
         Ok(())
     }
 
@@ -291,5 +392,195 @@ steps:
                 assert!(!workflow.steps.is_empty(), "{} should have steps", file);
             }
         }
+    }
+
+    #[test]
+    fn test_reject_unknown_action() {
+        let yaml = r##"
+name: typo
+steps:
+  - action: cl1k
+    selector: "#x"
+"##;
+        let err = WorkflowParser::parse(yaml).unwrap_err().to_string();
+        assert!(err.contains("unknown action 'cl1k'"), "{}", err);
+        assert!(err.contains("known actions"), "{}", err);
+    }
+
+    #[test]
+    fn test_reject_removed_debug_and_print_actions() {
+        // debug/print are engine pseudo-ops that never existed in the registry —
+        // they used to validate as "accepted" and then fail at runtime.
+        for action in ["debug", "print"] {
+            let yaml = format!(
+                "name: legacy\nsteps:\n  - action: {}\n    message: \"x\"\n",
+                action
+            );
+            let err = WorkflowParser::parse(&yaml).unwrap_err().to_string();
+            assert!(err.contains("unknown action"), "{}: {}", action, err);
+        }
+    }
+
+    #[test]
+    fn test_accept_action_aliases() {
+        let yaml = r##"
+name: aliased
+steps:
+  - action: navigate
+    url: "https://example.com"
+  - action: input
+    selector: "#q"
+    text: "hi"
+"##;
+        WorkflowParser::parse(yaml).unwrap();
+    }
+
+    #[test]
+    fn test_reject_unknown_on_success_goto_target() {
+        let yaml = r#"
+name: bad-handler
+steps:
+  - id: a
+    action: emit
+    event: ok
+    on_success:
+      goto: nonexistent
+"#;
+        let err = WorkflowParser::parse(yaml).unwrap_err().to_string();
+        assert!(err.contains("no step with that id"), "{}", err);
+    }
+
+    #[test]
+    fn test_validate_on_success_goto_within_enclosing_list() {
+        let yaml = r#"
+name: good-handler
+steps:
+  - id: a
+    action: emit
+    event: ok
+    on_success:
+      goto: b
+  - id: b
+    action: emit
+    event: done
+"#;
+        WorkflowParser::parse(yaml).unwrap();
+    }
+
+    #[test]
+    fn test_reject_unknown_action_nested_in_condition() {
+        let yaml = r##"
+name: bad-nested
+steps:
+  - action: condition
+    if: "true"
+    then:
+      - action: cl1k
+        selector: "#x"
+"##;
+        let err = WorkflowParser::parse(yaml).unwrap_err().to_string();
+        assert!(err.contains("unknown action 'cl1k'"), "{}", err);
+    }
+
+    #[test]
+    fn test_reject_unknown_action_nested_in_loop() {
+        let yaml = r#"
+name: bad-loop-body
+steps:
+  - action: loop
+    items: ["a"]
+    as: item
+    steps:
+      - action: nope
+"#;
+        let err = WorkflowParser::parse(yaml).unwrap_err().to_string();
+        assert!(err.contains("unknown action 'nope'"), "{}", err);
+    }
+
+    #[test]
+    fn test_reject_unknown_action_in_handler_steps() {
+        let yaml = r#"
+name: bad-handler-steps
+steps:
+  - action: emit
+    event: ok
+    on_failure:
+      steps:
+        - action: nope
+"#;
+        let err = WorkflowParser::parse(yaml).unwrap_err().to_string();
+        assert!(err.contains("unknown action 'nope'"), "{}", err);
+    }
+
+    #[test]
+    fn test_reject_parallel_loop() {
+        let yaml = r#"
+name: parallel-loop
+steps:
+  - action: loop
+    items: ["a"]
+    as: item
+    parallel: true
+    steps:
+      - action: log
+        message: "x"
+"#;
+        let err = WorkflowParser::parse(yaml).unwrap_err().to_string();
+        assert!(err.contains("parallel"), "{}", err);
+    }
+
+    #[test]
+    fn test_reject_malformed_loop_steps() {
+        let yaml = r#"
+name: bad-loop-steps
+steps:
+  - action: loop
+    items: ["a"]
+    as: item
+    steps: "not-a-list"
+"#;
+        let err = WorkflowParser::parse(yaml).unwrap_err().to_string();
+        assert!(err.contains("must be a list of steps"), "{}", err);
+    }
+
+    #[test]
+    fn test_reject_malformed_condition_branch() {
+        let yaml = r#"
+name: bad-branch
+steps:
+  - action: condition
+    if: "true"
+    then: 42
+"#;
+        assert!(WorkflowParser::parse(yaml).is_err());
+    }
+
+    #[test]
+    fn test_parse_workflow_with_valid_loop_and_handlers() {
+        let yaml = r#"
+name: full-featured
+steps:
+  - id: l
+    action: loop
+    items: ["a", "b"]
+    as: item
+    steps:
+      - action: emit
+        event: each
+        data:
+          v: "{{vars.item}}"
+    on_success:
+      goto: done
+  - id: fallback
+    action: emit
+    event: other
+    on_failure:
+      goto: done
+  - id: done
+    action: emit
+    event: finished
+"#;
+        let wf = WorkflowParser::parse(yaml).unwrap();
+        assert_eq!(wf.steps.len(), 3);
     }
 }
