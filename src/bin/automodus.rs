@@ -6,14 +6,14 @@
 //!
 //! ```bash
 //! # Run a workflow
-//! automodus run ../examples/browser/search_form.yaml
-//! automodus run ../examples/whatsapp/whatsapp.yaml action=check_status
+//! automodus run examples/browser/search_form.yaml
+//! automodus run examples/whatsapp/whatsapp.yaml action=check_status
 //!
-//! # Start the API server
-//! automodus serve
+//! # Start the daemon (HTTP server + shared browser sessions)
+//! automodus daemon start
 //!
 //! # Validate workflows
-//! automodus validate ../examples/
+//! automodus validate examples/
 //! ```
 
 use futures_util::FutureExt;
@@ -378,21 +378,21 @@ DEBUG PROFILES:
     ci          Capture on failure for CI pipelines
     demo        Slow execution with delays and highlights
 
- EXAMPLES:
+EXAMPLES:
     # Run a specific workflow
-    automodus run ../examples/browser/search_form.yaml
+    automodus run examples/browser/search_form.yaml
 
     # Run workflow with debug mode
-    automodus run ../examples/compose/pipeline.yaml --debug
+    automodus run examples/compose/pipeline.yaml --debug
 
     # Run with verbose profile and custom delay
-    automodus run ../examples/http/http_api.yaml --profile=verbose --delay=1000
+    automodus run examples/http/http_api.yaml --profile=verbose --delay=1000
 
     # Run with screenshots on failure (for CI)
-    automodus run ../examples/http/http_api.yaml --capture=failure
+    automodus run examples/http/http_api.yaml --capture=failure
 
     # Run workflow and keep browser open
-    automodus run ../examples/compose/pipeline.yaml --keep-open
+    automodus run examples/compose/pipeline.yaml --keep-open
 
     # Start the daemon
     automodus daemon start
@@ -407,7 +407,7 @@ DEBUG PROFILES:
     automodus shell
 
     # Validate all workflows in a directory
-    automodus validate ../examples/
+    automodus validate examples/
 
 ENVIRONMENT:
     AUTOMODUS_CONFIG          Path to config file (default: config/app.toml)
