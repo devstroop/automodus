@@ -8,11 +8,11 @@ This document describes the architecture of Automodus — a programmable browser
 ┌───────────────────────────────────────────────────────────────────┐
 │                        automodus daemon                           │
 │                                                                   │
-│  ┌──────────┐  ┌──────────────┐  ┌────────────┐  ┌───────────┐  │
-│  │ AppCore  │  │   Workflow   │  │  Browser   │  │  Session  │  │
-│  │ (shared  │──│   Engine     │──│  Adapter   │  │  Store    │  │
-│  │  state)  │  │              │  │  (CDP)     │  │           │  │
-│  └──────────┘  └──────────────┘  └────────────┘  └───────────┘  │
+│  ┌──────────┐  ┌──────────────┐  ┌─────────────┐  ┌───────────┐  │
+│  │ AppCore  │  │   Workflow   │  │  Session    │  │  Session  │  │
+│  │ (shared  │──│   Engine     │──│  Adapter    │──│  Store    │  │
+│  │  state)  │  │              │  │ (3 engines) │  │           │  │
+│  └──────────┘  └──────────────┘  └─────────────┘  └───────────┘  │
 │       │                                                           │
 │  ┌────┴──────────────────────────────────────────────────────┐   │
 │  │  Interfaces                                                │   │
@@ -44,19 +44,22 @@ src/
 │
 ├── core/                   # Execution engine
 │   ├── app.rs              # AppCore (shared state, session store)
-│   ├── engine.rs           # WorkflowEngine (step execution, debug, pause)
+│   ├── engine.rs           # WorkflowEngine (step execution, loops, handlers, debug, pause)
 │   ├── context.rs          # ExecutionContext (params, store, debug config)
-│   └── template.rs         # {{variable}} interpolation
+│   ├── template.rs         # {{variable}} interpolation (root allow-list + |json)
+│   └── json_path.rs        # JSONPath-style extraction for templates
 │
 ├── actions/                # Action system
-│   ├── registry.rs         # Action trait, ActionContext, BrowserHandle
+│   ├── registry.rs         # Action trait, BrowserHandle, BrowserCapabilities, registry
 │   └── control.rs          # Module-agnostic actions (log, emit)
 │
 ├── modules/                # Pluggable automation modules
 │   ├── browser/
-│   │   ├── adapter.rs      # ChromePageAdapter (BrowserHandle impl)
+│   │   ├── session.rs      # SessionAdapter: engine dispatch + shared capability map
+│   │   ├── adapter.rs      # ChromePageAdapter (chromiumoxide CDP, BrowserHandle impl)
+│   │   ├── firefox.rs      # Firefox BiDi backend (rustenium, BrowserHandle impl)
 │   │   ├── driver.rs       # BrowserService (lifecycle management)
-│   │   ├── launch.rs       # LaunchOptions, launch_browser()
+│   │   ├── launch.rs       # LaunchOptions, launch_session() (engine dispatch)
 │   │   ├── selector.rs     # Extended selectors (text:, role:, xpath:)
 │   │   └── actions/        # Browser actions
 │   │       ├── navigate.rs # goto, back, forward, reload
@@ -73,7 +76,7 @@ src/
 ├── daemon/                 # Daemon process
 │   ├── mod.rs              # Daemon struct, lifecycle, socket listener
 │   ├── protocol.rs         # Typed socket protocol (SocketRequest/SocketResponse, framing)
-│   └── config.rs           # DaemonConfig (TOML from ~/.automodus/)
+│   └── config.rs           # DaemonConfig defaults + TOML loader (see Configuration)
 │
 ├── shell/                  # Interactive shell
 │   ├── mod.rs              # Re-exports
@@ -146,54 +149,86 @@ WorkflowEngine::execute()
    │
    ├── Build ExecutionContext (params, store, debug config)
    │
-   ├── For each Step:
-   │   ├── TemplateEngine::render()   ──► Resolve {{variables}}
-   │   ├── Evaluate step conditions
-   │   ├── Debug: delay, highlight, pause, screenshot
-   │   ├── ActionRegistry::execute()  ──► Dispatch to Action impl
-   │   │       │
-   │   │       ├── BrowserHandle method (click, type, goto...)
-   │   │       └── Returns ActionOutput (data, store vars, events)
-   │   │
-   │   ├── Update ExecutionContext.store
-   │   ├── Error handling (retry, screenshot on failure)
-   │   └── Handle goto/skip from ActionOutput
-   │
-   └── Return WorkflowResult (success, duration, output, screenshots)
+    ├── For each Step:
+    │   ├── TemplateEngine::render()   ──► Resolve {{variables}}
+    │   ├── Evaluate step conditions / condition + loop (engine pseudo-actions)
+    │   ├── Debug: delay, highlight, pause, screenshot
+    │   ├── ActionRegistry::execute()  ──► Dispatch to Action impl
+    │   │       │
+    │   │       ├── BrowserHandle method (click, type, goto...)
+    │   │       └── Returns ActionOutput (data, store vars, events)
+    │   │
+    │   ├── Update ExecutionContext.store
+    │   ├── Error handling (step retry, on_failure handlers, screenshot)
+    │   └── Handle goto/skip from ActionOutput / on_success handlers
+    │
+    └── Return WorkflowResult (success, duration, output, screenshots)
 ```
 
 ### Action System
 
-Actions implement the `Action` trait:
+Actions implement the `Action` trait (`src/actions/registry.rs`):
 
 ```rust
 #[async_trait]
 pub trait Action: Send + Sync {
-    fn name(&self) -> &str;
+    fn name(&self) -> &'static str;
     async fn execute(
         &self,
-        ctx: &ActionContext<'_>,
+        params: &HashMap<String, serde_yaml::Value>,
+        ctx: &ActionContext,
         browser: &dyn BrowserHandle,
     ) -> Result<ActionOutput, ActionError>;
 }
 ```
+
+Actions register in `register_builtins()`; the same registry backs runtime
+dispatch **and** `automodus validate` — an unknown `action:` fails validation
+with the full known-action list (including `loop`/`call`/`condition` and
+aliases `navigate`/`input`/`wait`).
 
 The `BrowserHandle` trait abstracts browser operations:
 
 ```rust
 #[async_trait]
 pub trait BrowserHandle: Send + Sync {
+    /// Runtime feature flags for this backend (default: BrowserCapabilities::NONE)
+    fn capabilities(&self) -> BrowserCapabilities { BrowserCapabilities::NONE }
+
     async fn goto(&self, url: &str) -> Result<(), ActionError>;
     async fn click(&self, selector: &str) -> Result<(), ActionError>;
     async fn type_text(&self, selector: &str, text: &str, clear: bool) -> Result<(), ActionError>;
     async fn wait_for(&self, selector: &str, timeout_ms: u64) -> Result<(), ActionError>;
-    async fn eval(&self, js: &str) -> Result<Value, ActionError>;
+    async fn eval(&self, script: &str) -> Result<Value, ActionError>;
     async fn screenshot(&self, full_page: bool) -> Result<Vec<u8>, ActionError>;
-    // ... more methods
+    async fn new_tab(&self, url: Option<&str>) -> Result<usize, ActionError>;
+    async fn pdf(&self) -> Result<Vec<u8>, ActionError>;   // Chromium-only
+    // ... more methods (tabs, file inputs, history)
 }
 ```
 
-`ChromePageAdapter` implements `BrowserHandle` using `chromiumoxide::Page`.
+### Browser Engine Layer
+
+Three backends implement `BrowserHandle`:
+
+| Backend | File | Protocol | Notes |
+|---------|------|----------|-------|
+| Chromium | `modules/browser/adapter.rs` (`ChromePageAdapter`) | CDP via `chromiumoxide` | Full capability set |
+| Firefox | `modules/browser/firefox.rs` | WebDriver BiDi via `rustenium` (no geckodriver) | No PDF/file-chooser/console events yet |
+| Lightpanda | `modules/browser/session.rs` + CDP attach | CDP over `lightpanda serve` | Reuses Chromium CDP paths; single-page: no tab management |
+
+`launch_session(&LaunchOptions)` (`modules/browser/launch.rs`) dispatches on
+`BrowserEngine` and returns a `SessionAdapter` — the single handle the engine,
+shell, and API code use. Capability gating is data-driven:
+
+- `BrowserCapabilities` flags (`src/actions/registry.rs`): `pdf`, `file_input`,
+  `file_chooser`, `console_events`, `network_events`, `crash_events`
+- Per-action checks (e.g. `upload` requires `file_input`) fail with
+  `ActionError::Unsupported` on backends that lack the flag
+- Process lifecycle: every backend is wrapped in a kill-on-drop guard so the
+  last adapter drop kills and waits for the spawned child (no orphaned
+  firefox/lightpanda processes); per-run temp profiles (`/tmp/automodus-workflow-<pid>`)
+  are removed by the `TempProfile` guard on CLI exit
 
 ### Extended Selectors
 
@@ -209,10 +244,16 @@ The selector system (`src/modules/browser/selector.rs`) supports:
 
 ### Template Engine
 
-`{{variable}}` interpolation in step fields, resolving from:
+`{{variable}}` interpolation in step fields (`src/core/template.rs`), resolving
+from a strict root allow-list:
+
 - `params.*` — workflow parameters
+- `vars.*` — workflow/loop variables (loops bind `vars.<as>` / `vars.<index_as>`)
 - `store.*` — values saved by previous steps
+- `steps.<id>.*` — outputs of a named step
 - `env.*` — environment variables
+- `instance.id`, `timestamp`, `workflow.name`, `workflow.id`
+- a bare `{{name}}` falls back to a `store` lookup; the only filter is `| json`
 
 ## Component Details
 
@@ -222,17 +263,18 @@ Central shared state owned by the daemon:
 
 ```
 AppCore
-├── browser: Mutex<Option<Browser>>          # Lazily launched browser
-├── page_adapter: Mutex<Option<Adapter>>     # Current page
-├── sessions: RwLock<SessionStore>           # Session CRUD
-├── workflows: RwLock<HashMap<String, Workflow>>  # Workflow cache
-├── debug_config: RwLock<ResolvedDebugConfig>     # Global debug
-├── event_tx: broadcast::Sender<CoreEvent>        # Event bus
-└── config (max_sessions, idle_timeout, debug_dir)
+├── page_adapter: Mutex<Option<SessionAdapter>>   # Lazily launched backend
+├── headless: bool
+├── engine: BrowserEngine                         # chromium | firefox | lightpanda
+├── sessions: Arc<RwLock<SessionStore>>           # Session CRUD
+├── workflows: Arc<RwLock<HashMap>>               # Workflow cache
+├── debug_config: Arc<RwLock<ResolvedDebugConfig>># Global debug
+├── event_tx: broadcast::Sender<CoreEvent>        # Event bus (WS)
+└── config: debug_dir, max_sessions, session_idle_timeout
 ```
 
 Key methods:
-- `get_page()` — lazy browser launch, returns `ChromePageAdapter`
+- `get_page()` — lazy launch via `launch_session()`, returns `SessionAdapter`
 - `create_session()` / `close_session()` / `list_sessions()`
 - `find_session(id_or_name)` — lookup by UUID or friendly name
 - `cleanup_idle_sessions()` — removes non-keep-alive sessions past timeout
@@ -243,8 +285,8 @@ Long-running background process:
 
 ```
 Daemon::start()
-├── Write PID file (~/.automodus/daemon.pid)
-├── Bind Unix socket (~/.automodus/automodus.sock)
+├── Write PID file (<data-dir>/.automodus/daemon.pid)
+├── Bind Unix socket (<data-dir>/.automodus/automodus.sock)
 └── Check for stale PID
 
 Daemon::run()
@@ -289,11 +331,12 @@ Commands are parsed into `ShellCommand` variants:
 | Category | Commands |
 |----------|----------|
 | Navigation | `goto`, `back`, `forward`, `refresh` |
-| Interaction | `click`, `type`, `wait`, `eval`, `text` |
-| Capture | `screenshot`, `highlight` |
+| Interaction | `click`, `type`, `wait`, `eval`, `text`, `find` |
+| Capture | `screenshot`, `highlight`, `pdf` |
+| Tabs | `tabs`, `tab new/switch/close` |
 | Workflows | `run`, `list`, `trace` |
 | Sessions | `session new/list/switch/close/info/keep-alive` |
-| Debug | `debug on/off/status` |
+| Debug | `debug on/off/status/clean` |
 | System | `help`, `quit`, `status` |
 
 Completion supports: command names, workflow paths, session names, file paths, session subcommands.
@@ -335,7 +378,7 @@ Debug features wired into the engine:
 - **Highlight**: JS injection to flash red outline on target element
 - **Pause**: `PauseHandler` trait — `DefaultPauseHandler` auto-continues
 - **Capture**: Screenshots at configurable points (before, after, failure, all)
-- **Console/Network**: CDP event listeners (`start_console_listener`, `start_network_listener`) via `ChromePageAdapter`
+- **Console/Network**: CDP event listeners (`start_console_listener`, `start_network_listener`) on the Chromium adapter — **Chromium-only** (Firefox returns no-op; Lightpanda capability-gated off). Entries are buffered and emitted to the `tracing` debug log; surfacing them in API/shell output is not yet wired (see [DEBUG.md](DEBUG.md))
 - **Trace**: JSONL output to `data/debug/trace.jsonl` via `TraceLogger`
 
 Debug profiles (`--profile=<name>`):
@@ -353,12 +396,12 @@ Debug profiles (`--profile=<name>`):
 
 | File | Scope | Purpose |
 |------|-------|---------|
-| `config/app.toml` | Workspace | Server host/port, browser settings, workflow dir |
-| `~/.automodus/daemon.toml` | User | Daemon socket/PID paths, HTTP config, limits |
+| `config/app.toml` | Workspace | Server host/port, browser settings, workflow dir (`AUTOMODUS_CONFIG` overrides the path) |
+| `~/.automodus/daemon.toml` | User | Daemon socket/PID paths, HTTP config, limits — **loader currently unused**: the daemon runs on `DaemonConfig::default()` paths (see Known Debt) |
 | `~/.local/share/automodus/history.txt` | User | Shell command history |
-| `~/.automodus/daemon.pid` | Runtime | Daemon process ID |
-| `~/.automodus/automodus.sock` | Runtime | Unix domain socket |
-| `~/.automodus/daemon.log` | Runtime | Daemon log output |
+| `<data-dir>/.automodus/daemon.pid` | Runtime | Daemon process ID (default `~/.local/share/.automodus/`) |
+| `<data-dir>/.automodus/automodus.sock` | Runtime | Unix domain socket |
+| `<data-dir>/.automodus/daemon.log` | Runtime | Daemon log output |
 
 ### Environment Variables
 
@@ -366,6 +409,8 @@ Debug profiles (`--profile=<name>`):
 |----------|---------|
 | `AUTOMODUS_CONFIG` | Config file path (default: `config/app.toml`) |
 | `AUTOMODUS_WORKFLOWS` | Workflows directory (default: `workflows/`) |
+| `AUTOMODUS_CHROME_PATH` / `AUTOMODUS_FIREFOX_PATH` / `AUTOMODUS_LIGHTPANDA_PATH` | Browser binary overrides |
+| `AUTOMODUS_SOCKET_PATH` / `AUTOMODUS_HTTP_HOST` / `AUTOMODUS_HTTP_PORT` / `AUTOMODUS_MAX_SESSIONS` / `AUTOMODUS_LOG_LEVEL` | Daemon overrides |
 | `RUST_LOG` | Log level filter |
 | `AUTOMODUS_DEBUG` | Enable debug mode (`1`, `true`, `yes`, `on`) |
 | `AUTOMODUS_DEBUG_LEVEL` | Debug log level (`info`, `debug`, `trace`) |
@@ -373,15 +418,21 @@ Debug profiles (`--profile=<name>`):
 | `AUTOMODUS_DEBUG_DELAY` | Step delay in milliseconds |
 | `AUTOMODUS_DEBUG_CAPTURE` | Screenshot mode (`none`, `failure`, `before`, `after`, `all`) |
 
+(`AUTOMODUS_DEBUG*` are read only by `automodus run`; any `AUTOMODUS_*` name can
+also override a `config/app.toml` key.)
+
 ## CLI Commands
 
 ```
-automodus run <workflow.yaml> [--debug] [--delay=ms] [--capture=mode] [--profile=name]
+automodus run <workflow.yaml> [key=value ...] [--debug] [--debug=level] [--delay=ms]
+                                [--capture=mode] [--profile=name] [--highlight]
+                                [--pause] [--console] [--network] [--keep-open]
 automodus shell                     # Interactive REPL
 automodus serve                     # [DEPRECATED] Start HTTP server (use daemon start)
-automodus daemon start|stop|status|restart|logs
-automodus validate [path]           # Validate workflow YAML files
+automodus daemon start|stop|status|restart|logs [-f|--lines=n]
+automodus validate [path]           # Validate workflow YAML files (exit 1 if invalid)
 automodus list                      # List loaded workflows
+automodus help                      # Show help
 ```
 
 ## API Endpoints
@@ -404,12 +455,18 @@ automodus list                      # List loaded workflows
 | POST | `/api/browser/eval` | Execute JavaScript |
 | GET | `/api/browser/screenshot` | Take screenshot |
 | GET | `/api/browser/page` | Page info |
+| GET/POST | `/api/browser/tabs` | List / open tabs |
+| POST | `/api/browser/tabs/switch` | Switch tab |
+| DELETE | `/api/browser/tabs/:index` | Close tab |
+| GET | `/api/browser/pdf` | Render page as PDF (Chromium-only) |
+| POST | `/api/debug/cleanup` | Prune old debug artifacts |
 | GET | `/api/executions` | List executions |
 | GET | `/api/executions/:id` | Execution details |
 | DELETE | `/api/executions/:id` | Cancel execution |
 | WS | `/ws` | Real-time events |
 
-Swagger UI available at `/swagger-ui`.
+Swagger UI available at `/swagger-ui`; OpenAPI JSON at `/api/openapi.json`.
+Workflow validation is CLI-only (`automodus validate`).
 
 ## Error Handling
 
@@ -418,18 +475,34 @@ Two error types unified in `src/error.rs`:
 - **`AutomodusError`** — library-level errors (browser, workflow, IO, daemon, session)
 - **`AppError`** — API-facing errors with `ErrorCode` enum for structured responses
 
-`ErrorCode` variants: `DaemonNotRunning`, `SessionNotFound`, `SessionLimitReached`, `WorkflowNotFound`, `WorkflowInvalid`, `WorkflowTimeout`, `ExecutionFailed`, `SelectorNotFound`, `SelectorTimeout`, `NavigationFailed`, `BrowserLaunchFailed`, `BrowserDisconnected`, `InvalidRequest`, `InternalError`.
+`ErrorCode` variants: `DaemonNotRunning`, `DaemonAlreadyRunning`, `DaemonConnectionFailed`, `SessionNotFound`, `SessionLimitReached`, `WorkflowNotFound`, `WorkflowInvalid`, `WorkflowTimeout`, `ExecutionFailed`, `ExecutionCancelled`, `StepFailed`, `SelectorNotFound`, `SelectorTimeout`, `NavigationFailed`, `BrowserLaunchFailed`, `BrowserDisconnected`, `InvalidRequest`, `InternalError`.
 
 API errors return:
 ```json
 { "error": { "code": "SELECTOR_NOT_FOUND", "message": "Element not found: #btn" } }
 ```
 
+## Validation, Testing & CI
+
+- **Validation** (`WorkflowParser::validate`): parse → schema checks →
+  registry-backed action names (with aliases + `loop`/`call`/`condition`) →
+  required-parameter rules → recursive checks of nested step lists (condition
+  branches, loop bodies, `on_success`/`on_failure` handler steps) and `goto`
+  targets. `automodus validate [path]` exits `1` if anything is invalid.
+- **Tests**: `cargo test --features mcp` — unit + integration/session/shell/daemon suites.
+- **CI** (`.github/workflows/ci.yml`, pushes to `main`/`develop` and PRs):
+  fmt (`cargo fmt --all -- --check`), clippy (`--features mcp -- -D warnings`),
+  build + tests, and an **engine smoke matrix** (chromium, firefox, lightpanda)
+  that runs `scripts/smoke.sh <engine>`: validates the `examples/` submodule,
+  then runs each standalone example workflow under Xvfb with per-engine skips
+  (e.g. multi-tab on Lightpanda), timeouts, and orphan/profile-leak checks.
+
 ## Dependencies
 
 | Crate | Purpose |
 |-------|---------|
-| `chromiumoxide` | Browser automation via CDP |
+| `chromiumoxide` | Chromium CDP automation |
+| `rustenium` (+ `rustenium-bidi-definitions`) | Firefox WebDriver BiDi (no geckodriver) |
 | `tokio` | Async runtime |
 | `axum` | HTTP framework |
 | `rustyline` | Readline/history for shell |
@@ -438,16 +511,28 @@ API errors return:
 | `uuid` | Session/execution IDs |
 | `chrono` | Timestamps |
 | `thiserror` / `anyhow` | Error handling |
-| `utoipa` | OpenAPI documentation |
+| `utoipa` / `utoipa-swagger-ui` | OpenAPI documentation |
 | `tokio-tungstenite` | WebSocket support |
 | `rusqlite` | SQLite for execution history |
 | `reqwest` | HTTP client for outbound requests |
 | `glob` | Workflow file discovery |
 | `regex` | Template pattern matching |
+| `config` / `toml` | AppConfig loading |
+| `dirs` | Platform data/config directories |
 
 ## Known Architectural Debt
 
-No remaining architectural debt items. All previously tracked items have been resolved.
+- **Daemon TOML config loader is dead code**: `daemon::config::load_config()` /
+  `ensure_config_exists()` are exported but never called — the daemon runs on
+  `DaemonConfig::default()`, so `~/.automodus/daemon.toml` is not read.
+- **Trigger declarations are schema-only**: `on:` (api/schedule/event/webhook/watch)
+  validates and shows in `list`, but nothing dispatches them.
+- **Debug config only merges on the `automodus run` path**: shell/API executions
+  pass `ResolvedDebugConfig::default()`; step-level `debug:` still applies
+  everywhere via the engine. Console/network captures are buffered but not
+  surfaced in API/shell/WS output.
+- **`on_error`/`on_complete` emit events have no subscribers** (event bus exists;
+  nothing reacts to events yet).
 
 ### Resolved Debt
 
@@ -456,4 +541,4 @@ No remaining architectural debt items. All previously tracked items have been re
 - ~~Console/network capture uses JS injection~~ — Replaced with native CDP event listeners (`EventConsoleApiCalled`, `EventRequestWillBeSent`/`EventResponseReceived`) via `start_console_listener()` and `start_network_listener()`.
 - ~~Pause handlers are partial~~ — `ShellPauseHandler` (stdin-based) wired into CLI and shell. `WebSocketPauseHandler` (oneshot channel) wired into API. Both support Continue/Skip/Abort.
 
-See [docs/ISSUES.md](docs/ISSUES.md) for the full issue tracker.
+See [ISSUES.md](ISSUES.md) for the issue tracker.
