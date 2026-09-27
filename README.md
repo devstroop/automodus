@@ -29,7 +29,7 @@ Think of it as **"automation as code"** — define once, run anywhere.
 
 | Module | Description |
 |--------|-------------|
-| **Browser** | Chromium automation via CDP (navigate, click, extract, screenshot) |
+| **Browser** | Browser automation on three engines: Chromium (CDP), Firefox (WebDriver BiDi, no geckodriver), Lightpanda (CDP) |
 | **HTTP** | REST API requests (GET, POST, PUT, PATCH, DELETE) |
 | **LLM** | AI integration (planned) |
 | **Storage** | Data persistence (planned) |
@@ -40,6 +40,8 @@ Think of it as **"automation as code"** — define once, run anywhere.
 |---------|-------------|
 | **YAML Workflows** | Define automation in declarative YAML |
 | **Built-in Actions** | 20+ actions: navigate, click, type, extract, screenshot, http, etc. |
+| **Browser Engines** | `engine = "chromium"` / `"firefox"` / `"lightpanda"` in config; per-engine capability gating (PDF, multi-tab, ...) |
+| **Control Flow** | `call`, `condition`, `loop` (scoped `as`/`index_as` items), step-level `on_success`/`on_failure` handlers (goto/emit/abort/steps) |
 | **HTTP Module** | Make API requests within workflows (GET, POST, PUT, PATCH, DELETE) |
 | **Multi-Instance** | Run multiple browser instances with isolated data directories |
 | **Multi-Tab** | Control multiple tabs within each browser instance |
@@ -53,7 +55,7 @@ Think of it as **"automation as code"** — define once, run anywhere.
 ### Prerequisites
 
 - **Rust** 1.70+
-- **Chrome/Chromium** browser installed
+- A browser: **Chrome/Chromium**, **Firefox**, or **Lightpanda** (install any one; engine selected via `engine` in `[browser]`)
 - macOS, Linux, or Windows
 
 ### Installation
@@ -313,7 +315,10 @@ port = 3000
 
 [browser]
 headless = true
+engine = "chromium"  # "chromium" (CDP) | "firefox" (BiDi, no geckodriver) | "lightpanda" (CDP)
 executable = ""  # Auto-detect Chrome
+# firefox_path = "/usr/bin/firefox"
+# lightpanda_path = "/home/you/.local/bin/lightpanda"
 
 [workflows]
 directory = "workflows/"
@@ -335,8 +340,8 @@ automodus/
 │   │   ├── context.rs      # Step context and store
 │   │   └── template.rs     # Variable interpolation
 │   ├── modules/            # Automation modules
-│   │   ├── browser/        # Browser automation (chromiumoxide)
-│   │   │   ├── adapter.rs  # Chrome page adapter
+│   │   ├── browser/        # Browser automation (chromiumoxide / rustenium)
+│   │   │   ├── adapter.rs  # Browser page adapter
 │   │   │   ├── driver.rs   # Browser service management
 │   │   │   ├── launch.rs   # Launch configuration helpers
 │   │   │   └── actions/    # Browser-specific actions
