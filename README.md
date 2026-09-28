@@ -59,7 +59,7 @@ Think of it as **"automation as code"** — define once, run anywhere.
 
 - **Rust** 1.70+
 - A browser: **Chrome/Chromium**, **Firefox**, or **Lightpanda** (install any one; engine selected via `engine` in `[browser]`)
-- macOS, Linux, or Windows
+- macOS or Linux (Windows not yet supported: daemon IPC uses Unix domain sockets)
 
 ### Installation
 
