@@ -1,1232 +1,378 @@
-# Shell & API Design
+# Shell & API Reference
 
-This document outlines the unified design for the interactive shell (CLI) and REST API interfaces. Both interfaces serve the same core functionality through different interaction models.
+Reference for the automodus CLI, interactive shell, and HTTP/WebSocket API.
+Everything documented here was verified against the code during the
+September 2026 docs-vs-code revision.
+
+For workflow syntax see [DESIGN.md](DESIGN.md), for internals see
+[ARCHITECTURE.md](ARCHITECTURE.md). The original daemon/shell design plan and
+its migration checklist now live in
+[archive/plan-daemon-shell.md](archive/plan-daemon-shell.md).
 
 ## Current State
 
 | Component | Status | Location |
 |-----------|--------|----------|
-| Shell REPL | ✅ Full | `bin/automodus.rs::run_shell()`, `shell/client.rs` |
-| API Server | ✅ Full | `api/server.rs`, `api/handlers.rs` (OpenAPI + Swagger) |
-| Browser management (shell) | ✅ Via AppCore | `core/app.rs`, `bin/automodus.rs` |
-| Browser management (API) | ✅ Via AppCore | `api/state.rs::ServerState` |
-| Daemon | ✅ Implemented | `daemon/mod.rs` (socket, PID, config) |
-| `AppCore` | ✅ Implemented | `core/app.rs` |
-| `SessionManager` | ✅ Implemented | `core/app.rs` (integrated) |
-| Readline/history | ✅ Implemented | `shell/client.rs` (`rustyline`) |
-| WebSocket | ✅ Implemented | `api/ws.rs` |
+| Shell REPL | ✅ Implemented (daemon-attached or standalone) | `src/bin/automodus.rs` (`run_shell`), `src/shell/client.rs` |
+| HTTP API | ✅ Implemented (axum, OpenAPI + Swagger UI) | `src/api/server.rs`, `src/api/handlers.rs`, `src/api/schemas.rs` |
+| WebSocket | ✅ Implemented (`/ws`) | `src/api/ws.rs` |
+| Daemon | ✅ Implemented (Unix socket, PID file, logs, HTTP) | `src/daemon/mod.rs` |
+| Shared state | ✅ Implemented (`AppCore`, `SessionStore`) | `src/core/app.rs` |
+| Completion & history | ✅ Implemented (rustyline) | `src/shell/client.rs` |
 
-> **Note:** The daemon architecture described below is now implemented. The
-> "Current Problem" section below is kept for historical context — the
-> daemon/client split has resolved these issues.
+## Architecture
 
-### Current Problem
-
-```
-Shell Process (current)
-├── Browser (owned)    ← Dies when shell exits
-├── Adapter            ← Auth state lost (WhatsApp QR, cookies)
-└── REPL loop          ← Can't share browser between instances
-```
-
-**Issues:**
-- Browser restarts on every `automodus shell` invocation
-- Authentication state lost when shell exits
-- Can't attach multiple shells to same browser
-- Can't run shell and API against same browser
-
-### Existing Shell Commands
-
-```
-run <workflow.yaml> [params...]   ✅ Implemented
-list                              ✅ Implemented  
-goto <url>                        ✅ Implemented
-status                            ✅ Implemented
-help                              ✅ Implemented
-quit / exit                       ✅ Implemented
-```
-
-### Existing API Endpoints
-
-```
-GET  /api/health                  ✅ Implemented
-GET  /api/workflows               ✅ Implemented
-POST /api/workflows/reload        ✅ Implemented
-GET  /api/workflows/:name         ✅ Implemented
-POST /api/workflows/:name/run     ✅ Implemented
-GET  /api/browser/screenshot      ✅ Implemented
-POST /api/browser/goto            ✅ Implemented
-```
-
-## Overview
-
-Inspired by Docker's architecture: daemon owns resources, clients are stateless.
+Docker-style split: a daemon can own browser sessions while clients stay
+stateless. In practice the tool supports three run modes:
 
 ```
 ┌───────────────────────────────────────────────────────────────┐
-│                    automodus daemon                            │
+│                    automodus daemon (optional)                 │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐        │
-│  │   Session    │  │   Workflow   │  │   Browser    │        │
-│  │   Manager    │  │   Engine     │  │   Pool       │        │
+│  │ SessionStore │  │ Workflow     │  │ AppCore      │        │
+│  │ (contexts)   │  │ Engine       │  │ (shared)     │        │
 │  └──────────────┘  └──────────────┘  └──────────────┘        │
 │                                                               │
 │  Listens on:                                                  │
-│  • Unix socket: ~/.automodus/automodus.sock                   │
-│  • TCP/HTTP:    127.0.0.1:8080 (REST API)                    │
-│  • WebSocket:   127.0.0.1:8080/ws                            │
+│  • Unix socket: <data-dir>/.automodus/automodus.sock          │
+│  • TCP/HTTP:    127.0.0.1:8080 (REST API)                     │
+│  • WebSocket:   127.0.0.1:8080/ws                             │
 └───────────────────────────────────────────────────────────────┘
          ▲                    ▲                   ▲
          │                    │                   │
     ┌────┴────┐          ┌────┴────┐         ┌────┴────┐
     │ shell 1 │          │ shell 2 │         │  REST   │
     │ (REPL)  │          │ (REPL)  │         │  API    │
-    │stateless│          │stateless│         │ client  │
     └─────────┘          └─────────┘         └─────────┘
 ```
 
-**Key principles (Docker-style):**
-- Daemon owns all browser instances and sessions
-- Shell/CLI is stateless - just sends commands to daemon
-- Multiple shells can connect to same daemon simultaneously
-- Browser sessions survive shell exit
-- Explicit cleanup required (`session close`)
+Run modes:
 
-**Benefits:**
-- Auth state preserved across shell sessions
-- No browser restart delay
-- Multiple terminals can control same browser
-- Shell and API share same browser pool
+| Mode | Started by | Browser ownership |
+|------|-----------|-------------------|
+| Standalone shell | `automodus shell` when no daemon answers ping | Shell launches its own browser (`browser.engine` from config) |
+| Daemon-attached shell | `automodus shell` with daemon running | Daemon sessions; browser survives shell exit |
+| One-shot run | `automodus run <file>` | Fresh browser per run, removed on exit (`TempProfile`) |
+| Daemon HTTP | `automodus daemon start` | Daemon serves REST/WS on `127.0.0.1:8080` |
+
+Runtime files live in the platform data directory (e.g.
+`~/.local/share/.automodus/` on Linux):
+
+| File | Purpose |
+|------|---------|
+| `automodus.sock` | Unix socket for shell ↔ daemon |
+| `daemon.pid` | Daemon process ID |
+| `daemon.log` | Daemon log output |
+
+Notes:
+
+- The shell never auto-starts the daemon; start it with
+  `automodus daemon start`.
+- `automodus run` does **not** send work to the daemon — it launches its own
+  browser even when a daemon is running.
+- `automodus serve` is deprecated; it runs the HTTP server in the
+  foreground. Use `automodus daemon start` instead.
 
 ## CLI Commands
 
-### Daemon Commands
-
-```bash
-# Daemon lifecycle (like: systemctl start/stop docker)
-automodus daemon start        # Start daemon in background
-automodus daemon start -f     # Start daemon in foreground
-automodus daemon stop         # Stop daemon gracefully
-automodus daemon status       # Check if daemon is running
-automodus daemon restart      # Restart daemon
-automodus daemon logs         # View daemon logs
-```
-
-### Shell Commands
-
-```bash
-# Interactive mode (connects to daemon)
-automodus shell               # Start REPL (requires daemon running)
-automodus shell --start-daemon  # Auto-start daemon if not running
-
-# Inside shell, or as direct commands:
-```
-
-### Session Commands
-
-```bash
-# Session management (browser contexts in daemon)
-session new [--name=NAME] [--keep-alive]  # Create new browser session
-session list                               # List active sessions  
-session switch <id|name>                   # Switch active session
-session close [id]                         # Close session (default: current)
-session info                               # Show current session details
-session keep-alive [id] [on|off]           # Toggle keep-alive for session
-
-# Direct CLI (without entering shell)
-automodus sessions            # List sessions (like: docker ps)
-automodus session new         # Create session
-automodus session close <id>  # Close session
-```
-
-### Workflow Commands
+`automodus` uses hand-rolled argument parsing (no clap). Run `automodus help`
+for the built-in overview.
 
 ```bash
 # Workflow execution
-run <workflow> [params...]    # Run workflow with params
-  -p, --param key=value       # Pass parameter
-  -d, --debug                 # Enable debug mode
-  --profile=<PROFILE>         # Debug profile (minimal|verbose|ci|demo)
+automodus run <workflow.yaml> [key=value ...]   # key=value overrides params
+    -k, --keep-open        Keep browser open after the workflow completes
+    -d, --debug            Enable debug mode
+    --debug=<level>        Debug level (info, debug, trace)
+    --delay=<ms>           Delay between steps
+    --capture=<mode>       Screenshots: none | failure | before | after | all
+    --profile=<name>       Debug preset: minimal | verbose | ci | demo
+    --highlight            Highlight elements before interaction
+    --pause                Pause before each step (stdin confirmation)
+    --console              Log browser console messages
+    --network              Log network requests
 
-list [pattern]                # List workflows matching pattern
-show <workflow>               # Show workflow details
-validate <path>               # Validate workflow file
-reload                        # Reload workflows from disk
+# Daemon lifecycle
+automodus daemon start              # Background process
+automodus daemon stop               # Graceful shutdown
+automodus daemon status             # Running? (PID, socket)
+automodus daemon restart
+automodus daemon logs [-f|--follow] [--lines=<n>]
+
+# Other
+automodus shell                     # Interactive REPL (see modes above)
+automodus serve                     # [DEPRECATED] HTTP server in foreground
+automodus validate [path]           # Validate workflows (default: workflows/)
+automodus list                      # List loaded workflows
+automodus help                      # Usage text
 ```
 
-### Browser Commands
+Exit codes:
 
-```bash
-# Navigation
-goto <url>                    # Navigate to URL
-back                          # Go back
-forward                       # Go forward
-refresh                       # Reload page
+| Command | Success | Failure |
+|---------|---------|---------|
+| `run` | `0` | `1` (workflow failed) |
+| `validate` | `0` | `1` (any file invalid) |
+| anything else | `0` | `1` (usage/runtime error) |
 
-# Interaction
-click <selector>              # Click element
-type <selector> <text>        # Type into element
-select <selector> <value>     # Select option
-hover <selector>              # Hover over element
-wait <selector> [timeout]     # Wait for element
+## Interactive Shell
 
-# Inspection
-page [url|title|html]         # Get page info
-find <selector>               # Find elements, show count
-text <selector>               # Get element text
-attr <selector> <name>        # Get element attribute
-eval <js>                     # Execute JavaScript
+`automodus shell` starts a rustyline REPL. If a daemon is running it attaches
+to it ("✓ Connected to daemon"); otherwise it prints that it is starting
+standalone mode and launches a browser.
 
-# Capture
-screenshot [path]             # Take screenshot
-pdf [path]                    # Save as PDF
+### Commands
 
-# Tabs
-tabs                          # List open tabs
-tab <index>                   # Switch to tab
-tab new [url]                 # Open new tab
-tab close [index]             # Close tab
-```
+| Command | Aliases | Description |
+|---------|---------|-------------|
+| `run <file> [k=v ...]` | `r` | Run a workflow file with `key=value` params |
+| `goto <url>` | `g`, `go` | Navigate to URL |
+| `back` / `forward` | | History navigation |
+| `refresh` | `reload` | Reload page |
+| `click <selector>` | `c` | Click element |
+| `type <sel> <text>` | `t` | Type into element |
+| `wait <sel> [ms]` | `w` | Wait for element |
+| `text <selector>` | | Element text |
+| `find <selector>` | `f` | Count matching elements |
+| `eval <js>` | `js` | Evaluate JavaScript |
+| `screenshot [path]` | `ss` | Save screenshot |
+| `pdf [path]` | | Export page as PDF (Chromium only) |
+| `status` | `s` | Show current page URL |
+| `list` | `ls` | List workflows |
+| `session new [name] [--keep-alive]` | `sess` | Create session |
+| `session list` | | List sessions |
+| `session switch <id\|name>` | | Switch active session |
+| `session close [id\|name]` | | Close session (current if omitted) |
+| `session info` | | Current session details |
+| `session keep-alive [id] [on\|off]` | | Toggle keep-alive |
+| `tabs` | | List open tabs |
+| `tab new [url]` | | Open tab |
+| `tab switch <index>` / `tab <index>` | | Switch tab |
+| `tab close [index]` | | Close tab (current if omitted) |
+| `debug on [--profile=NAME]` | | *(prints confirmation only — see gaps)* |
+| `debug off` / `debug status` | | *(prints confirmation only — see gaps)* |
+| `debug clean` | `debug cleanup` | Remove old files from `data/debug/` |
+| `highlight <selector>` | `hl` | Flash element outline on page |
+| `trace <file> [k=v ...]` | | Run workflow with a "trace logging" banner (trace output itself is not wired — see gaps) |
+| `help` | `h`, `?` | Shell help |
+| `quit` | `exit`, `q` | Exit shell |
 
-### Debug Commands
+Shortcuts: `r`=run, `g`=goto, `c`=click, `t`=type, `w`=wait, `f`=find,
+`s`=status, `ls`=list, `hl`=highlight, `ss`=screenshot, `sess`=session,
+`q`=quit.
 
-```bash
-# Debug mode
-debug on [--profile=PROFILE]  # Enable debug mode
-debug off                     # Disable debug mode
-debug status                  # Show debug settings
+There are **no** `show`, `reload-workflows`, `clear`, `history`, `pause`,
+`step`, or `continue` commands.
 
-# Inspection
-highlight <selector>          # Highlight element on page
-trace <workflow>              # Run with trace logging
-pause                         # Pause execution (in debug mode)
-step                          # Execute next step (when paused)
-continue                      # Resume execution
-```
+### Completion & history
 
-### System Commands
+- Tab-completes command names, workflow `*.yaml` paths for `run`, session
+  subcommands and session names, and file paths.
+- History is stored in the platform data directory (e.g.
+  `~/.local/share/automodus/history.txt`), 1000 entries by default.
 
-```bash
-help [command]                # Show help
-history [count]               # Show command history
-clear                         # Clear screen
-quit | exit                   # Exit shell
-```
+## REST API
 
-## REST API Endpoints
+The daemon's HTTP server binds `127.0.0.1:8080` by default. **There is no
+authentication.** Interactive documentation: `/swagger-ui`, schema:
+`/api/openapi.json`.
 
-### Sessions
+### Endpoints
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/sessions` | Create new session |
-| GET | `/api/sessions` | List sessions |
-| GET | `/api/sessions/:id` | Get session info |
-| DELETE | `/api/sessions/:id` | Close session |
-
-### Workflows
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/workflows` | List workflows |
-| POST | `/api/workflows/reload` | Reload from disk |
-| GET | `/api/workflows/:name` | Get workflow details |
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/health` | Status, version, workflow count |
+| GET | `/api/workflows` | List loaded workflows |
+| POST | `/api/workflows/reload` | Reload workflows from disk |
+| GET | `/api/workflows/:name` | Workflow details |
 | POST | `/api/workflows/:name/run` | Execute workflow |
-| POST | `/api/workflows/:name/validate` | Validate workflow |
-
-### Executions
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/executions` | List recent executions |
-| GET | `/api/executions/:id` | Get execution details |
-| DELETE | `/api/executions/:id` | Cancel execution |
-| GET | `/api/executions/:id/output` | Get execution output |
-
-### Browser
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/browser/goto` | Navigate to URL |
+| GET | `/api/browser/screenshot` | PNG screenshot (`image/png`) |
+| POST | `/api/browser/goto` | Navigate |
 | POST | `/api/browser/click` | Click element |
 | POST | `/api/browser/type` | Type into element |
-| POST | `/api/browser/eval` | Execute JavaScript |
-| GET | `/api/browser/screenshot` | Take screenshot |
-| GET | `/api/browser/page` | Get page info |
+| POST | `/api/browser/wait` | Wait for element |
+| POST | `/api/browser/eval` | Evaluate JavaScript |
+| GET | `/api/browser/page` | URL + title |
 | GET | `/api/browser/tabs` | List tabs |
-| POST | `/api/browser/tabs` | Create new tab |
+| POST | `/api/browser/tabs` | New tab |
+| POST | `/api/browser/tabs/switch` | Switch tab |
+| DELETE | `/api/browser/tabs/:index` | Close tab |
+| GET | `/api/browser/pdf` | PDF export (Chromium only) |
+| POST | `/api/debug/cleanup` | Prune `data/debug/` |
+| POST | `/api/sessions` | Create session |
+| GET | `/api/sessions` | List sessions |
+| GET | `/api/sessions/:id` | Session info |
+| DELETE | `/api/sessions/:id` | Close session |
+| GET | `/api/executions` | Recent executions |
+| GET | `/api/executions/:id` | Execution detail + output |
+| DELETE | `/api/executions/:id` | Cancel execution |
+| GET | `/ws` | WebSocket (upgrade) |
+| GET | `/swagger-ui` | Swagger UI |
+| GET | `/api/openapi.json` | OpenAPI schema |
 
-### WebSocket
+There is **no** `POST /api/workflows/:name/validate` (use the CLI
+`automodus validate`) and no `/api/v1/*` prefix.
 
-| Endpoint | Description |
-|----------|-------------|
-| `/ws` | Real-time execution updates |
+### Request / response schemas
 
-WebSocket protocol includes version for compatibility:
-
-```json
-{ "version": 1, "type": "execution.started", "id": "...", "workflow": "..." }
-{ "version": 1, "type": "execution.step", "id": "...", "step": 1, "action": "click" }
-{ "version": 1, "type": "execution.complete", "id": "...", "success": true }
-{ "version": 1, "type": "execution.error", "id": "...", "error": "..." }
-{ "version": 1, "type": "execution.paused", "id": "...", "step": 3 }
-{ "version": 1, "type": "console.log", "level": "info", "message": "..." }
-{ "version": 1, "type": "network.request", "method": "GET", "url": "..." }
-```
-
-Client commands:
-```json
-{ "version": 1, "type": "execution.continue", "id": "..." }
-{ "version": 1, "type": "execution.skip", "id": "..." }
-{ "version": 1, "type": "execution.abort", "id": "..." }
-```
-
-## Request/Response Schemas
-
-### Run Workflow
-
-```bash
-# Shell
-run send_message phone=1234 message="Hello"
-```
+Run a workflow — the request accepts **only** `params` (no `session_id`, no
+`debug` object):
 
 ```http
 POST /api/workflows/send_message/run
 Content-Type: application/json
 
-{
-  "params": {
-    "phone": "1234",
-    "message": "Hello"
-  },
-  "session_id": "optional-session-id",
-  "debug": {
-    "enabled": true,
-    "profile": "verbose"
-  }
-}
+{ "params": { "phone": "1234", "message": "Hello" } }
 ```
 
 ```json
 {
-  "execution_id": "exec-abc123",
-  "workflow_name": "send_message",
   "success": true,
+  "workflow_name": "send_message",
   "duration_ms": 1234,
   "steps_executed": 5,
   "output": { "sent": true },
-  "error": null,
-  "debug": {
-    "captures": ["exec-abc123_step1.png"],
-    "console": [...],
-    "network": [...]
-  }
+  "error": null
 }
 ```
 
-### Browser Click
-
-```bash
-# Shell
-click "text:Submit"
-```
-
-```http
-POST /api/browser/click
-Content-Type: application/json
-
-{
-  "selector": "text:Submit",
-  "session_id": "optional",
-  "debug": {
-    "highlight": true
-  }
-}
-```
-
-### Session Create
-
-```bash
-# Shell
-session new --name=whatsapp
-```
-
-```http
-POST /api/sessions
-Content-Type: application/json
-
-{
-  "name": "whatsapp",
-  "keep_alive": true,             // Prevent idle timeout (optional)
-  "browser": {
-    "headless": false,
-    "viewport": { "width": 1280, "height": 720 }
-  }
-}
-```
+Browser actions:
 
 ```json
-{
-  "id": "sess-xyz789",
-  "name": "whatsapp",
-  "keep_alive": true,
-  "created_at": "2026-02-22T10:00:00Z",
-  "browser": {
-    "headless": false,
-    "viewport": { "width": 1280, "height": 720 }
-  },
-  "url": "about:blank"
-}
+POST /api/browser/goto            { "url": "https://example.com" }
+POST /api/browser/click           { "selector": "text:Submit" }
+POST /api/browser/type            { "selector": "#q", "text": "hello" }
+POST /api/browser/wait            { "selector": ".ready", "timeout": 30000 }
+POST /api/browser/eval            { "script": "document.title" }
+POST /api/browser/tabs            { "url": null }
+POST /api/browser/tabs/switch     { "index": 1 }
 ```
 
-## Architecture
+Responses are `{"success": bool, "result"?: …, "error"?: …}` (page info:
+`{"url", "title"}`; tab lists: `{"tabs": [{"index", "url", "active"}]}`).
 
-### Daemon (Server Process)
+Sessions:
 
-The daemon owns all resources and exposes them via socket/HTTP:
+```json
+POST /api/sessions      { "name": "whatsapp", "keep_alive": true }
+→ { "success": true, "id": "…" }
 
-```rust
-/// Daemon process - owns browser pool and workflows
-pub struct Daemon {
-    /// Application core (shared state)
-    core: Arc<AppCore>,
-    /// Unix socket path
-    socket_path: PathBuf,
-    /// HTTP server handle
-    http_server: Option<JoinHandle<()>>,
-}
-
-impl Daemon {
-    /// Start the daemon
-    pub async fn start(config: DaemonConfig) -> Result<Self> {
-        let core = Arc::new(AppCore::new(config.clone()));
-        
-        // Start Unix socket listener
-        let socket = UnixListener::bind(&config.socket_path)?;
-        tokio::spawn(Self::handle_socket(socket, core.clone()));
-        
-        // Start HTTP/WS server
-        let http = tokio::spawn(run_http_server(core.clone(), config.http_port));
-        
-        Ok(Self { core, socket_path: config.socket_path, http_server: Some(http) })
-    }
-    
-    /// Graceful shutdown
-    pub async fn stop(&self) -> Result<()>;
-}
-
-/// Daemon configuration
-pub struct DaemonConfig {
-    pub socket_path: PathBuf,     // ~/.automodus/automodus.sock
-    pub http_host: String,        // 127.0.0.1
-    pub http_port: u16,           // 8080
-    pub pid_file: PathBuf,        // ~/.automodus/daemon.pid
-    pub log_file: PathBuf,        // ~/.automodus/daemon.log
-    pub debug_dir: PathBuf,       // data/debug (configurable)
-    pub max_sessions: usize,      // 10
-}
+GET  /api/sessions
+→ { "sessions": [{ "id": "…", "name": "whatsapp",
+                   "created_at": "…", "last_activity": "…",
+                   "keep_alive": true }] }
 ```
 
-### AppCore (Shared State)
+Errors are flat strings:
 
-Owned by daemon, accessed by all clients:
-
-```rust
-/// Shared application core (lives in daemon)
-pub struct AppCore {
-    /// Session manager (browser contexts)
-    pub sessions: RwLock<SessionManager>,
-    /// Workflow engine
-    pub engine: WorkflowEngine,
-    /// Workflow registry
-    pub workflows: RwLock<WorkflowRegistry>,
-    /// Debug configuration
-    pub debug: RwLock<DebugConfig>,
-    /// Event broadcaster for WebSocket
-    pub events: broadcast::Sender<DaemonEvent>,
-}
-
-impl AppCore {
-    /// Execute a workflow
-    pub async fn run_workflow(
-        &self,
-        name: &str,
-        params: HashMap<String, Value>,
-        session_id: Option<&str>,
-        debug: Option<DebugConfig>,
-    ) -> Result<ExecutionResult, Error>;
-    
-    /// Execute a browser command (click, type, etc.)
-    pub async fn browser_command(
-        &self,
-        cmd: BrowserCommand,
-        session_id: Option<&str>,
-    ) -> Result<CommandResult, Error>;
-}
+```json
+{ "error": "Workflow not found" }
 ```
 
-### Session Manager
+## WebSocket (`/ws`)
 
-```rust
-/// Manages browser sessions (lives in daemon)
-pub struct SessionManager {
-    sessions: HashMap<String, Session>,
-    default_session: Option<String>,
-    max_sessions: usize,
-}
+Server → client events (all carry `"version": 1`):
 
-pub struct Session {
-    id: String,
-    name: Option<String>,
-    browser: Browser,
-    page: Page,
-    created_at: DateTime<Utc>,
-    last_activity: DateTime<Utc>,
-    keep_alive: bool,              // Skip idle timeout when true
-    config: BrowserConfig,
-}
-
-impl SessionManager {
-    pub async fn create(&mut self, config: SessionConfig) -> Result<Session>;
-    pub async fn get(&self, id: &str) -> Option<&Session>;
-    pub async fn get_or_default(&self, id: Option<&str>) -> Result<&Session>;
-    pub async fn close(&mut self, id: &str) -> Result<()>;
-    pub fn list(&self) -> Vec<SessionInfo>;
-    
-    /// Close sessions idle longer than timeout (skip keep_alive sessions)
-    pub async fn cleanup_idle(&mut self, timeout: Duration) -> Vec<String>;
-}
+```json
+{ "version": 1, "type": "connected" }
+{ "version": 1, "type": "execution.started", "id": "…", "workflow": "…" }
+{ "version": 1, "type": "execution.step", "id": "…", "step": 3, "action": "click" }
+{ "version": 1, "type": "execution.complete", "id": "…", "success": true }
+{ "version": 1, "type": "execution.error", "id": "…", "error": "…" }
+{ "version": 1, "type": "execution.paused", "id": "…", "step": 3 }
+{ "version": 1, "type": "session.created", "id": "…" }
+{ "version": 1, "type": "session.closed", "id": "…" }
 ```
 
-### Shell Client
+Client → server commands:
 
-Stateless REPL that connects to daemon:
-
-```rust
-/// Shell client - connects to daemon
-pub struct ShellClient {
-    /// Connection to daemon (socket or HTTP)
-    conn: DaemonConnection,
-    /// Current session ID
-    current_session: Option<String>,
-    /// Readline editor
-    editor: Editor<ShellHelper>,
-}
-
-impl ShellClient {
-    /// Connect to running daemon
-    pub async fn connect() -> Result<Self> {
-        let socket_path = dirs::data_dir()
-            .unwrap_or_default()
-            .join(".automodus/automodus.sock");
-        
-        if !socket_path.exists() {
-            return Err(Error::DaemonNotRunning);
-        }
-        
-        let conn = DaemonConnection::unix(&socket_path).await?;
-        Ok(Self { conn, current_session: None, editor: create_editor()? })
-    }
-    
-    /// Run REPL loop
-    pub async fn run(&mut self) -> Result<()> {
-        loop {
-            let line = self.editor.readline(&self.prompt())?;
-            self.execute_command(&line).await?;
-        }
-    }
-    
-    /// Execute command via daemon
-    async fn execute_command(&mut self, line: &str) -> Result<()> {
-        let cmd = parse_command(line)?;
-        let response = self.conn.send(cmd).await?;
-        self.print_response(response);
-        Ok(())
-    }
-}
+```json
+{ "type": "continue", "id": "<execution-id>" }
+{ "type": "skip",     "id": "<execution-id>" }
+{ "type": "abort",    "id": "<execution-id>" }
+{ "type": "ping" }
 ```
 
-### Debug Integration
-
-Both interfaces honor debug settings:
-
-```rust
-/// Debug configuration for execution
-pub struct DebugConfig {
-    pub enabled: bool,
-    pub level: LogLevel,
-    pub capture: CaptureMode,
-    pub highlight: bool,
-    pub delay: u64,
-    pub pause: bool,
-    pub console: bool,
-    pub network: bool,
-    pub profile: Option<String>,
-}
-
-impl DebugConfig {
-    /// Apply profile defaults
-    pub fn with_profile(profile: &str) -> Self;
-    
-    /// Merge with another config (other takes precedence)
-    pub fn merge(&self, other: &DebugConfig) -> Self;
-}
-```
-
-### Command Mapping
-
-All commands route through the daemon:
-
-```
-Shell Command ──► Unix Socket ──► Daemon ──► AppCore
-                                    │
-API Request ────► HTTP Server ──────┘
-```
-
-| Shell | API Endpoint | Daemon Method |
-|-------|--------------|---------------|
-| `run workflow` | `POST /workflows/:name/run` | `core.run_workflow()` |
-| `click selector` | `POST /browser/click` | `core.browser_command(Click)` |
-| `goto url` | `POST /browser/goto` | `core.browser_command(Goto)` |
-| `screenshot` | `GET /browser/screenshot` | `core.browser_command(Screenshot)` |
-| `session new` | `POST /sessions` | `core.sessions.create()` |
-| `sessions` | `GET /sessions` | `core.sessions.list()` |
-| `list` | `GET /workflows` | `core.workflows.list()` |
-
-### Backward Compatibility
-
-| Old Command | New Equivalent |
-|-------------|----------------|
-| `automodus serve` | `automodus daemon start` (HTTP enabled by default) |
-| `automodus shell` | `automodus shell` (now connects to daemon) |
-| `automodus run workflow.yaml` | Same (sends to daemon) |
-
-## Shell Implementation
-
-### Connection to Daemon
-
-```rust
-use rustyline::{Editor, Config, CompletionType};
-
-pub async fn run_shell() -> Result<()> {
-    // Connect to daemon
-    let client = ShellClient::connect().await.map_err(|e| {
-        match e {
-            Error::DaemonNotRunning => {
-                eprintln!("Daemon not running. Start with: automodus daemon start");
-                eprintln!("Or use: automodus shell --start-daemon");
-            }
-            _ => eprintln!("Connection failed: {}", e),
-        }
-        e
-    })?;
-    
-    client.run_repl().await
-}
-
-impl ShellClient {
-    pub async fn run_repl(&mut self) -> Result<()> {
-        let config = Config::builder()
-            .completion_type(CompletionType::List)
-            .build();
-        
-        let mut rl = Editor::with_config(config)?;
-        
-        // Load history
-        let history_path = dirs::data_dir()
-            .map(|d| d.join("automodus/history.txt"));
-        if let Some(ref path) = history_path {
-            let _ = rl.load_history(path);
-        }
-    
-        loop {
-            let prompt = self.format_prompt().await;
-            
-            match rl.readline(&prompt) {
-                Ok(line) => {
-                    rl.add_history_entry(&line)?;
-                    
-                    // Send command to daemon via socket
-                    if let Err(e) = self.send_command(&line).await {
-                        eprintln!("Error: {}", e);
-                    }
-                }
-                Err(ReadlineError::Interrupted) => continue,
-                Err(ReadlineError::Eof) => break,
-                Err(e) => return Err(e.into()),
-            }
-        }
-        
-        // Save history
-        if let Some(path) = history_path {
-            let _ = rl.save_history(&path);
-        }
-        
-        Ok(())
-    }
-    
-    /// Send command to daemon and print response
-    async fn send_command(&mut self, line: &str) -> Result<()> {
-        let cmd = parse_command(line)?;
-        let response = self.conn.request(cmd).await?;
-        self.print_response(response);
-        Ok(())
-    }
-}
-```
-
-### Autocomplete
-
-```rust
-impl Completer for ShellHelper {
-    fn complete(&self, line: &str, pos: usize) -> Result<(usize, Vec<Pair>)> {
-        let words: Vec<&str> = line[..pos].split_whitespace().collect();
-        
-        match words.as_slice() {
-            // Command completion
-            [] | [""] => Ok((0, self.commands.clone())),
-            
-            // Workflow name completion (fetched from daemon)
-            ["run"] | ["show"] | ["r"] => {
-                let workflows = self.client.list_workflows_cached();
-                Ok((pos, workflows.into_iter()
-                    .map(|w| Pair { display: w.clone(), replacement: w })
-                    .collect()))
-            }
-            
-            // Session completion (fetched from daemon)
-            ["session", "switch"] | ["session", "close"] => {
-                let sessions = self.client.list_sessions_cached();
-                Ok((pos, sessions.into_iter()
-                    .map(|s| Pair { display: s.name_or_id(), replacement: s.id })
-                    .collect()))
-            }
-            
-            _ => Ok((pos, vec![]))
-        }
-    }
-}
-```
-
-### Output Formatting
-
-```rust
-pub enum OutputFormat {
-    Human,  // Pretty printed, colored
-    Json,   // JSON for scripting
-    Table,  // Tabular data
-}
-
-impl ShellContext {
-    pub fn print(&self, data: &impl Serialize) {
-        match self.format {
-            OutputFormat::Human => {
-                // Pretty print with colors
-                println!("{}", format_human(data));
-            }
-            OutputFormat::Json => {
-                println!("{}", serde_json::to_string_pretty(data).unwrap());
-            }
-            OutputFormat::Table => {
-                // Table format for lists
-                println!("{}", format_table(data));
-            }
-        }
-    }
-}
-```
-
-## API Implementation
-
-### Unified Handlers
-
-```rust
-// All handlers delegate to core
-
-pub async fn run_workflow_handler(
-    State(core): State<Arc<AppCore>>,
-    Path(name): Path<String>,
-    Json(req): Json<RunWorkflowRequest>,
-) -> impl IntoResponse {
-    let result = core.run_workflow(
-        &name,
-        req.params,
-        req.session_id.as_deref(),
-        req.debug,
-    ).await;
-    
-    match result {
-        Ok(exec) => (StatusCode::OK, Json(exec.to_response())),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse::from(e))),
-    }
-}
-
-pub async fn click_handler(
-    State(core): State<Arc<AppCore>>,
-    Json(req): Json<ClickRequest>,
-) -> impl IntoResponse {
-    let result = core.browser_command(
-        BrowserCommand::Click { selector: req.selector },
-        req.session_id.as_deref(),
-    ).await;
-    
-    // ...
-}
-```
-
-### WebSocket Updates
-
-```rust
-pub async fn ws_handler(
-    State(core): State<Arc<AppCore>>,
-    ws: WebSocketUpgrade,
-) -> impl IntoResponse {
-    ws.on_upgrade(|socket| handle_ws(socket, core))
-}
-
-async fn handle_ws(socket: WebSocket, core: Arc<AppCore>) {
-    let (mut tx, mut rx) = socket.split();
-    
-    // Subscribe to execution events
-    let mut events = core.subscribe_events();
-    
-    loop {
-        tokio::select! {
-            // Forward events to client
-            Some(event) = events.recv() => {
-                let msg = serde_json::to_string(&event).unwrap();
-                if tx.send(Message::Text(msg)).await.is_err() {
-                    break;
-                }
-            }
-            
-            // Handle client messages
-            Some(Ok(msg)) = rx.next() => {
-                // Handle commands via WebSocket
-            }
-            
-            else => break,
-        }
-    }
-}
-```
+`continue` / `skip` / `abort` resolve a paused execution. While paused, the
+execution **waits indefinitely** for one of these commands (there is no
+timeout and no HTTP fallback) — if the channel is dropped, the engine
+continues.
 
 ## Configuration
 
-### Config File Locations
+| Config | Location | Status |
+|--------|----------|--------|
+| Server/browser/app | `config/app.toml` (override: `AUTOMODUS_CONFIG`) | ✅ read via `src/config.rs` |
+| Daemon config file | `~/.automodus/daemon.toml` | ⚠️ loader exists (`src/daemon/config.rs`) but is **never called** — the daemon always runs with built-in defaults (socket/PID/log in the platform data dir, HTTP `127.0.0.1:8080`) |
+| Shell preferences | `~/.config/automodus/shell.toml` | ❌ not implemented (no such file is read) |
+| Shell history | `<data-dir>/automodus/history.txt` | ✅ written by the REPL |
 
-| Config | Location | Scope |
-|--------|----------|-------|
-| Daemon | `~/.automodus/daemon.toml` | User (global) |
-| Server/Browser | `config/app.toml` | Workspace (project) |
-| Shell preferences | `~/.config/automodus/shell.toml` | User (global) |
-| Shell history | `~/.local/share/automodus/history.txt` | User (global) |
-| Daemon socket | `~/.automodus/automodus.sock` | Runtime |
-| Daemon PID | `~/.automodus/daemon.pid` | Runtime |
-| Daemon log | `~/.automodus/daemon.log` | Runtime |
+Effective daemon settings (defaults, since the TOML loader is dormant):
+`127.0.0.1:8080`, HTTP enabled, 10 max sessions, `data/debug` for captures.
 
-### Daemon Config
+### Environment variables
 
-```toml
-# ~/.automodus/daemon.toml
+Honored at runtime:
 
-[daemon]
-socket_path = "~/.automodus/automodus.sock"
-pid_file = "~/.automodus/daemon.pid"
-log_file = "~/.automodus/daemon.log"
-log_level = "info"                # info | debug | trace
+| Variable | Effect |
+|----------|--------|
+| `AUTOMODUS_CONFIG` | Config file path (default `config/app.toml`) |
+| `AUTOMODUS_WORKFLOWS` | Workflows directory (default `workflows/`) |
+| `AUTOMODUS_CHROME_PATH` / `AUTOMODUS_FIREFOX_PATH` / `AUTOMODUS_LIGHTPANDA_PATH` | Browser binaries |
+| `AUTOMODUS_DEBUG`, `AUTOMODUS_DEBUG_LEVEL`, `AUTOMODUS_DEBUG_PROFILE`, `AUTOMODUS_DEBUG_DELAY`, `AUTOMODUS_DEBUG_CAPTURE` | Debug defaults for `automodus run` only |
+| `AUTOMODUS_NO_PROXY` / `AUTOMODUS_DISABLE_IPV6` | Opt-in Chromium launch flags |
+| `AUTOMODUS_*` | Any other `AUTOMODUS_`-prefixed variable maps onto `config/app.toml` keys (e.g. `AUTOMODUS_BROWSER_ENGINE=firefox`) |
+| `RUST_LOG` / `LOG_JSON` | Log filter and JSON log format |
 
-[http]
-host = "127.0.0.1"
-port = 8080
-cors_origins = ["*"]
-
-[browser]
-headless = false
-max_sessions = 10
-default_viewport = { width = 1280, height = 720 }
-user_data_dir = "~/.automodus/browser-data"  # Persistent profile
-
-[limits]
-execution_timeout = 300000        # 5 minutes
-session_idle_timeout = 3600000    # 1 hour (auto-close idle sessions)
-
-[session]
-# NOTE: session_idle_timeout affects long-running auth like WhatsApp Web.
-# WhatsApp web disconnects after ~14 days idle. A 1-hour timeout may cause
-# unexpected logouts for "always-on" use cases. Options:
-#   1. Increase timeout for long-running sessions
-#   2. Use keep_alive per session (see below)
-default_keep_alive = false        # Default for new sessions
-
-[debug]
-dir = "data/debug"                # Debug output directory (screenshots, traces)
-```
-
-### Shell Config
-
-```toml
-# ~/.config/automodus/shell.toml
-
-[shell]
-prompt = "automodus"          # Prompt prefix
-history_size = 1000           # Max history entries
-output_format = "human"       # human | json | table
-
-[shell.colors]
-prompt = "green"
-success = "green"
-error = "red"
-warning = "yellow"
-
-[shell.aliases]
-r = "run"
-g = "goto"
-s = "screenshot"
-l = "list"
-```
-
-### Server Config
-
-```toml
-# config/app.toml
-
-[server]
-host = "127.0.0.1"
-port = 8080
-cors_origins = ["*"]
-
-[server.auth]
-enabled = false
-api_key = ""
-
-[server.limits]
-max_sessions = 10
-execution_timeout = 300000    # 5 minutes
-```
+Parsed only by the dormant daemon TOML loader (currently inert):
+`AUTOMODUS_LOG_LEVEL`, `AUTOMODUS_HTTP_HOST`, `AUTOMODUS_HTTP_PORT`,
+`AUTOMODUS_SOCKET_PATH`, `AUTOMODUS_MAX_SESSIONS`.
 
 ## Error Handling
 
-> **Note:** `AppError` below extends the existing `AutomodusError` in `src/error.rs`. 
-> During implementation, consider unifying into a single error type.
+The HTTP layer returns flat JSON strings:
 
-Error codes defined in shared module (`src/error.rs`):
-
-```rust
-/// Application error with code for API responses
-#[derive(Debug, Clone, Serialize)]
-pub struct AppError {
-    pub code: ErrorCode,
-    pub message: String,
-    pub details: Option<Value>,
-}
-
-/// Standardized error codes
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum ErrorCode {
-    // Daemon errors
-    DaemonNotRunning,
-    DaemonAlreadyRunning,
-    DaemonConnectionFailed,
-    
-    // Session errors
-    SessionNotFound,
-    SessionLimitReached,
-    
-    // Workflow errors  
-    WorkflowNotFound,
-    WorkflowInvalid,
-    WorkflowTimeout,
-    
-    // Execution errors
-    ExecutionFailed,
-    ExecutionCancelled,
-    StepFailed,
-    
-    // Browser errors
-    BrowserLaunchFailed,
-    BrowserDisconnected,
-    SelectorNotFound,
-    SelectorTimeout,
-    NavigationFailed,
-    
-    // General errors
-    InvalidRequest,
-    InternalError,
-}
-
-impl AppError {
-    pub fn selector_not_found(selector: &str, timeout_ms: u64) -> Self {
-        Self {
-            code: ErrorCode::SelectorNotFound,
-            message: format!("Element not found: {}", selector),
-            details: Some(json!({ "timeout_ms": timeout_ms })),
-        }
-    }
-    
-    pub fn workflow_not_found(name: &str) -> Self {
-        Self {
-            code: ErrorCode::WorkflowNotFound,
-            message: format!("Workflow '{}' not found", name),
-            details: None,
-        }
-    }
-    // ... other constructors
-}
-
-impl std::fmt::Display for AppError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[{:?}] {}", self.code, self.message)
-    }
-}
-
-impl std::error::Error for AppError {}
-```
-
-Shell output:
-```
-❌ Error [SELECTOR_NOT_FOUND]: Element not found: text:Submit
-   Tried for 5000ms before timing out
-```
-
-API response:
 ```json
-{
-  "error": {
-    "code": "SELECTOR_NOT_FOUND",
-    "message": "Element not found: text:Submit",
-    "details": { "timeout_ms": 5000 }
-  }
-}
+{ "error": "Browser error: …" }
 ```
 
-## Implementation Phases
+`AppError` / `ErrorCode` are exported from `src/error.rs` (daemon, session,
+workflow, browser, and general codes) but are **not** what the HTTP handlers
+emit today.
 
-> **Note:** Phase 1 is approximately 60-70% of total implementation effort.
+CLI/shell errors are human-readable messages on stderr; `run` and
+`validate` exit with code `1` on failure.
 
-### Phase 1: Daemon Architecture (~2-3 weeks)
+## Known Gaps
 
-> **Note:** This phase is approximately 60-70% of total implementation effort. Split into sub-phases to reduce risk.
+Unshipped or partially shipped items (tracked in
+[ISSUES.md](ISSUES.md)):
 
-**Goal:** Docker-style daemon/client separation.
-
-#### Phase 1a: Daemon Core (~1 week)
-
-1. **Create `Daemon` struct** (`src/daemon/mod.rs`)
-   - Long-running background process
-   - PID file for process management
-   - Unix socket listener for local clients
-
-2. **Create `AppCore` struct** (`src/core/app.rs`)
-   - Move `WorkflowEngine` ownership here
-   - Move workflow loading from `ServerState`
-   - Add `DebugConfig` field
-   - Add event broadcaster for WebSocket
-
-3. **Daemon CLI commands**
-   - `automodus daemon start` - start daemon
-   - `automodus daemon stop` - stop daemon
-   - `automodus daemon status` - check status
-
-**Checkpoint:** Test with existing API via HTTP, daemon serves requests.
-
-#### Phase 1b: Session Manager (~3-4 days)
-
-1. **Create `SessionManager`** (`src/core/session.rs`)
-   - Extract browser launch logic (single implementation)
-   - Session lifecycle: create, get, close, list
-   - Sessions persist until explicitly closed
-   - Idle cleanup with `keep_alive` support
-
-2. **Merge `serve` command into daemon**
-   - HTTP server becomes part of daemon
-   - Remove standalone `serve` command
-
-**Checkpoint:** Multiple API clients share same browser via sessions.
-
-#### Phase 1c: Shell Refactor (~3-4 days)
-
-1. **Create `ShellClient`** (`src/shell/client.rs`)
-   - Stateless REPL connecting to daemon
-   - Sends commands via Unix socket
-   - Receives responses and prints output
-
-2. **Add `rustyline` dependency**
-   - Basic readline with history
-   - Save/load history from `~/.local/share/automodus/history.txt`
-
-3. **Test end-to-end**
-   - Browser survives shell exit
-   - Multiple shells can connect  
-   - Auth state persists
-
-**Deliverables (full Phase 1):**
-- [ ] Daemon process with PID file
-- [ ] Unix socket communication
-- [ ] `AppCore` and `SessionManager`
-- [ ] Shell connects to daemon (no local browser)
-- [ ] `daemon start/stop/status` commands
-- [ ] Readline with history
-- [ ] Browser survives shell exit
-
-### Phase 2: Shell Commands (~1-2 weeks)
-
-**Goal:** Feature parity between shell and API for browser control.
-
-1. **Browser commands**
-   - `click <selector>` - click element
-   - `type <selector> <text>` - type into element
-   - `wait <selector> [timeout]` - wait for element
-   - `screenshot [path]` - take screenshot
-   - `eval <js>` - execute JavaScript
-   - `text <selector>` - get element text
-   - `find <selector>` - find elements, show count
-
-2. **Navigation commands**
-   - `back` - go back
-   - `forward` - go forward  
-   - `refresh` - reload page
-
-3. **Tab commands** (if multi-tab support needed)
-   - `tabs` - list tabs
-   - `tab <index>` - switch tab
-   - `tab new [url]` - new tab
-   - `tab close` - close tab
-
-4. **Autocomplete**
-   - Command completion
-   - Workflow name completion for `run`
-   - File path completion
-
-**Deliverables:**
-- [ ] All browser commands implemented
-- [ ] Autocomplete for commands and workflows
-- [ ] Help text for each command
-
-### Phase 3: API Enhancement (~1-2 weeks)
-
-**Goal:** Full API parity with shell + real-time updates.
-
-1. **Session endpoints**
-   - `POST /api/sessions` - create session
-   - `GET /api/sessions` - list sessions
-   - `GET /api/sessions/:id` - get session
-   - `DELETE /api/sessions/:id` - close session
-
-2. **Browser endpoints**
-   - `POST /api/browser/click` - click element
-   - `POST /api/browser/type` - type into element
-   - `POST /api/browser/wait` - wait for element
-   - `POST /api/browser/eval` - execute JavaScript
-   - `GET /api/browser/page` - get page info
-
-3. **Execution tracking**
-   - `GET /api/executions` - list recent
-   - `GET /api/executions/:id` - get details
-   - `DELETE /api/executions/:id` - cancel
-
-4. **WebSocket**
-   - Implement `/ws` endpoint
-   - Execution events (started, step, complete, error)
-   - Pause/continue commands
-
-**Deliverables:**
-- [ ] Session CRUD endpoints
-- [ ] Browser control endpoints
-- [ ] Execution tracking endpoints
-- [ ] WebSocket with event streaming
-
-### Phase 4: Debug Integration (~1 week)
-
-**Goal:** Wire debug mode through both interfaces.
-
-1. **CLI flags**
-   - `--debug` flag for `run` command
-   - `--debug=trace` for level
-   - `--delay=1000` for slow mode
-   - `--profile=ci` for presets
-
-2. **Shell debug commands**
-   - `debug on [--profile=PROFILE]`
-   - `debug off`
-   - `debug status`
-   - `highlight <selector>`
-
-3. **API debug support**
-   - Accept `debug` object in run request
-   - Return debug data in response
-   - Stream console/network via WebSocket
-
-4. **Capture/Console/Network**
-   - Screenshot capture based on `capture` mode
-   - Console capture when `console: true`
-   - Network capture when `network: true`
-
-**Deliverables:**
-- [ ] CLI debug flags working
-- [ ] Shell debug commands working
-- [ ] API accepts and returns debug config
-- [ ] CDP listeners for console/network
-
-## Migration Checklist
-
-```
-[ ] Phase 1a - Daemon Core
-    [ ] Create src/daemon/mod.rs with Daemon struct
-    [ ] Create src/core/app.rs with AppCore
-    [ ] Implement Unix socket listener
-    [ ] Implement daemon start/stop/status commands
-    [ ] Add PID file management
-    [ ] Test: daemon start/stop works
-    [ ] Test: API works via daemon HTTP
-
-[ ] Phase 1b - Session Manager
-    [ ] Create src/core/session.rs with SessionManager
-    [ ] Extract browser launch logic (remove duplicates)
-    [ ] Implement idle cleanup with keep_alive support
-    [ ] Merge api/server.rs into daemon (HTTP endpoint)
-    [ ] Test: sessions persist across API calls
-    [ ] Test: idle sessions cleaned up
-
-[ ] Phase 1c - Shell Refactor
-    [ ] Add rustyline + dirs to Cargo.toml
-    [ ] Create src/shell/client.rs with ShellClient
-    [ ] Refactor shell to connect to daemon (no local browser)
-    [ ] Add history save/load
-    [ ] Test: shell connects to daemon
-    [ ] Test: browser survives shell exit
-    [ ] Test: multiple shells can connect
-    [ ] Test: auth state persists (WhatsApp QR)
-
-[ ] Phase 2
-    [ ] Implement click command
-    [ ] Implement type command  
-    [ ] Implement wait command
-    [ ] Implement screenshot command
-    [ ] Implement eval command
-    [ ] Implement text command
-    [ ] Implement find command
-    [ ] Implement navigation commands
-    [ ] Add autocomplete
-    [ ] Update help text
-
-[ ] Phase 3
-    [ ] Add session endpoints
-    [ ] Add browser control endpoints
-    [ ] Add execution tracking endpoints
-    [ ] Implement WebSocket
-    [ ] Update OpenAPI schema
-
-[ ] Phase 4
-    [ ] Add CLI debug flags
-    [ ] Add shell debug commands
-    [ ] Wire debug through API
-    [ ] Implement CDP listeners
-    [ ] Add screenshot capture
-```
+- `debug on` / `debug off` / `debug status` only print a confirmation; they
+  do not change shell state (use CLI flags on `run`, or `trace`).
+- The `debug.level` option, `--debug=<level>`, and the shell `trace` command
+  are effectively schema-only: log verbosity comes from `RUST_LOG`, and
+  `data/debug/trace.jsonl` is never written (`TraceLogger` is not wired).
+- Workflow-level `debug.profile:` is not applied on the `automodus run` path
+  — use `--profile=` on the CLI; profiles do apply for sub-workflows
+  invoked with `call:`.
+- The API run request accepts only `params`; no per-request `debug` or
+  `session_id`, and responses carry no debug payload.
+- Console/network listeners always start, but their buffers are never
+  drained or surfaced (no `console.log` / `network.request` WS events, and
+  the `console:` / `network:` debug flags currently gate nothing).
+- No auth on the HTTP API (it binds `127.0.0.1` only).
+- Daemon TOML config loader and the `AUTOMODUS_LOG_LEVEL`,
+  `AUTOMODUS_HTTP_HOST`/`PORT`, `AUTOMODUS_SOCKET_PATH`, and
+  `AUTOMODUS_MAX_SESSIONS` env vars are dormant.
+- No `shell.toml` preferences file, no output-format switching
+  (human/json/table), no direct CLI equivalents of `session ...` outside
+  the shell.
 
 ## Related
 
-- [DEBUG.md](DEBUG.md) - Debug mode design
-- [DESIGN.md](../DESIGN.md) - Overall architecture
+- [DEBUG.md](DEBUG.md) - Debug mode reference
+- [DESIGN.md](DESIGN.md) - Workflow design and syntax
+- [ARCHITECTURE.md](ARCHITECTURE.md) - System internals
 - [CONTRIBUTING.md](../CONTRIBUTING.md) - Development guidelines
+- [archive/plan-daemon-shell.md](archive/plan-daemon-shell.md) - Historical plan
