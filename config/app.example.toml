@@ -1,113 +1,113 @@
+# automodus example configuration
+#
+# Copy to config/app.toml (path overridable with AUTOMODUS_CONFIG).
+# Any AUTOMODUS_* environment variable also overrides the matching key,
+# e.g. AUTOMODUS_BROWSER_ENGINE=firefox, AUTOMODUS_SERVER_PORT=8081.
+#
+# Unknown keys are silently ignored, so sections marked "reserved" below
+# are accepted but currently have no effect. See docs/SHELL.md §
+# Configuration for details.
+
+# =============================================================================
+# Read by the code
+# =============================================================================
+
 [server]
-host = "0.0.0.0"
+# HTTP server bind address (used by `serve` / HTTP paths; default 127.0.0.1)
+host = "127.0.0.1"
+# HTTP port for the foreground server (default 3000).
+# NOTE: `automodus daemon start` serves on 127.0.0.1:8080 from daemon
+# defaults, not from this file (the daemon TOML loader is not wired yet).
 port = 3000
 
 [browser]
-# Browser engine backend: "chromium" (CDP), "firefox" (WebDriver BiDi, no geckodriver),
-# or "lightpanda" (CDP attach to spawned `lightpanda serve`)
+# Browser engine backend: "chromium" (CDP), "firefox" (WebDriver BiDi, no
+# geckodriver), or "lightpanda" (CDP attach to spawned `lightpanda serve`)
 engine = "chromium"
-headless = true
+# Headless mode for daemon/API-launched browsers (default false).
+# `automodus run` uses the workflow's own `browser.headless` instead.
+headless = false
+# Default timeout in milliseconds (consumed only by the legacy
+# BrowserService driver; launch paths use their own defaults)
 timeout_ms = 30000
+
 # Optional: explicit browser binary paths (omit to auto-detect)
+# Resolution order for Chrome: AUTOMODUS_CHROME_PATH > CHROME > these keys >
+# system discovery.
 # chrome_path = "/usr/bin/google-chrome"
 # firefox_path = "/usr/bin/firefox"
 # lightpanda_path = "/home/you/.local/bin/lightpanda"
-# Browser arguments for better performance and compatibility
-args = [
-    "--disable-blink-features=AutomationControlled",
-    "--no-sandbox",
-    "--disable-setuid-sandbox",
-    "--disable-dev-shm-usage",
-    "--disable-extensions",
-    "--disable-popup-blocking",
-    "--disable-gpu",
-    "--disable-software-rasterizer"
-]
 
-[auth]
-# Static secret key for scripts/CI/CD pipelines (CHANGE IN PRODUCTION)
-secret_key = "change-this-secret-key-in-production"
-# JWT secret key for signing tokens (CHANGE IN PRODUCTION - min 32 chars)
-jwt_secret = "your-super-secret-jwt-key-change-this-in-production-32chars"
-# Access token expiry in hours
-token_expiry_hours = 24
-# Refresh token expiry in days
-refresh_token_expiry_days = 7
-# NOTE: Admin user is created on first run via setup token (no default credentials)
+# Additional browser arguments (applied by the legacy BrowserService driver;
+# the current launch_session path builds its own flags)
+# args = [
+#     "--disable-blink-features=AutomationControlled",
+#     "--no-sandbox",
+#     "--disable-dev-shm-usage",
+# ]
 
-[logging]
-level = "info"
-# Available levels: trace, debug, info, warn, error
-
-[cache]
-default_ttl_minutes = 15
-
-[cors]
-allow_origins = ["*"]
-allow_methods = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
-allow_headers = ["authorization", "content-type"]
-
-[limits]
-# Maximum concurrent requests
-max_concurrent_requests = 50
-# Request timeout in milliseconds
-request_timeout_ms = 30000
-# Maximum file upload size in bytes (10MB)
-max_upload_size = 10485760
-
-# Environment Configuration (can be overridden by environment variables)
-[environment]
-# Environment: "development", "staging", or "production"
-environment = "development"
-# Log level (override with RUST_LOG env var)
-# Accepts: "trace", "debug", "info", "warn", "error" or full format "automodus=debug,hyper=info"
-log_level = "info"
-health_check_interval = 30
+# Persistent browser profile directory.
+# reserved: defined in config but never read by the launch paths —
+# runs use an isolated TempProfile that is removed on exit.
+# user_data_dir = "/home/you/.chromium-profile"
 
 # =============================================================================
-# Web UI - Built-in HTMX dashboard (served from templates)
+# Reserved — accepted but currently ignored
 # =============================================================================
-[web]
-# Enable Web UI serving (set to false for API-only mode)
-enabled = true
+#
+# The keys below parse cleanly but are not read by any runtime path today.
+# Keep them commented out unless you are prototyping a future schema.
 
-# =============================================================================
-# Swagger UI - Interactive API documentation
-# =============================================================================
-[swagger]
-# Enable Swagger UI (set to false to disable API docs in production)
-enabled = true
-# Swagger UI path
-path = "/api-docs"
+# [workflows]
+# directory = "workflows"     # reserved: workflows are located via the
+#                             # AUTOMODUS_WORKFLOWS env var (default workflows/)
+# auto_reload = false         # reserved: never read
 
-# =============================================================================
-# MCP - Model Context Protocol for AI agent integration
-# =============================================================================
-[mcp]
-# Enable MCP server (requires --features mcp at compile time)
-enabled = true
-# MCP endpoint path
-endpoint = "/mcp"
-# Enable SSE (Server-Sent Events) transport
-sse_enabled = true
-# SSE heartbeat interval in seconds
-heartbeat_interval_secs = 30
+# [auth]                      # reserved: no auth layer exists (API is
+#                             # unauthenticated and binds 127.0.0.1)
+# secret_key = "change-this-secret-key-in-production"
+# jwt_secret = "your-super-secret-jwt-key-change-this-in-production-32chars"
+# token_expiry_hours = 24
+# refresh_token_expiry_days = 7
 
-# =============================================================================
-# Webhooks - Fires HTTP callbacks on message.received events
-# =============================================================================
-[webhooks]
-# Enable webhook callbacks
-enabled = false
-# Request timeout in milliseconds
-timeout_ms = 5000
-# Number of retry attempts on failure
-retry_count = 3
-# Delay between retries in milliseconds
-retry_delay_ms = 1000
+# [logging]                   # reserved: use RUST_LOG / LOG_JSON instead
+# level = "info"
 
-# Example webhook endpoint:
-# [[webhooks.endpoints]]
-# url = "https://your-server.com/webhook/automodus"
-# secret = "your-hmac-secret-for-signature-verification"
-# headers = { "X-Custom-Header" = "value" }
+# [cache]                     # reserved
+# default_ttl_minutes = 15
+
+# [cors]                      # reserved: the HTTP layer allows all origins
+# allow_origins = ["*"]
+# allow_methods = ["GET", "POST", "DELETE", "OPTIONS"]
+# allow_headers = ["authorization", "content-type"]
+
+# [limits]                    # reserved
+# max_concurrent_requests = 50
+# request_timeout_ms = 30000
+# max_upload_size = 10485760
+
+# [environment]               # reserved
+# environment = "development"
+# log_level = "info"
+# health_check_interval = 30
+
+# [web]                       # reserved: no built-in web UI
+# enabled = false
+
+# [swagger]                   # reserved: Swagger UI is always mounted at
+#                             # /swagger-ui (openapi at /api/openapi.json)
+# enabled = true
+# path = "/swagger-ui"
+
+# [mcp]                       # reserved: MCP support is a compile-time
+#                             # feature (--features mcp), not a config toggle
+# enabled = false
+# endpoint = "/mcp"
+# sse_enabled = true
+# heartbeat_interval_secs = 30
+
+# [webhooks]                  # reserved: no webhook dispatcher
+# enabled = false
+# timeout_ms = 5000
+# retry_count = 3
+# retry_delay_ms = 1000

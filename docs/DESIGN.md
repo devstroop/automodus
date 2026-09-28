@@ -367,8 +367,8 @@ timeout_ms = 30000
 # lightpanda_path = "/home/you/.local/bin/lightpanda"
 
 [workflows]
-directory = "workflows"
-auto_reload = true
+directory = "workflows"   # reserved: not read — use AUTOMODUS_WORKFLOWS
+auto_reload = true        # reserved: never read
 ```
 
 Any `AUTOMODUS_*` environment variable overrides a config key

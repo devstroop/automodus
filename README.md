@@ -377,10 +377,10 @@ Workflow YAML validation is CLI-only: `automodus validate <path>`.
 | `AUTOMODUS_DEBUG_PROFILE` | Debug preset (`minimal`, `verbose`, `ci`, `demo`) | unset |
 | `AUTOMODUS_DEBUG_DELAY` | Step delay in ms | `0` |
 | `AUTOMODUS_DEBUG_CAPTURE` | Screenshot mode (`none`, `failure`, `before`, `after`, `all`) | `failure` |
-| `AUTOMODUS_LOG_LEVEL` | Daemon log level | `info` |
-| `AUTOMODUS_HTTP_HOST` / `AUTOMODUS_HTTP_PORT` | Daemon HTTP bind | `127.0.0.1` / `8080` |
-| `AUTOMODUS_SOCKET_PATH` | Daemon socket path | platform data dir |
-| `AUTOMODUS_MAX_SESSIONS` | Daemon max sessions | `10` |
+| `AUTOMODUS_LOG_LEVEL` | Daemon log level *(dormant — see note)* | `info` |
+| `AUTOMODUS_HTTP_HOST` / `AUTOMODUS_HTTP_PORT` | Daemon HTTP bind *(dormant)* | `127.0.0.1` / `8080` |
+| `AUTOMODUS_SOCKET_PATH` | Daemon socket path *(dormant)* | platform data dir |
+| `AUTOMODUS_MAX_SESSIONS` | Daemon max sessions *(dormant)* | `10` |
 | `AUTOMODUS_NO_PROXY` | Disable proxy env for browser | unset |
 | `AUTOMODUS_DISABLE_IPV6` | Disable IPv6 for browser | unset |
 | `RUST_LOG` / `LOG_JSON` | Log level / JSON log format | `info` / unset |
@@ -389,6 +389,11 @@ Workflow YAML validation is CLI-only: `automodus validate <path>`.
 Any `AUTOMODUS_*` variable also maps onto `config/app.toml` keys
 (e.g. `AUTOMODUS_BROWSER_ENGINE=firefox`); debug variables are honored on the
 `automodus run` path only (see [docs/DEBUG.md](docs/DEBUG.md)).
+
+> *(dormant)* These four variables are only parsed by the daemon TOML loader,
+> which no runtime path calls yet — the daemon runs on built-in defaults
+> (`127.0.0.1:8080`, platform data dir, 10 sessions). Log verbosity is
+> controlled by `RUST_LOG`. See [docs/SHELL.md](docs/SHELL.md) § Known Gaps.
 
 ### Config File (`config/app.toml`)
 
@@ -406,8 +411,8 @@ timeout_ms = 30000
 # lightpanda_path = "/home/you/.local/bin/lightpanda"
 
 [workflows]
-directory = "workflows/"
-auto_reload = true
+directory = "workflows/"   # reserved: not read — workflows are located
+auto_reload = true         # via AUTOMODUS_WORKFLOWS (default workflows/)
 ```
 
 See [config/app.example.toml](config/app.example.toml) for a commented template;
