@@ -9,7 +9,7 @@
 //! - **Workflow Engine**: YAML-defined workflows with triggers, actions, and event handling
 //! - **Actions**: Built-in browser automation actions (navigate, click, extract, etc.)
 //! - **Triggers**: API endpoints, schedules, events, webhooks for workflow invocation
-//! - **Browser**: Multi-instance Chromium browser automation via CDP
+//! - **Browser**: Multi-engine browser automation (Chromium, Firefox, Lightpanda)
 //!
 //! ## Features
 //!
@@ -21,7 +21,7 @@
 //! ## Quick Start
 //!
 //! ```yaml
-//! # ../examples/browser/search_form.yaml
+//! # examples/browser/search_form.yaml
 //! name: search_example
 //! description: Search and extract results
 //!

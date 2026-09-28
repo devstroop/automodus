@@ -1,10 +1,15 @@
-# Issue Tracker
+# Issue Tracker (Historical)
 
-Track implementation progress for automodus. Update status as work progresses.
+Historical record of the original implementation plan for automodus, kept as
+a tracker of what was planned versus what actually shipped. Statuses were
+re-verified against the code during the September 2026 docs-vs-code revision;
+several "Done" items carry audit notes about partial delivery (see the
+`Audit (2026-09-28)` notes below). For current known gaps see the
+"Known Gaps" section in [SHELL.md](SHELL.md) and [DEBUG.md](DEBUG.md).
 
 **Legend:** ⬜ Not Started | 🟡 In Progress | ✅ Done | ❌ Blocked
 
-**Summary:** 34 issues across 8 priorities
+**Summary:** 36 issues across 8 priorities + backlog
 
 | Priority | Issues | Description | Est. Total |
 |----------|--------|-------------|------------|
@@ -16,7 +21,7 @@ Track implementation progress for automodus. Update status as work progresses.
 | **P6** | #20-23 | API enhancement | ~1 week |
 | **P7** | #24-27 | Debug UX | ~2 days |
 | **P8** | #31-33 | Integration tests | ~1 day |
-| **Backlog** | #29-30 | Future work | - |
+| **Backlog** | #28-30 | Sub-workflows, tabs, PDF (all landed) | - |
 
 ---
 
@@ -203,6 +208,11 @@ if ctx.debug.delay > 0 {
 
 Browser console and network capture.
 
+> **Audit (2026-09-28):** The listeners and buffers work as specified, but
+> nothing drains them — entries are only emitted at tracing `debug` level,
+> and the `console:`/`network:` workflow flags gate nothing (surfacing
+> remains open; see [DEBUG.md](DEBUG.md)).
+
 ### Issue #9: Console capture via CDP
 **Status:** ✅ Done  
 **File:** `src/modules/browser/adapter.rs`  
@@ -373,10 +383,16 @@ automodus daemon stop
 ---
 
 ### Issue #15a: Daemon config file loading
-**Status:** ✅ Done  
+**Status:** ✅ Done (not wired)  
 **File:** `src/daemon/config.rs` (new)  
 **Depends:** #11  
 **Estimate:** 2-3 hours
+
+> **Audit (2026-09-28):** The loader (`load_config`, `ensure_config_exists`,
+> `apply_env_overrides`) exists and is tested, but no runtime path calls it —
+> the daemon always uses `DaemonConfig::default()`. `~/.automodus/daemon.toml`
+> and the `AUTOMODUS_LOG_LEVEL`/`HTTP_*`/`SOCKET_PATH`/`MAX_SESSIONS` env vars
+> are therefore inert.
 
 **Tasks:**
 - [x] Create `DaemonConfig` struct matching SHELL.md spec
@@ -594,10 +610,14 @@ Full API parity with shell.
 Final debug features.
 
 ### Issue #24: Shell debug commands
-**Status:** ✅ Done  
+**Status:** ✅ Done (partial)  
 **File:** `src/shell/client.rs`  
 **Depends:** #16, #5  
 **Estimate:** 2-3 hours
+
+> **Audit (2026-09-28):** `debug on/off/status` are print-only stubs — they
+> acknowledge the command but change no state. `highlight` works; `trace`
+> prints a banner and runs the workflow without passing any debug config.
 
 **Tasks:**
 - [x] Add `debug on [--profile=PROFILE]`
@@ -641,10 +661,15 @@ Final debug features.
 ---
 
 ### Issue #27: Trace-level JSONL output
-**Status:** ✅ Done  
+**Status:** ✅ Done (not wired)  
 **File:** `src/utils/trace.rs` (new)  
 **Depends:** #5  
 **Estimate:** 2-3 hours
+
+> **Audit (2026-09-28):** `TraceLogger`/`ElementInfo` are implemented and
+> exported but never instantiated anywhere, so `data/debug/trace.jsonl` is
+> never written and no selector/element/JS events are logged. Wiring it up
+> (and honoring `level: trace`) remains open work.
 
 **Tasks:**
 - [x] Create `data/debug/trace.jsonl` when `level: trace`
@@ -790,6 +815,7 @@ steps:
 | 2026-02-23 | #25 ✅: ShellPauseHandler wired into CLI `run_workflow()` and shell `run_workflow_with_adapter()` |
 | 2026-02-23 | #26 ✅: WebSocketPauseHandler already implemented in `state.rs`, wired in `handlers.rs` |
 | 2026-02-23 | Added 5 pause handler tests (continue, skip, abort, disabled, default) |
+| 2026-09-28 | Docs-vs-code revision: recount (36 issues), table now includes #28, Backlog #28-30 all landed; audit notes added to #15a (daemon TOML loader never called), #24 (debug on/off/status stubs), #27 (TraceLogger never instantiated); framing changed to historical tracker |
 
 ---
 
@@ -810,5 +836,5 @@ Phase 5 (Debug UX):         #24 → #25 → #26 → #27
 Backlog:                    #29, #30
 ```
 
-**Total Issues:** 33  
+**Total Issues:** 36 (all marked Done; see audit notes for partial items)  
 **Critical Path:** #1 → #11 → #12 → #13 → #16 (debug schema → daemon → shell)
